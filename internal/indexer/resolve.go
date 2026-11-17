@@ -206,6 +206,10 @@ func (r resolver) internalQual(importPath string) (string, bool) {
 	}
 	dir := ""
 	switch {
+	case m == "std":
+		// GOROOT/src declares `module std`, and its import paths are plain
+		// directories: math/rand/v2 is the directory of package rand.
+		dir = importPath
 	case importPath == m:
 		dir = "."
 	case strings.HasPrefix(importPath, m+"/"):

@@ -144,28 +144,21 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			kind, qualified := "func", qual+"."+d.Name.Name
-			recvVar, recvType := "", ""
-			var recvExpr ast.Expr
 			if d.Recv != nil && len(d.Recv.List) > 0 {
 				kind = "method"
-				recvExpr = d.Recv.List[0].Type
-				recvType = qual + "." + receiverName(d.Recv.List[0].Type)
-				qualified = recvType + "." + d.Name.Name
-				if len(d.Recv.List[0].Names) > 0 {
-					recvVar = d.Recv.List[0].Names[0].Name
-				}
+				qualified = qual + "." + receiverName(d.Recv.List[0].Type) + "." + d.Name.Name
 			}
 			add(d.Name.Name, qualified, kind, funcSignature(fset, d), d.Doc.Text(), d)
 			if d.Body != nil {
-				enc := &goEncoder{fset: fset, src: src, recvVar: recvVar, recvType: recvExpr, aliases: aliases,
-					locals: goLocals(d), visiting: map[string]bool{}, typeParams: goTypeParams(fset, d)}
+				enc := &goEncoder{fset: fset, src: src, aliases: aliases,
+					locals: goLocals(d), visiting: map[goLocalKey]bool{}, typeParams: goTypeParams(fset, d)}
 				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
 			}
 
 		case *ast.GenDecl:
 			if d.Tok == token.VAR {
 				// Package-level variables: how their type can be found.
-				enc := &goEncoder{fset: fset, src: src, aliases: aliases, locals: map[string][]goLocal{}, visiting: map[string]bool{}}
+				enc := &goEncoder{fset: fset, src: src, aliases: aliases, locals: map[string][]goLocal{}, visiting: map[goLocalKey]bool{}}
 				for _, spec := range d.Specs {
 					vs := spec.(*ast.ValueSpec)
 					for i, n := range vs.Names {

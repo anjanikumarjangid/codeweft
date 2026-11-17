@@ -96,7 +96,18 @@ func (g *goTyper) eval(node any, file int64, depth int) *goType {
 	}
 	switch str(0) {
 	case "t":
-		return g.written(str(1), file)
+		t := g.written(str(1), file)
+		if t != nil && len(n) > 2 {
+			if m, ok := n[2].(map[string]any); ok {
+				t.bind = map[string]*goType{}
+				for name, enc := range m {
+					if b := g.eval(enc, file, depth+1); b != nil {
+						t.bind[name] = b
+					}
+				}
+			}
+		}
+		return t
 	case "g":
 		return g.variable(g.in.GoFiles[file].Qual+"."+str(1), depth)
 	case "p":

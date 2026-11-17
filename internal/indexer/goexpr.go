@@ -14,6 +14,7 @@ import (
 // indexed. An expression is encoded as a JSON array:
 //
 //	["t", TYPE]          a type written in this file, e.g. "*Client" or "[]io.Reader"
+//	["t", TYPE, ENV]     the same, with the type parameters in scope: {NAME: constraint}
 //	["g", NAME]          a package-level name of this file's package
 //	["p", PATH, NAME]    a package-level name of the imported package PATH
 //	["c", FUNC]          the first result of calling FUNC, which is
@@ -29,6 +30,12 @@ import (
 // Anything else (a function value, a closure result, an untyped constant)
 // is unknown, and the call falls back to the other resolution rules.
 
+// goLocalKey identifies one definition of a local name.
+type goLocalKey struct {
+	name string
+	from token.Pos
+}
+
 // goLocal is how a local name got its value, and from where on in the
 // source the definition holds.
 type goLocal struct {
@@ -41,11 +48,9 @@ type goLocal struct {
 type goEncoder struct {
 	fset     *token.FileSet
 	src      []byte
-	recvVar  string
-	recvType ast.Expr
 	aliases  map[string]string    // import name -> path
 	locals   map[string][]goLocal // in source order
-	visiting map[string]bool
+	visiting map[goLocalKey]bool
 	// typeParams maps a type parameter in scope to its constraint's
 	// encoding: the function's own (["T", constraint, name]) and the
 	// receiver type's (["tp", type, index], declared with the type).
@@ -104,13 +109,13 @@ func (g *goEncoder) typeParam(e ast.Expr) any {
 // name redefined later or in another branch does not leak backwards, and
 // in x := f(x) the x on the right is still the earlier one (or a package).
 func (g *goEncoder) lookup(name string, pos token.Pos) (goLocal, bool) {
-	defs := g.locals[name]
-	for i := len(defs) - 1; i >= 0; i-- {
-		if defs[i].from <= pos {
-			return defs[i], true
+	best, found := goLocal{}, false
+	for _, d := range g.locals[name] {
+		if d.from <= pos && (!found || d.from >= best.from) {
+			best, found = d, true
 		}
 	}
-	return goLocal{}, false
+	return best, found
 }
 
 // goLocals records the local names of a function, how each got its value,
@@ -118,6 +123,11 @@ func (g *goEncoder) lookup(name string, pos token.Pos) (goLocal, bool) {
 func goLocals(d *ast.FuncDecl) map[string][]goLocal {
 	locals := map[string][]goLocal{}
 	def := func(name string, l goLocal) { locals[name] = append(locals[name], l) }
+	if d.Recv != nil && len(d.Recv.List) > 0 {
+		for _, n := range d.Recv.List[0].Names {
+			def(n.Name, goLocal{typ: d.Recv.List[0].Type, from: d.Pos()})
+		}
+	}
 	addFields := func(fl *ast.FieldList, from token.Pos) {
 		if fl == nil {
 			return
@@ -173,11 +183,27 @@ func goLocals(d *ast.FuncDecl) map[string][]goLocal {
 				}
 			}
 		case *ast.TypeSwitchStmt:
-			// switch v := x.(type): v has a different type in every case.
-			if a, ok := t.Assign.(*ast.AssignStmt); ok && len(a.Lhs) == 1 {
-				if id, ok := a.Lhs[0].(*ast.Ident); ok {
-					def(id.Name, goLocal{from: a.End()}) // unknown
+			// switch v := x.(type): in a case naming one type, v has that
+			// type; in other cases (several types, default) it has x's.
+			a, ok := t.Assign.(*ast.AssignStmt)
+			if !ok || len(a.Lhs) != 1 || len(a.Rhs) != 1 {
+				return true
+			}
+			id, ok := a.Lhs[0].(*ast.Ident)
+			ta, ok2 := a.Rhs[0].(*ast.TypeAssertExpr)
+			if !ok || !ok2 {
+				return true
+			}
+			def(id.Name, goLocal{from: a.End()}) // unknown before any case
+			for _, stmt := range t.Body.List {
+				cc := stmt.(*ast.CaseClause)
+				if len(cc.List) == 1 {
+					if n, isNil := cc.List[0].(*ast.Ident); !isNil || n.Name != "nil" {
+						def(id.Name, goLocal{typ: cc.List[0], from: cc.Colon})
+						continue
+					}
 				}
+				def(id.Name, goLocal{val: ta.X, from: cc.Colon})
 			}
 			return true
 		case *ast.FuncLit:
@@ -190,6 +216,17 @@ func goLocals(d *ast.FuncDecl) map[string][]goLocal {
 }
 
 func (g *goEncoder) typeText(e ast.Expr) string { return printNode(g.fset, e) }
+
+// written encodes a type written in the function: ["t", TYPE], with the
+// type parameters in scope (["t", TYPE, {NAME: constraint}]) inside a
+// generic function or a method of a generic type, so that []P or
+// *Curve[P] can be read later.
+func (g *goEncoder) written(e ast.Expr) any {
+	if len(g.typeParams) == 0 {
+		return []any{"t", g.typeText(e)}
+	}
+	return []any{"t", g.typeText(e), g.typeParams}
+}
 
 // encode returns the encoding of e, or nil when its type cannot be found.
 func (g *goEncoder) encode(e ast.Expr) any {
@@ -205,12 +242,12 @@ func (g *goEncoder) encode(e ast.Expr) any {
 		return nil
 	case *ast.CompositeLit:
 		if t.Type != nil {
-			return []any{"t", g.typeText(t.Type)}
+			return g.written(t.Type)
 		}
 		return nil
 	case *ast.TypeAssertExpr:
 		if t.Type != nil {
-			return []any{"t", g.typeText(t.Type)}
+			return g.written(t.Type)
 		}
 		return nil
 	case *ast.Ident:
@@ -237,7 +274,7 @@ func (g *goEncoder) encode(e ast.Expr) any {
 // isPackage reports whether name refers to an imported package here, and
 // not to a local that shadows it.
 func (g *goEncoder) isPackage(name string, pos token.Pos) bool {
-	if _, local := g.lookup(name, pos); local || name == g.recvVar {
+	if _, local := g.lookup(name, pos); local {
 		return false
 	}
 	_, ok := g.aliases[name]
@@ -245,9 +282,6 @@ func (g *goEncoder) isPackage(name string, pos token.Pos) bool {
 }
 
 func (g *goEncoder) ident(name string, pos token.Pos) any {
-	if name == g.recvVar && g.recvType != nil {
-		return []any{"t", g.typeText(g.recvType)}
-	}
 	l, ok := g.lookup(name, pos)
 	if !ok {
 		if goPredeclared[name] || name == "nil" || name == "true" || name == "false" || name == "iota" {
@@ -255,17 +289,18 @@ func (g *goEncoder) ident(name string, pos token.Pos) any {
 		}
 		return []any{"g", name}
 	}
-	if g.visiting[name] { // x := f(x)
+	key := goLocalKey{name, l.from}
+	if g.visiting[key] { // a definition that depends on itself
 		return nil
 	}
-	g.visiting[name] = true
-	defer delete(g.visiting, name)
+	g.visiting[key] = true
+	defer delete(g.visiting, key)
 	switch {
 	case l.typ != nil:
 		if tp := g.typeParam(l.typ); tp != nil {
 			return tp
 		}
-		return []any{"t", g.typeText(l.typ)}
+		return g.written(l.typ)
 	case l.val != nil:
 		return g.encode(l.val)
 	case l.elemOf != nil:
@@ -292,19 +327,19 @@ func (g *goEncoder) call(c *ast.CallExpr) any {
 		if l, local := g.lookup(f.Name, f.Pos()); local {
 			// Calling a local function value: its declared result type.
 			if ft, ok := l.typ.(*ast.FuncType); ok && ft.Results != nil && len(ft.Results.List) > 0 {
-				return []any{"t", g.typeText(ft.Results.List[0].Type)}
+				return g.written(ft.Results.List[0].Type)
 			}
 			return nil
 		}
 		switch f.Name {
 		case "new":
 			if len(c.Args) == 1 {
-				return []any{"t", g.typeText(c.Args[0])}
+				return g.written(c.Args[0])
 			}
 			return nil
 		case "make":
 			if len(c.Args) > 0 {
-				return []any{"t", g.typeText(c.Args[0])}
+				return g.written(c.Args[0])
 			}
 			return nil
 		case "append":
@@ -325,7 +360,7 @@ func (g *goEncoder) call(c *ast.CallExpr) any {
 			return []any{"c", []any{"m", x, f.Sel.Name}}
 		}
 	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType, *ast.StarExpr:
-		return []any{"t", g.typeText(fun)} // a conversion: []byte(s)
+		return g.written(fun) // a conversion: []byte(s)
 	}
 	return nil
 }

@@ -1107,6 +1107,44 @@ func Shadow() {
 	lock := lock.Counter{}
 	lock.Add(2)
 }
+
+func (c *Curve[P]) newPoint() P { return c.base }
+
+func (c *Curve[P]) Fresh() []byte {
+	return c.newPoint().Bytes()
+}
+
+// Node is a syntax tree node.
+type Node interface{ Pos() int }
+
+// Ident is a name.
+type Ident struct{}
+
+func (Ident) Pos() int    { return 1 }
+func (Ident) Name() string { return "x" }
+
+// Lit is a literal.
+type Lit struct{}
+
+func (Lit) Pos() int { return 2 }
+
+func Visit(n Node) {
+	switch x := n.(type) {
+	case Ident:
+		x.Name()
+	case Lit, nil:
+		x.Pos()
+	}
+}
+
+// List visits its items.
+type List []Ident
+
+func (l List) Names() {
+	for _, l := range l {
+		l.Name()
+	}
+}
 `)
 	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {
@@ -1144,9 +1182,49 @@ func Shadow() {
 		// The local named lock is defined by this statement: on its right,
 		// lock is still the package.
 		{"app.Shadow", "lock.Counter.Add[exact]"},
+		// A generic receiver's method returning P: P's constraint.
+		{"app.Curve.Fresh", "app.Point.Bytes[exact] app.Curve.newPoint[exact]"},
+		// A type switch: x is Ident in its case, and n's type (Node) in a
+		// case listing several types.
+		{"app.Visit", "app.Ident.Name[exact] app.Node.Pos[exact]"},
+		// The loop variable l shadows the receiver l inside the loop.
+		{"app.List.Names", "app.Ident.Name[exact]"},
 	} {
 		if got := callees(c.name); got != c.want {
 			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
 		}
+	}
+}
+
+// TestStdModuleQualifiers checks that, in a tree declaring module std
+// (GOROOT/src), an import of a package whose name differs from its
+// directory (math/rand/v2 holds package rand) resolves.
+func TestStdModuleQualifiers(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module std\n\ngo 1.24\n")
+	write("math/rand/v2/rand.go", "package rand\n\n// Uint64 returns a number.\nfunc Uint64() uint64 { return 4 }\n")
+	write("app/app.go", "package app\n\nimport \"math/rand/v2\"\n\nfunc Roll() uint64 { return rand.Uint64() }\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{Platform: "linux/amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	roll, _ := st.Lookup("app.Roll")
+	refs, err := st.Callees(roll[0].ID, true)
+	if err != nil || len(refs) != 1 || refs[0].Qualified != "math/rand/v2/rand.Uint64" || refs[0].External {
+		t.Errorf("app.Roll callees = %+v, %v; want the internal math/rand/v2/rand.Uint64", refs, err)
 	}
 }
