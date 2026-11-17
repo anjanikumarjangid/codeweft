@@ -22,6 +22,8 @@ import (
 //	    ["m", EXPR, NAME]    the method NAME on EXPR
 //	["s", EXPR, NAME]    the field NAME of EXPR
 //	["e", EXPR]          an element of EXPR: an index, or a range value
+//	["T", TYPE, NAME]    a type parameter NAME of the function, constrained by TYPE
+//	["tp", TYPE, I]      the I-th type parameter of the generic type TYPE
 //
 // Pointers and values are not told apart: a method is found either way.
 // Anything else (a function value, a closure result, an untyped constant)
@@ -44,6 +46,57 @@ type goEncoder struct {
 	aliases  map[string]string    // import name -> path
 	locals   map[string][]goLocal // in source order
 	visiting map[string]bool
+	// typeParams maps a type parameter in scope to its constraint's
+	// encoding: the function's own (["T", constraint, name]) and the
+	// receiver type's (["tp", type, index], declared with the type).
+	typeParams map[string]any
+}
+
+// goTypeParams collects the type parameters in scope in a function
+// declaration.
+func goTypeParams(fset *token.FileSet, d *ast.FuncDecl) map[string]any {
+	tps := map[string]any{}
+	if d.Recv != nil && len(d.Recv.List) > 0 {
+		e := d.Recv.List[0].Type
+		if s, ok := e.(*ast.StarExpr); ok {
+			e = s.X
+		}
+		var base ast.Expr
+		var params []ast.Expr
+		switch x := e.(type) {
+		case *ast.IndexExpr:
+			base, params = x.X, []ast.Expr{x.Index}
+		case *ast.IndexListExpr:
+			base, params = x.X, x.Indices
+		}
+		if id, ok := base.(*ast.Ident); ok {
+			for i, p := range params {
+				if pid, ok := p.(*ast.Ident); ok && pid.Name != "_" {
+					tps[pid.Name] = []any{"tp", id.Name, i}
+				}
+			}
+		}
+	}
+	if d.Type.TypeParams != nil {
+		for _, f := range d.Type.TypeParams.List {
+			for _, n := range f.Names {
+				tps[n.Name] = []any{"T", printNode(fset, f.Type), n.Name}
+			}
+		}
+	}
+	return tps
+}
+
+// typeParam returns the constraint encoding when e names a type
+// parameter in scope (or points to one), or nil.
+func (g *goEncoder) typeParam(e ast.Expr) any {
+	if s, ok := e.(*ast.StarExpr); ok {
+		e = s.X
+	}
+	if id, ok := e.(*ast.Ident); ok {
+		return g.typeParams[id.Name]
+	}
+	return nil
 }
 
 // lookup returns the definition of a local name in effect at pos: the last
@@ -209,6 +262,9 @@ func (g *goEncoder) ident(name string, pos token.Pos) any {
 	defer delete(g.visiting, name)
 	switch {
 	case l.typ != nil:
+		if tp := g.typeParam(l.typ); tp != nil {
+			return tp
+		}
 		return []any{"t", g.typeText(l.typ)}
 	case l.val != nil:
 		return g.encode(l.val)

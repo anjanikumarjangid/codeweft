@@ -1050,3 +1050,103 @@ func TestPlatform(t *testing.T) {
 		t.Errorf("invalid platform: %v", err)
 	}
 }
+
+// TestGoExpressionTypes covers receivers whose type the index works out
+// from declarations: anonymous struct and interface types, generic type
+// parameters, and locals that shadow a package.
+func TestGoExpressionTypes(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("lock/lock.go", "package lock\n\n// Mutex locks.\ntype Mutex struct{}\n\nfunc (m *Mutex) Lock() {}\n\n// Counter counts.\ntype Counter struct{}\n\nfunc (c *Counter) Add(n int) int { return n }\n")
+	write("app/app.go", `package app
+
+import (
+	"example.com/m/lock"
+)
+
+// Point is implemented by curve points.
+type Point[P any] interface {
+	Add(p P) P
+	Bytes() []byte
+}
+
+// Curve works on points of type P.
+type Curve[P Point[P]] struct{ base P }
+
+func (c *Curve[P]) Double(p P) []byte {
+	return p.Add(p).Bytes()
+}
+
+func Sum[P Point[P]](a, b P) []byte {
+	return a.Add(b).Bytes()
+}
+
+var registry struct {
+	lock.Mutex
+	stats struct{ calls lock.Counter }
+}
+
+func Register() {
+	registry.Lock()
+	registry.stats.calls.Add(1)
+	var r interface{ lock.Mutex }
+	_ = r
+}
+
+func Shadow() {
+	lock := lock.Counter{}
+	lock.Add(2)
+}
+`)
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{Platform: "linux/amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		refs, err := st.Callees(syms[0].ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range refs {
+			out = append(out, r.Qualified+"["+r.Confidence+"]")
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// A type parameter has its constraint's methods; Add returns P, so
+		// .Bytes() is looked up on the constraint again, never as an
+		// external "app.P.Bytes".
+		{"app.Curve.Double", "app.Point.Bytes[exact] app.Point.Add[exact]"},
+		{"app.Sum", "app.Point.Bytes[exact] app.Point.Add[exact]"},
+		// An anonymous struct: a method of its embedded type, and a field
+		// chain through a nested anonymous struct.
+		{"app.Register", "lock.Mutex.Lock[exact] lock.Counter.Add[exact]"},
+		// The local named lock is defined by this statement: on its right,
+		// lock is still the package.
+		{"app.Shadow", "lock.Counter.Add[exact]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"go/ast"
 	"go/parser"
+	"go/token"
 	"strings"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
@@ -15,7 +16,15 @@ type goType struct {
 	expr  ast.Expr
 	file  int64
 	named string
+	// bind gives the types of type parameters named in expr: the
+	// arguments of a generic type's instantiation, or, for a type
+	// parameter with a self-referential constraint (P Point[P]), the
+	// constraint itself.
+	bind map[string]*goType
 }
+
+// sub is a part of t's type expression, read in t's context.
+func (t *goType) sub(e ast.Expr) *goType { return &goType{expr: e, file: t.file, bind: t.bind} }
 
 // goTyper works out the types of encoded Go expressions (see goexpr.go)
 // from the declarations in the index: function and method results, field
@@ -113,24 +122,37 @@ func (g *goTyper) eval(node any, file int64, depth int) *goType {
 				return nil
 			}
 			name, _ := f[2].(string)
-			q, _ := g.named(g.eval(f[1], file, depth+1), depth+1)
-			if q == "" {
-				return nil
-			}
-			if _, d, ok := g.method(q, name, depth+1); ok {
-				return g.result(d, name, true)
+			recv := g.eval(f[1], file, depth+1)
+			if owner, d, ok := g.methodOf(recv, name, depth+1); ok {
+				res := g.result(d, name, true)
+				if res != nil {
+					res.bind = g.instance(owner, recv, depth+1)
+				}
+				return res
 			}
 		}
 		return nil
+	case "T":
+		// A type parameter of the function itself: its constraint, in
+		// which the parameter's own name stands for the constraint.
+		t := g.written(str(1), file)
+		if t != nil {
+			t.bind = map[string]*goType{str(2): t}
+		}
+		return t
+	case "tp":
+		// The constraint of type parameter number n[2] of the generic
+		// type n[1], declared as `type Curve[P Point[P]] struct`.
+		if len(n) < 3 {
+			return nil
+		}
+		idx, _ := n[2].(float64)
+		return g.typeParam(g.in.GoFiles[file].Qual+"."+str(1), int(idx))
 	case "s":
 		if len(n) < 3 {
 			return nil
 		}
-		q, _ := g.named(g.eval(n[1], file, depth+1), depth+1)
-		if q == "" {
-			return nil
-		}
-		return g.field(q, str(2), depth+1)
+		return g.fieldOf(g.eval(n[1], file, depth+1), str(2), depth+1)
 	case "e":
 		if len(n) < 2 {
 			return nil
@@ -197,6 +219,108 @@ func (g *goTyper) result(d store.GoDecl, name string, isMethod bool) *goType {
 	return &goType{expr: ft.Results.List[0].Type, file: d.File}
 }
 
+// typeParams returns the type parameter list of the generic type q, from
+// its declaration, and the file it is declared in.
+func (g *goTyper) typeParams(q string) ([]*ast.Field, int64) {
+	d := g.in.GoTypes[q]
+	s := strings.TrimPrefix(d.Signature, "type ")
+	open := strings.IndexByte(s, '[')
+	if open < 0 || strings.IndexByte(s[:open], ' ') >= 0 {
+		return nil, 0
+	}
+	// Parse the parameter list in a declaration of its own:
+	// type X[P Point[P], Q any] int.
+	f, err := parser.ParseFile(token.NewFileSet(), "", "package p; type X"+s[open:open+closing(s[open:])+1]+" int", 0)
+	if err != nil || len(f.Decls) == 0 {
+		return nil, 0
+	}
+	ts := f.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
+	if ts.TypeParams == nil {
+		return nil, 0
+	}
+	return ts.TypeParams.List, d.File
+}
+
+// typeParamNames lists the type parameter names of the generic type q.
+func (g *goTyper) typeParamNames(q string) []string {
+	list, _ := g.typeParams(q)
+	var names []string
+	for _, f := range list {
+		for _, n := range f.Names {
+			names = append(names, n.Name)
+		}
+	}
+	return names
+}
+
+// typeParam returns the constraint of the i-th type parameter of the
+// generic type q; in it, the parameter's own name stands for the
+// constraint (P Point[P]).
+func (g *goTyper) typeParam(q string, i int) *goType {
+	list, file := g.typeParams(q)
+	n := 0
+	for _, f := range list {
+		for _, name := range f.Names {
+			if n == i {
+				t := &goType{expr: f.Type, file: file}
+				t.bind = map[string]*goType{name.Name: t}
+				return t
+			}
+			n++
+		}
+	}
+	return nil
+}
+
+// instance binds the type parameters of the generic type owner to the
+// type arguments recv was instantiated with (Curve[P256Point]), so that a
+// method result written as a parameter (func (c *Curve[P]) Base() P) gets
+// the argument's type. It returns nil when recv is not an instance of
+// owner, for example when the method is promoted from an embedded type.
+func (g *goTyper) instance(owner string, recv *goType, depth int) map[string]*goType {
+	if recv == nil || depth > maxTypeDepth {
+		return nil
+	}
+	params := g.typeParamNames(owner)
+	if len(params) == 0 {
+		return nil
+	}
+	e := recv.expr
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+		} else if s, ok := e.(*ast.StarExpr); ok {
+			e = s.X
+		} else {
+			break
+		}
+	}
+	if id, ok := e.(*ast.Ident); ok { // a type parameter: what it is bound to
+		if b, ok := recv.bind[id.Name]; ok && b != recv {
+			return g.instance(owner, b, depth+1)
+		}
+		return nil
+	}
+	var args []ast.Expr
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		args = []ast.Expr{x.Index}
+	case *ast.IndexListExpr:
+		args = x.Indices
+	}
+	if len(args) != len(params) {
+		return nil
+	}
+	if q, _ := g.named(recv, depth); q != owner {
+		return nil
+	}
+	bind := map[string]*goType{}
+	for i, p := range params {
+		bind[p] = recv.sub(args[i])
+	}
+	return bind
+}
+
 // closing returns the index of the bracket closing s[0].
 func closing(s string) int {
 	depth := 0
@@ -246,10 +370,18 @@ func (g *goTyper) named(t *goType, depth int) (string, bool) {
 	var q string
 	switch x := e.(type) {
 	case *ast.Ident:
+		if b, ok := t.bind[x.Name]; ok && b.expr != x {
+			return g.named(b, depth+1)
+		}
 		if goPredeclared[x.Name] {
 			return "", true
 		}
 		q = g.in.GoFiles[t.file].Qual + "." + x.Name
+		if _, alias := g.names.aliases[q]; g.in.GoTypes[q].Kind == "" && !alias {
+			// Not a type of the package: a type parameter, or a type
+			// declared inside a function. Unknown, never "external".
+			return "", false
+		}
 	case *ast.SelectorExpr:
 		id, ok := x.X.(*ast.Ident)
 		if !ok {
@@ -313,15 +445,15 @@ func (g *goTyper) elem(t *goType, depth int) *goType {
 	}
 	switch x := e.(type) {
 	case *ast.ArrayType:
-		return &goType{expr: x.Elt, file: t.file}
+		return t.sub(x.Elt)
 	case *ast.MapType:
-		return &goType{expr: x.Value, file: t.file}
+		return t.sub(x.Value)
 	case *ast.ChanType:
-		return &goType{expr: x.Value, file: t.file}
+		return t.sub(x.Value)
 	case *ast.Ellipsis:
-		return &goType{expr: x.Elt, file: t.file}
+		return t.sub(x.Elt)
 	}
-	if q, _ := g.named(&goType{expr: e, file: t.file}, depth+1); q != "" {
+	if q, _ := g.named(t.sub(e), depth+1); q != "" {
 		return g.elem(g.underlying(q), depth+1)
 	}
 	return nil
@@ -362,6 +494,118 @@ func (g *goTyper) method(q, name string, depth int) (string, store.GoDecl, bool)
 	return "", store.GoDecl{}, false
 }
 
+// literal returns the struct or interface type literal t denotes, if it is
+// one: the type of `var mu struct{ sync.Mutex; n int }`.
+func literal(t *goType) ast.Expr {
+	if t == nil || t.expr == nil {
+		return nil
+	}
+	e := t.expr
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+		} else if s, ok := e.(*ast.StarExpr); ok {
+			e = s.X
+		} else {
+			break
+		}
+	}
+	switch e.(type) {
+	case *ast.StructType, *ast.InterfaceType:
+		return e
+	}
+	return nil
+}
+
+// embeddedName is the field name of an embedded field: its type's name.
+func embeddedName(e ast.Expr) string {
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.IndexListExpr:
+			e = x.X
+		case *ast.SelectorExpr:
+			return x.Sel.Name
+		case *ast.Ident:
+			return x.Name
+		default:
+			return ""
+		}
+	}
+}
+
+// fieldOf returns the type of field name of t, a named type or a struct
+// type literal, also when promoted from an embedded field.
+func (g *goTyper) fieldOf(t *goType, name string, depth int) *goType {
+	if t == nil || depth > maxTypeDepth {
+		return nil
+	}
+	if q, _ := g.named(t, depth); q != "" {
+		return g.field(q, name, depth)
+	}
+	st, ok := literal(t).(*ast.StructType)
+	if !ok {
+		return nil
+	}
+	var embedded []*goType
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 {
+			et := t.sub(f.Type)
+			if embeddedName(f.Type) == name {
+				return et
+			}
+			embedded = append(embedded, et)
+			continue
+		}
+		for _, n := range f.Names {
+			if n.Name == name {
+				return t.sub(f.Type)
+			}
+		}
+	}
+	for _, et := range embedded {
+		if ft := g.fieldOf(et, name, depth+1); ft != nil {
+			return ft
+		}
+	}
+	return nil
+}
+
+// methodOf finds method name on t: a named type, or a struct or interface
+// type literal through its embedded types. It returns the declaring type.
+func (g *goTyper) methodOf(t *goType, name string, depth int) (string, store.GoDecl, bool) {
+	if t == nil || depth > maxTypeDepth {
+		return "", store.GoDecl{}, false
+	}
+	if q, _ := g.named(t, depth); q != "" {
+		return g.method(q, name, depth)
+	}
+	var embedded []ast.Expr
+	switch lit := literal(t).(type) {
+	case *ast.StructType:
+		for _, f := range lit.Fields.List {
+			if len(f.Names) == 0 {
+				embedded = append(embedded, f.Type)
+			}
+		}
+	case *ast.InterfaceType:
+		for _, m := range lit.Methods.List {
+			if len(m.Names) == 0 {
+				embedded = append(embedded, m.Type)
+			}
+		}
+	}
+	for _, e := range embedded {
+		if owner, d, ok := g.methodOf(t.sub(e), name, depth+1); ok {
+			return owner, d, true
+		}
+	}
+	return "", store.GoDecl{}, false
+}
+
 // exprCall resolves a Go method call whose receiver was encoded by the
 // parser. A receiver of unknown type falls back to the unique method name;
 // one of a known type that is not a named type (a predeclared type such
@@ -373,11 +617,17 @@ func (r resolver) exprCall(c store.RawCall, path string) (int64, string, string)
 	if !ok || json.Unmarshal([]byte(c.A), &node) != nil {
 		return r.byMethodName(c.B)
 	}
-	q, known := g.named(g.eval(node, file, 0), 0)
+	t := g.eval(node, file, 0)
+	q, known := g.named(t, 0)
 	switch {
 	case !known:
 		return r.byMethodName(c.B)
 	case q == "":
+		// A struct or interface literal: a method promoted from what it
+		// embeds. Anything else (error, a slice, a function type): no edge.
+		if owner, _, ok := g.methodOf(t, c.B, 0); ok {
+			return r.exact(owner + "." + c.B)
+		}
 		return 0, "", ""
 	case g.in.GoTypes[q].Kind == "":
 		return 0, q + "." + c.B, "external" // a type outside the repository

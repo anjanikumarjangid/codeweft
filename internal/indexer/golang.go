@@ -158,7 +158,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 			add(d.Name.Name, qualified, kind, funcSignature(fset, d), d.Doc.Text(), d)
 			if d.Body != nil {
 				enc := &goEncoder{fset: fset, src: src, recvVar: recvVar, recvType: recvExpr, aliases: aliases,
-					locals: goLocals(d), visiting: map[string]bool{}}
+					locals: goLocals(d), visiting: map[string]bool{}, typeParams: goTypeParams(fset, d)}
 				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
 			}
 
