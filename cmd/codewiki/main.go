@@ -35,7 +35,9 @@ Usage:
   codewiki serve  [--db FILE] [--watch]
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
-look for .codewiki/index.db in the current directory.
+look for .codewiki/index.db in the current directory. reindex, watch and
+serve --watch reuse the --include-tests and --exclude settings the index was
+built with; flags passed to reindex override them.
 `
 
 func main() {
@@ -99,10 +101,7 @@ func runIndex(args []string) error {
 	}
 	defer st.Close()
 
-	opts := indexer.Options{IncludeTests: *tests}
-	if *exclude != "" {
-		opts.Exclude = strings.Split(*exclude, ",")
-	}
+	opts := indexer.Options{IncludeTests: *tests, Exclude: splitList(*exclude)}
 	start := time.Now()
 	res, err := indexer.Index(root, st, opts)
 	if err != nil {
@@ -206,10 +205,20 @@ func runReindex(args []string) error {
 			return errors.New("no PATH given and none recorded in the index")
 		}
 	}
-	opts := indexer.Options{IncludeTests: *tests}
-	if *exclude != "" {
-		opts.Exclude = strings.Split(*exclude, ",")
+	// Start from the options the index was built with; flags given on this
+	// command line override them (and are recorded for later runs).
+	opts, err := indexer.StoredOptions(st)
+	if err != nil {
+		return err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "include-tests":
+			opts.IncludeTests = *tests
+		case "exclude":
+			opts.Exclude = splitList(*exclude)
+		}
+	})
 	start := time.Now()
 	res, err := indexer.Reindex(root, st, opts)
 	if err != nil {
@@ -343,7 +352,11 @@ func runServe(args []string) error {
 		if err != nil || root == "" {
 			return errors.New("--watch needs an index that records its root; run `codewiki index PATH` first")
 		}
-		go indexer.Watch(ctx, root, st, indexer.Options{}, 2*time.Second, func(res indexer.Result, err error) { //nolint:errcheck
+		opts, err := indexer.StoredOptions(st)
+		if err != nil {
+			return err
+		}
+		go indexer.Watch(ctx, root, st, opts, 2*time.Second, func(res indexer.Result, err error) { //nolint:errcheck
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "codewiki: re-index failed:", err)
 			}
@@ -369,10 +382,14 @@ func runWatch(args []string) error {
 			return errors.New("no PATH given and none recorded in the index")
 		}
 	}
+	opts, err := indexer.StoredOptions(st)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	fmt.Fprintf(os.Stderr, "watching %s (Ctrl-C to stop)\n", root)
-	return indexer.Watch(ctx, root, st, indexer.Options{}, *interval, func(res indexer.Result, err error) {
+	return indexer.Watch(ctx, root, st, opts, *interval, func(res indexer.Result, err error) {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "re-index failed:", err)
 			return
@@ -462,6 +479,17 @@ func interspersed(fs *flag.FlagSet, args []string) []string {
 		}
 	}
 	return append(flags, rest...)
+}
+
+// splitList splits a comma-separated flag value, dropping empty entries.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func printJSON(v any) error {

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -79,10 +80,31 @@ func languageFor(path string) *language {
 }
 
 // Options controls what gets indexed.
+//
+// Every run records its options in the index, so later incremental runs
+// (reindex, watch, serve --watch) cover the same set of files. Without that,
+// a watcher started with default options would drop test files or
+// re-add excluded directories on the first save.
 type Options struct {
-	IncludeTests bool     // index test files
-	Exclude      []string // extra directory names to skip
-	MaxFileBytes int64    // skip larger files (likely generated); 0 means 1 MiB
+	IncludeTests bool     `json:"include_tests,omitempty"`  // index test files
+	Exclude      []string `json:"exclude,omitempty"`        // extra directory names to skip
+	MaxFileBytes int64    `json:"max_file_bytes,omitempty"` // skip larger files (likely generated); 0 means 1 MiB
+}
+
+const optionsKey = "options"
+
+// StoredOptions returns the options of the last run recorded in the index,
+// or the zero Options for an index that recorded none.
+func StoredOptions(st *store.Store) (Options, error) {
+	var opts Options
+	v, err := st.Meta(optionsKey)
+	if err != nil || v == "" {
+		return opts, err
+	}
+	if err := json.Unmarshal([]byte(v), &opts); err != nil {
+		return Options{}, fmt.Errorf("stored index options: %w", err)
+	}
+	return opts, nil
 }
 
 // Result summarises an indexing run.
@@ -116,6 +138,10 @@ func Reindex(root string, st *store.Store, opts Options) (Result, error) {
 func run(root string, st *store.Store, opts Options, incremental bool) (Result, error) {
 	var res Result
 	root, err := filepath.Abs(root)
+	if err != nil {
+		return res, err
+	}
+	saved, err := json.Marshal(opts) // as given, before defaults are filled in
 	if err != nil {
 		return res, err
 	}
@@ -279,6 +305,9 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 		return res, fmt.Errorf("resolve calls: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
+		return res, err
+	}
+	if err := st.SetMeta(optionsKey, string(saved)); err != nil {
 		return res, err
 	}
 	return res, st.SetMeta("root", root)

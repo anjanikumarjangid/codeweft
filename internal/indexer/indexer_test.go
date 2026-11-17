@@ -332,6 +332,54 @@ func TestReindexIncremental(t *testing.T) {
 	}
 }
 
+// TestStoredOptionsKeepFileSet guards against incremental runs silently
+// changing which files are indexed: an index built with --include-tests and
+// --exclude must keep that file set when reindex or watch run later with
+// the stored options.
+func TestStoredOptionsKeepFileSet(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if opts, err := indexer.StoredOptions(st); err != nil || opts.IncludeTests || len(opts.Exclude) != 0 {
+		t.Fatalf("empty index: options %+v, %v; want zero options", opts, err)
+	}
+	want := indexer.Options{IncludeTests: true, Exclude: []string{"py"}}
+	res, err := indexer.Index(repo, st, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 14 default files + 1 test file - 4 Python files under py/.
+	if res.Files != 11 {
+		t.Fatalf("indexed %d files, want 11", res.Files)
+	}
+	got, err := indexer.StoredOptions(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IncludeTests || len(got.Exclude) != 1 || got.Exclude[0] != "py" || got.MaxFileBytes != 0 {
+		t.Fatalf("stored options = %+v, want %+v", got, want)
+	}
+
+	// Touch a file and re-index the way watch does: nothing may be removed
+	// or added besides the changed file.
+	svc := filepath.Join(repo, "payments", "service.go")
+	data, _ := os.ReadFile(svc)
+	if err := os.WriteFile(svc, append(data, "\n// edited\n"...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = indexer.Reindex(repo, st, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 1 || res.Unchanged != 10 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 10 unchanged, 0 removed", res)
+	}
+}
+
 func TestWatchPicksUpChanges(t *testing.T) {
 	repo := copyTree(t, "../../testdata/sample")
 	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
