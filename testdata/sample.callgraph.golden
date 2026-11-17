@@ -19,6 +19,9 @@ com.shop.orders.Order.total -> java.util.List.size [external] line 15
 com.shop.orders.OrderController.place -> com.shop.orders.OrderService.place [exact] line 21
 com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRequest.customerId [exact] line 21
 com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRequest.items [exact] line 21
+com.shop.orders.InMemoryOrderRepository.save -> com.shop.orders.Order.id [exact] line 15
+com.shop.orders.InMemoryOrderRepository.save -> java.util.Map.put [external] line 15
+com.shop.orders.InMemoryOrderRepository.findById -> java.util.Map.get [external] line 19
 com.shop.orders.OrderService.place -> com.shop.orders.Order.create [exact] line 20
 com.shop.orders.OrderService.place -> com.shop.billing.Billing.charge [exact] line 21
 com.shop.orders.OrderService.place -> com.shop.orders.Order.total [exact] line 21

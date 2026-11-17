@@ -26,12 +26,13 @@ import (
 
 // FileResult is everything extracted from one source file.
 type FileResult struct {
-	File      store.File
-	Symbols   []store.Symbol
-	Imports   []store.Import
-	Fields    []store.Field
-	Calls     []store.RawCall
-	Endpoints []store.Endpoint
+	File       store.File
+	Symbols    []store.Symbol
+	Imports    []store.Import
+	Fields     []store.Field
+	Supertypes []store.Supertype
+	Calls      []store.RawCall
+	Endpoints  []store.Endpoint
 }
 
 // language describes how to recognise and parse one language.
@@ -330,6 +331,11 @@ func write(tx *store.Tx, fr *FileResult) error {
 	}
 	for _, f := range fr.Fields {
 		if err := tx.AddField(id, f); err != nil {
+			return err
+		}
+	}
+	for _, st := range fr.Supertypes {
+		if err := tx.AddSupertype(id, st); err != nil {
 			return err
 		}
 	}

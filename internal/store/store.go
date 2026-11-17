@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "4"
+const SchemaVersion = "5"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS endpoints (
 	line      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS endpoints_file ON endpoints(file_id);
+CREATE TABLE IF NOT EXISTS supertypes (
+	file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	owner    TEXT NOT NULL,
+	kind     TEXT NOT NULL,
+	type_ref TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS supertypes_file ON supertypes(file_id);
+CREATE TABLE IF NOT EXISTS type_edges (
+	sub_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+	super_id  INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+	super_ref TEXT NOT NULL,
+	how       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS type_edges_sub ON type_edges(sub_id);
+CREATE INDEX IF NOT EXISTS type_edges_super ON type_edges(super_id);
+CREATE INDEX IF NOT EXISTS type_edges_ref ON type_edges(super_ref);
 CREATE TABLE IF NOT EXISTS edges (
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
@@ -111,7 +127,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -166,6 +182,22 @@ type Endpoint struct {
 	File      string `json:"file"`
 	Line      int    `json:"line"`
 }
+
+// Supertype records that Owner (a qualified type) declares TypeRef as a
+// supertype. TypeRef uses the same encoding as Field.TypeRef.
+type Supertype struct {
+	Owner   string
+	Kind    string // SuperExtends, SuperImplements or SuperEmbeds
+	TypeRef string
+}
+
+// How a type relates to its supertype.
+const (
+	SuperExtends    = "extends"    // class inheritance, or an interface extending (Go: embedding) another
+	SuperImplements = "implements" // declared, as in Java
+	SuperEmbeds     = "embeds"     // Go struct embedding: reuse, not subtyping
+	SuperMethodSet  = "method set" // Go: has every method of the interface
+)
 
 // Call forms understood by the resolver.
 const (

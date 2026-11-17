@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 14 || syms != 55 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 55", files, syms)
+	if files != 14 || syms != 82 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 82", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -185,6 +185,111 @@ func TestCallGraphGolden(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("call graph differs from %s:\n%s", golden, got)
+	}
+}
+
+// TestTypeHierarchyGolden compares every direct supertype relation in the
+// fixture against a checked-in expectation.
+func TestTypeHierarchyGolden(t *testing.T) {
+	st := indexSample(t)
+	syms, err := st.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, s := range syms {
+		sups, err := st.Supertypes(s.ID, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range sups {
+			ext := ""
+			if u.External {
+				ext = " (external)"
+			}
+			lines = append(lines, fmt.Sprintf("%s -> %s [%s]%s", s.Qualified, u.Qualified, u.How, ext))
+		}
+	}
+	got := strings.Join(lines, "\n") + "\n"
+	golden := "../../testdata/sample.types.golden"
+	if *update {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("%v (run with -update to create it)", err)
+	}
+	if got != string(want) {
+		t.Errorf("type hierarchy differs from %s:\n%s", golden, got)
+	}
+}
+
+// TestImplementations spells out the cases the type hierarchy must get
+// right, independently of the golden file.
+func TestImplementations(t *testing.T) {
+	st := indexSample(t)
+	one := func(name string) store.Symbol {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		return syms[0]
+	}
+	names := func(links []store.TypeLink, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, l := range links {
+			out = append(out, fmt.Sprintf("%s[%s,%d]", l.Qualified, l.How, l.Depth))
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, got, want string }{
+		// Go: by method set. LoggingGateway gets its methods from the embedded
+		// *StripeGateway; FakeGateway.Refund() has the wrong parameters; the
+		// interface that embeds Gateway extends it.
+		{"Gateway implementations", names(st.Subtypes(one("payments.Gateway").ID, 5)),
+			"payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
+		// DoubleGateway's Void is ambiguous (two embeddings at depth 1).
+		{"VoidingGateway implementations", names(st.Subtypes(one("payments.VoidingGateway").ID, 5)),
+			"payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+		// Overlapping embedded interfaces: the method set is their union.
+		{"AuditedGateway implementations", names(st.Subtypes(one("payments.AuditedGateway").ID, 5)),
+			"payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+		{"embedding is not subtyping", names(st.Subtypes(one("payments.StripeGateway").ID, 5)), ""},
+		{"LoggingGateway supertypes", names(st.Supertypes(one("payments.LoggingGateway").ID, 1)),
+			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1]"},
+		// The predeclared error interface contributes Error() string.
+		{"CodedError implementations", names(st.Subtypes(one("payments.CodedError").ID, 5)),
+			"payments.DeclineError[method set,1]"},
+		// Java: declared, followed through the class hierarchy.
+		{"OrderRepository implementations", names(st.Subtypes(one("com.shop.orders.OrderRepository").ID, 5)),
+			"com.shop.orders.InMemoryOrderRepository[implements,1] com.shop.orders.CountingOrderRepository[extends,2]"},
+		{"CountingOrderRepository supertypes", names(st.Supertypes(one("com.shop.orders.CountingOrderRepository").ID, 5)),
+			"com.shop.orders.InMemoryOrderRepository[extends,1] com.shop.orders.OrderRepository[implements,2] java.io.Serializable[implements,1]"},
+		{"implementers of an external interface", names(st.ExternalSubtypes("Serializable")),
+			"com.shop.orders.CountingOrderRepository[implements,1]"},
+		// Python: base classes.
+		{"ItemRepository subclasses", names(st.Subtypes(one("py.inventory.models.ItemRepository").ID, 5)),
+			"py.inventory.models.CachedItemRepository[extends,1]"},
+		// Methods: implementations and overrides, and the reverse.
+		{"Gateway.Charge implementations", names(st.MethodImplementations(one("payments.Gateway.Charge"), 5)),
+			"payments.StripeGateway.Charge[implements,1]"},
+		{"OrderRepository.save implementations", names(st.MethodImplementations(one("com.shop.orders.OrderRepository.save"), 5)),
+			"com.shop.orders.InMemoryOrderRepository.save[implements,1] com.shop.orders.CountingOrderRepository.save[implements,2]"},
+		{"ItemRepository.get overrides", names(st.MethodImplementations(one("py.inventory.models.ItemRepository.get"), 5)),
+			"py.inventory.models.CachedItemRepository.get[overrides,1]"},
+		{"CountingOrderRepository.save supers", names(st.MethodSupers(one("com.shop.orders.CountingOrderRepository.save"), 5)),
+			"com.shop.orders.InMemoryOrderRepository.save[overrides,1] com.shop.orders.OrderRepository.save[implements,2]"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s:\n got: %s\nwant: %s", c.name, c.got, c.want)
+		}
 	}
 }
 
@@ -493,5 +598,60 @@ func TestEndpointsAndOverview(t *testing.T) {
 	}
 	if !entries["checkout/cmd/server/main.main"] || !entries["py.inventory.api.__main__"] {
 		t.Errorf("entry points = %+v", o.EntryPoints)
+	}
+}
+
+// TestReindexUpdatesTypeHierarchy checks that the type hierarchy follows
+// an incremental re-index: a changed signature removes an implementation,
+// and relations declared in unchanged files stay.
+func TestReindexUpdatesTypeHierarchy(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	implements := func(sub, super string) bool {
+		t.Helper()
+		syms, err := st.Lookup(super)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", super, syms, err)
+		}
+		subs, err := st.Subtypes(syms[0].ID, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range subs {
+			if s.Qualified == sub {
+				return true
+			}
+		}
+		return false
+	}
+	if !implements("payments.StripeGateway", "payments.Gateway") {
+		t.Fatal("StripeGateway should implement Gateway before the change")
+	}
+
+	svc := filepath.Join(repo, "payments", "service.go")
+	data, _ := os.ReadFile(svc)
+	changed := strings.Replace(string(data), "func (g *StripeGateway) Refund(chargeID string) error", "func (g *StripeGateway) Refund(chargeID int) error", 1)
+	if changed == string(data) {
+		t.Fatal("fixture changed: StripeGateway.Refund not found")
+	}
+	if err := os.WriteFile(svc, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := indexer.Reindex(repo, st, indexer.Options{})
+	if err != nil || res.Files != 1 {
+		t.Fatalf("reindex: %+v, %v", res, err)
+	}
+	if implements("payments.StripeGateway", "payments.Gateway") {
+		t.Error("StripeGateway.Refund(int) no longer matches Gateway, but the implementation is still listed")
+	}
+	if !implements("com.shop.orders.CountingOrderRepository", "com.shop.orders.OrderRepository") {
+		t.Error("a relation declared in an unchanged file was lost")
 	}
 }

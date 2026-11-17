@@ -45,7 +45,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {
@@ -124,6 +124,13 @@ func (t *Tx) AddImport(fileID int64, imp Import) error {
 func (t *Tx) AddField(fileID int64, f Field) error {
 	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref) VALUES(?, ?, ?, ?)`,
 		fileID, f.Owner, f.Name, f.TypeRef)
+	return err
+}
+
+// AddSupertype records a declared supertype of a type.
+func (t *Tx) AddSupertype(fileID int64, st Supertype) error {
+	_, err := t.exec(`INSERT INTO supertypes(file_id, owner, kind, type_ref) VALUES(?, ?, ?, ?)`,
+		fileID, st.Owner, st.Kind, st.TypeRef)
 	return err
 }
 

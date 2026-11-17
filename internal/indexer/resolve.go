@@ -47,7 +47,10 @@ func resolve(tx *store.Tx, module string) (int, error) {
 		}
 		edges = append(edges, store.Edge{FromID: from, ToID: toID, ToRef: ref, Line: c.Line, Confidence: conf})
 	}
-	return resolved, tx.ReplaceEdges(edges)
+	if err := tx.ReplaceEdges(edges); err != nil {
+		return 0, err
+	}
+	return resolved, resolveTypes(tx, r)
 }
 
 type resolver struct{ in *store.ResolveInput }

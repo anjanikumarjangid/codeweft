@@ -29,6 +29,7 @@ Usage:
   codewiki symbol [--db FILE] [--json] NAME
   codewiki reindex [--db FILE] [--include-tests] [--exclude dir1,dir2] [PATH]
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+  codewiki impl   [--db FILE] [--up] [--depth N] NAME
   codewiki file   [--db FILE] [--json] PATH
   codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
   codewiki overview [--db FILE] [--json]
@@ -60,6 +61,8 @@ func main() {
 		err = runSymbol(os.Args[2:])
 	case "deps":
 		err = runDeps(os.Args[2:])
+	case "impl":
+		err = runImpl(os.Args[2:])
 	case "reindex":
 		err = runReindex(os.Args[2:])
 	case "file":
@@ -338,6 +341,75 @@ func runDeps(args []string) error {
 		}
 	}
 	walk(root.Children, "  ")
+	return nil
+}
+
+// runImpl prints what implements, extends or overrides NAME, or with --up,
+// what NAME implements, extends or overrides.
+func runImpl(args []string) error {
+	fs := flag.NewFlagSet("impl", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	up := fs.Bool("up", false, "show what NAME extends, implements or overrides")
+	depth := fs.Int("depth", 5, "levels to follow")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	if fs.NArg() != 1 {
+		return errors.New("impl needs exactly one NAME")
+	}
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	syms, err := st.Lookup(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if len(syms) > 1 && store.SameName(syms) {
+		syms = syms[:1]
+	}
+	var links []store.TypeLink
+	switch {
+	case len(syms) == 0 && !*up:
+		links, err = st.ExternalSubtypes(fs.Arg(0))
+	case len(syms) == 0:
+		return fmt.Errorf("no symbol named %q", fs.Arg(0))
+	case len(syms) > 1:
+		for _, s := range syms {
+			fmt.Println(s.Qualified)
+		}
+		return fmt.Errorf("%q is ambiguous; use one of the qualified names above", fs.Arg(0))
+	default:
+		s := syms[0]
+		switch {
+		case s.Kind == "method" || s.Kind == "interface method":
+			if *up {
+				links, err = st.MethodSupers(s, *depth)
+			} else {
+				links, err = st.MethodImplementations(s, *depth)
+			}
+		case *up:
+			links, err = st.Supertypes(s.ID, *depth)
+		default:
+			links, err = st.Subtypes(s.ID, *depth)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(links)
+	}
+	for _, l := range links {
+		loc := l.Location
+		if l.External {
+			loc = "external"
+		}
+		fmt.Printf("%s%-50s %-11s %s\n", strings.Repeat("  ", max(l.Depth-1, 0)), l.Qualified, l.How, loc)
+	}
+	if len(links) == 0 {
+		fmt.Println("nothing found")
+	}
 	return nil
 }
 

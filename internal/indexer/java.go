@@ -180,6 +180,37 @@ func (jf *javaFile) add(n *sitter.Node, name, qualified, kind, sig, doc string, 
 	})
 }
 
+// supertypes records what a class, interface, enum or record declares it
+// extends or implements. An interface's "extends" list is recorded as
+// extends; a class's "implements" list as implements.
+func (jf *javaFile) supertypes(n *sitter.Node, qual string) {
+	add := func(list *sitter.Node, kind string) {
+		if list == nil {
+			return
+		}
+		for _, c := range namedChildren(list) {
+			if c.Type() == "type_list" {
+				for _, t := range namedChildren(c) {
+					if ref := jf.typeRef(t); ref != "" {
+						jf.res.Supertypes = append(jf.res.Supertypes, store.Supertype{Owner: qual, Kind: kind, TypeRef: ref})
+					}
+				}
+				continue
+			}
+			if ref := jf.typeRef(c); ref != "" { // superclass: a single type
+				jf.res.Supertypes = append(jf.res.Supertypes, store.Supertype{Owner: qual, Kind: kind, TypeRef: ref})
+			}
+		}
+	}
+	add(field(n, "superclass"), store.SuperExtends)
+	add(field(n, "interfaces"), store.SuperImplements)
+	for _, c := range namedChildren(n) {
+		if c.Type() == "extends_interfaces" {
+			add(c, store.SuperExtends)
+		}
+	}
+}
+
 func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 	name := text(field(n, "name"), jf.src)
 	if name == "" {
@@ -194,6 +225,7 @@ func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 	jf.add(n, name, qual, kind, header(n, body, jf.src), javadoc(n, jf.src),
 		hasModifier(n, jf.src, "public") || inInterface)
 	isInterface := n.Type() == "interface_declaration"
+	jf.supertypes(n, qual)
 	classPrefix := ""
 	if _, p, _, ok := javaRoute(modifiersOf(n), jf.src); ok {
 		classPrefix = p

@@ -187,6 +187,9 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 						names := fld.Names
 						if len(names) == 0 { // embedded field: named after its type
 							names = []*ast.Ident{{Name: ref[strings.LastIndex(ref, ".")+1:]}}
+							if ref := embeddedRef(fld.Type, typeRef); ref != "" {
+								res.Supertypes = append(res.Supertypes, store.Supertype{Owner: owner, Kind: store.SuperEmbeds, TypeRef: ref})
+							}
 						}
 						for _, n := range names {
 							res.Fields = append(res.Fields, store.Field{Owner: owner, Name: n.Name, TypeRef: ref})
@@ -196,7 +199,12 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 					for _, m := range t.Methods.List {
 						ft, ok := m.Type.(*ast.FuncType)
 						if !ok || len(m.Names) == 0 {
-							continue // embedded interface
+							// An embedded interface: this interface extends it.
+							// (Type-set elements such as ~int | string give no ref.)
+							if ref := embeddedRef(m.Type, typeRef); ref != "" {
+								res.Supertypes = append(res.Supertypes, store.Supertype{Owner: owner, Kind: store.SuperExtends, TypeRef: ref})
+							}
+							continue
 						}
 						name := m.Names[0].Name
 						sig := name + strings.TrimPrefix(printNode(fset, ft), "func")
@@ -211,6 +219,28 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		res.Endpoints[i].File = relPath
 	}
 	return res, nil
+}
+
+// goPredeclared are the predeclared type names, which typeRef would
+// otherwise mistake for types of the current package.
+var goPredeclared = map[string]bool{
+	"any": true, "bool": true, "byte": true, "comparable": true, "complex64": true, "complex128": true,
+	"error": true, "float32": true, "float64": true, "int": true, "int8": true, "int16": true,
+	"int32": true, "int64": true, "rune": true, "string": true, "uint": true, "uint8": true,
+	"uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+}
+
+// embeddedRef is the type reference of an embedded field or interface.
+// The predeclared error interface is kept as "error", whose method set is
+// known; other predeclared types have no methods and give "".
+func embeddedRef(e ast.Expr, typeRef func(ast.Expr) string) string {
+	if id, ok := e.(*ast.Ident); ok && goPredeclared[id.Name] {
+		if id.Name == "error" {
+			return "error"
+		}
+		return ""
+	}
+	return typeRef(e)
 }
 
 // goVarTypes records the declared type of local names where the syntax

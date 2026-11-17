@@ -17,6 +17,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 | `search_code` | Ranked keyword search over symbol names, signatures and doc comments. Splits `camelCase` and `snake_case`, stems words and matches prefixes, so `payment` finds `ProcessPayment`. Optional `kind`, `lang` and `path` filters. |
 | `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). A short name that matches several symbols returns the candidates instead of the source of each. |
 | `get_dependency_graph` | What a symbol calls, or what calls it, several levels deep. Given an external package such as `database/sql`, lists every place that calls into it. |
+| `get_implementations` | What implements an interface, extends a class or overrides a method, or with `direction: up`, what a type or method implements and extends. Answers "where does this interface call actually go?": `Gateway.Charge` lists `StripeGateway.Charge`. Also lists repository types implementing an outside type such as `java.io.Serializable`. |
 | `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
 | `get_architecture_overview` | The repository at a glance: languages, packages and what they are for, entry points, HTTP frameworks, package-to-package dependencies, most-called functions and most-used external libraries. |
 | `list_apis` | Every HTTP endpoint with method, route and handler: Go `net/http`, gin, echo, chi and fiber; Spring and JAX-RS; Flask and FastAPI, including router, group and class-level prefixes. |
@@ -58,6 +59,7 @@ codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
 codewiki symbol [--db FILE] [--json] NAME
 codewiki reindex [--db FILE] [PATH]
 codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+codewiki impl   [--db FILE] [--up] [--depth N] [--json] NAME
 codewiki file   [--db FILE] [--json] PATH
 codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
 codewiki overview [--db FILE] [--json]
@@ -103,6 +105,24 @@ Resolution is syntactic, so it works on any checkout, even one that does not bui
 Java and Python follow the same rules with their own syntax: `this.field` and `self.attr` with a known type, typed parameters and locals (`Order order = ...`, `repo: ItemRepository`), imports and static imports, relative Python imports, and constructor calls (`new Order(...)`, `Item(...)`). Java overloads share one node in the graph.
 
 Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so the graph can be rebuilt without re-parsing files.
+
+### Type hierarchy
+
+Java `extends`/`implements` and Python base classes are recorded as declared. Go has no `implements` clause, so a Go type implements an interface when its method set has every method of the interface with the same parameter and result types:
+
+- the method set includes methods promoted from embedded types, following Go's rules: the shallowest embedding wins, and two at the same depth cancel out;
+- type names in signatures are resolved through each file's package and imports, so `payments.Card` and `Card` inside package `payments` match while `fs.File` and `http.File` do not; `byte`/`uint8`, `rune`/`int32` and `interface{}`/`any` are treated as the same type, and type aliases declared in the repository are followed;
+- an interface that embeds an interface from outside the repository has a method set the index cannot see in full, so nothing is said to implement it.
+
+Measured against the Go type checker (`go/types`) on the Go 1.24 standard library, for the 263 non-generic interfaces and 2,921 non-generic concrete types it type-checks:
+
+| | |
+|---|---|
+| Precision | 99.97% (3,368 of 3,369 reported implementations are real) |
+| Recall, where both types are indexed | 96.6% (3,368 of 3,485) |
+| Recall, overall | 84.8% (3,368 of 3,970) |
+
+The one false positive is a type declared differently per operating system: files are indexed regardless of build tags, so their methods are merged. Most missed implementations are methods in generated files (for example `stringer` output and the bundled HTTP/2 code), which are skipped by design. Generic types are not matched.
 
 ### Incremental re-index
 

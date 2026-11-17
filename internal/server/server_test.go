@@ -86,7 +86,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s should be annotated read-only and closed-world: %+v", tool.Name, a)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis", "get_implementations"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -198,7 +198,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 		"Languages: go (5 files), java (5 files), python (4 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
-		"- payments [go, 1 file(s), 6 symbols] - Package payments processes customer payments.",
+		"- payments [go, 1 file(s), 25 symbols] - Package payments processes customer payments.",
 		"Most-used external packages",
 	} {
 		if !strings.Contains(o, want) {
@@ -323,5 +323,69 @@ func TestOutputLimits(t *testing.T) {
 	}
 	if txt := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(txt, "- ... and 2 more file(s) with fewer call sites") {
 		t.Errorf("truncated file links should say how many are missing:\n%s", txt)
+	}
+}
+
+func TestImplementations(t *testing.T) {
+	cs := connect(t)
+	for _, c := range []struct {
+		args map[string]any
+		want []string
+	}{
+		{map[string]any{"symbol": "Gateway"}, []string{
+			"What payments.Gateway (interface) is extended, implemented or overridden by:",
+			"- payments.StripeGateway (method set) at payments/service.go:",
+			"- payments.LoggingGateway (method set) at payments/service.go:",
+			"- payments.VoidingGateway (extends) at payments/service.go:",
+		}},
+		// Where an interface call actually goes.
+		{map[string]any{"symbol": "Gateway.Charge"}, []string{
+			"- payments.StripeGateway.Charge (implements) at payments/service.go:",
+		}},
+		{map[string]any{"symbol": "OrderRepository"}, []string{
+			"- com.shop.orders.InMemoryOrderRepository (implements)",
+			"  - com.shop.orders.CountingOrderRepository (extends)",
+		}},
+		{map[string]any{"symbol": "CountingOrderRepository", "direction": "up"}, []string{
+			"What com.shop.orders.CountingOrderRepository (class) extends, implements or overrides:",
+			"- com.shop.orders.InMemoryOrderRepository (extends)",
+			"  - com.shop.orders.OrderRepository (implements)",
+			"- java.io.Serializable (implements, outside the repository)",
+		}},
+		{map[string]any{"symbol": "java.io.Serializable"}, []string{
+			"1 repository type(s) extend or implement java.io.Serializable (outside the repository):",
+			"- com.shop.orders.CountingOrderRepository (implements)",
+		}},
+		{map[string]any{"symbol": "save"}, []string{`"save" matches 3 symbols; call get_implementations again`}},
+		{map[string]any{"symbol": "checkout.Checkout"}, []string{"checkout.Checkout is a func; implementations apply to"}},
+		{map[string]any{"symbol": "FakeGateway"}, []string{"nothing found in the index"}},
+	} {
+		got := callText(t, cs, "get_implementations", c.args)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("get_implementations %v: missing %q in:\n%s", c.args, w, got)
+			}
+		}
+	}
+
+	// Limit and path filter.
+	restore := server.SetMaxImpls(1)
+	got := callText(t, cs, "get_implementations", map[string]any{"symbol": "Gateway"})
+	restore()
+	if !strings.Contains(got, "- ... and 4 more; pass path to narrow") {
+		t.Errorf("limited list should say how many were left out:\n%s", got)
+	}
+	if got := callText(t, cs, "get_implementations", map[string]any{"symbol": "ItemRepository", "path": "java"}); !strings.Contains(got, "nothing found") {
+		t.Errorf("path filter should drop results outside java/:\n%s", got)
+	}
+
+	// get_symbol shows the hierarchy inline.
+	got = callText(t, cs, "get_symbol", map[string]any{"name": "payments.Gateway"})
+	if !strings.Contains(got, "Extended / implemented by:\n- payments.AuditedGateway (extends)") {
+		t.Errorf("get_symbol on an interface should list implementations:\n%s", got)
+	}
+	got = callText(t, cs, "get_symbol", map[string]any{"name": "py.inventory.models.CachedItemRepository.get"})
+	if !strings.Contains(got, "Implements / overrides:\n- py.inventory.models.ItemRepository.get (overrides)") {
+		t.Errorf("get_symbol on an overriding method should name what it overrides:\n%s", got)
 	}
 }
