@@ -51,6 +51,44 @@
     "exported": false
   },
   {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "localSettler",
+    "qualified": "checkout.localSettler",
+    "kind": "struct",
+    "signature": "type localSettler struct",
+    "doc": "localSettler has a settle method, but cannot implement payments.settler:\nthat interface's method is unexported.",
+    "start_line": 39,
+    "end_line": 39,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "settle",
+    "qualified": "checkout.localSettler.settle",
+    "kind": "method",
+    "signature": "func (localSettler) settle(chargeID string) error",
+    "start_line": 41,
+    "end_line": 41,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "wrappedGateway",
+    "qualified": "checkout.wrappedGateway",
+    "kind": "struct",
+    "signature": "type wrappedGateway struct",
+    "doc": "wrappedGateway embeds a payments type, so it has StripeGateway's\nunexported settle method, promoted, and does implement payments.settler.",
+    "start_line": 45,
+    "end_line": 47,
+    "exported": false
+  },
+  {
     "file": "checkout/cmd/server/main.go",
     "lang": "go",
     "package": "main",
@@ -796,6 +834,43 @@
     "start_line": 102,
     "end_line": 102,
     "exported": true
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settler",
+    "qualified": "payments.settler",
+    "kind": "interface",
+    "signature": "type settler interface {\n\tsettle(chargeID string) error\n}",
+    "doc": "settler has an unexported method: only types in package payments\ncan implement it.",
+    "start_line": 106,
+    "end_line": 108,
+    "exported": false
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settle",
+    "qualified": "payments.settler.settle",
+    "kind": "interface method",
+    "signature": "settle(chargeID string) error",
+    "start_line": 107,
+    "end_line": 107,
+    "exported": false
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settle",
+    "qualified": "payments.StripeGateway.settle",
+    "kind": "method",
+    "signature": "func (g *StripeGateway) settle(chargeID string) error",
+    "start_line": 110,
+    "end_line": 110,
+    "exported": false
   },
   {
     "file": "py/inventory/api.py",

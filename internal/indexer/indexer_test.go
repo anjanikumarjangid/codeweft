@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 15 || syms != 84 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 84", files, syms)
+	if files != 15 || syms != 90 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 90", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -254,16 +254,21 @@ func TestImplementations(t *testing.T) {
 		// *StripeGateway; FakeGateway.Refund() has the wrong parameters; the
 		// interface that embeds Gateway extends it.
 		{"Gateway implementations", names(st.Subtypes(one("payments.Gateway").ID, 5)),
-			"payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
+			"checkout.wrappedGateway[method set,1] payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
 		// DoubleGateway's Void is ambiguous (two embeddings at depth 1).
 		{"VoidingGateway implementations", names(st.Subtypes(one("payments.VoidingGateway").ID, 5)),
-			"payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+			"checkout.wrappedGateway[method set,1] payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		// Overlapping embedded interfaces: the method set is their union.
 		{"AuditedGateway implementations", names(st.Subtypes(one("payments.AuditedGateway").ID, 5)),
-			"payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+			"checkout.wrappedGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		{"embedding is not subtyping", names(st.Subtypes(one("payments.StripeGateway").ID, 5)), ""},
 		{"LoggingGateway supertypes", names(st.Supertypes(one("payments.LoggingGateway").ID, 1)),
-			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1]"},
+			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1] payments.settler[method set,1]"},
+		// An unexported method is only the interface's own when declared in
+		// its package: checkout.localSettler's settle is not, while
+		// checkout.wrappedGateway gets payments' settle by embedding.
+		{"settler implementations", names(st.Subtypes(one("payments.settler").ID, 5)),
+			"checkout.wrappedGateway[method set,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		// The predeclared error interface contributes Error() string.
 		{"CodedError implementations", names(st.Subtypes(one("payments.CodedError").ID, 5)),
 			"payments.DeclineError[method set,1]"},

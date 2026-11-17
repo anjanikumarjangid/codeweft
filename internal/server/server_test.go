@@ -206,7 +206,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 		"Languages: go (6 files), java (5 files), python (4 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
-		"- payments [go, 1 file(s), 25 symbols] - Package payments processes customer payments.",
+		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",
 		"Most-used external packages",
 	} {
 		if !strings.Contains(o, want) {
@@ -380,7 +380,7 @@ func TestImplementations(t *testing.T) {
 	restore := server.SetMaxImpls(1)
 	got := callText(t, cs, "get_implementations", map[string]any{"symbol": "Gateway"})
 	restore()
-	if !strings.Contains(got, "- ... and 4 more; pass path to narrow") {
+	if !strings.Contains(got, "- ... and 5 more; pass path to narrow") {
 		t.Errorf("limited list should say how many were left out:\n%s", got)
 	}
 	if got := callText(t, cs, "get_implementations", map[string]any{"symbol": "ItemRepository", "path": "java"}); !strings.Contains(got, "nothing found") {
@@ -389,7 +389,7 @@ func TestImplementations(t *testing.T) {
 
 	// get_symbol shows the hierarchy inline.
 	got = callText(t, cs, "get_symbol", map[string]any{"name": "payments.Gateway"})
-	if !strings.Contains(got, "Extended / implemented by:\n- payments.AuditedGateway (extends)") {
+	if !strings.Contains(got, "Extended / implemented by:\n- checkout.wrappedGateway (method set)") {
 		t.Errorf("get_symbol on an interface should list implementations:\n%s", got)
 	}
 	got = callText(t, cs, "get_symbol", map[string]any{"name": "py.inventory.models.CachedItemRepository.get"})

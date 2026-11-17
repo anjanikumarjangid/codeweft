@@ -100,3 +100,11 @@ type DoubleGateway struct {
 type voider struct{}
 
 func (voider) Void(chargeID string) error { return nil }
+
+// settler has an unexported method: only types in package payments
+// can implement it.
+type settler interface {
+	settle(chargeID string) error
+}
+
+func (g *StripeGateway) settle(chargeID string) error { return nil }

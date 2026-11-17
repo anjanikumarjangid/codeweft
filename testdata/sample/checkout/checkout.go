@@ -33,3 +33,15 @@ func newOrder(chargeID string) *Order {
 func audit(lookup func() *payments.PaymentService) {
 	lookup().ProcessPayment("audit", 1)
 }
+
+// localSettler has a settle method, but cannot implement payments.settler:
+// that interface's method is unexported.
+type localSettler struct{}
+
+func (localSettler) settle(chargeID string) error { return nil }
+
+// wrappedGateway embeds a payments type, so it has StripeGateway's
+// unexported settle method, promoted, and does implement payments.settler.
+type wrappedGateway struct {
+	*payments.StripeGateway
+}
