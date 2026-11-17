@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -233,5 +234,91 @@ func TestNotReady(t *testing.T) {
 	notReady.Store(false)
 	if got := callText(t, cs, "search_code", map[string]any{"query": "payment"}); !strings.Contains(got, "ProcessPayment") {
 		t.Errorf("after ready, search_code = %q", got)
+	}
+}
+
+func callTool(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil || res.IsError {
+		t.Fatalf("%s: %v %+v", tool, err, res)
+	}
+	return res
+}
+
+// structured decodes a tool's structured result into v.
+func structured(t *testing.T, res *mcp.CallToolResult, v any) {
+	t.Helper()
+	data, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestGetSymbolAmbiguous checks that a short name matching several symbols
+// returns a list of candidates without their source, instead of the full
+// source of every match.
+func TestGetSymbolAmbiguous(t *testing.T) {
+	cs := connect(t)
+	res := callTool(t, cs, "get_symbol", map[string]any{"name": "place"})
+	var out server.SymbolOutput
+	structured(t, res, &out)
+	if len(out.Matches) != 0 || out.Total != 2 || len(out.Candidates) != 2 {
+		t.Fatalf("got %d matches, %d candidates, total %d; want 0, 2, 2", len(out.Matches), len(out.Candidates), out.Total)
+	}
+	txt := res.Content[0].(*mcp.TextContent).Text
+	for _, want := range []string{
+		`"place" matches 2 symbols`,
+		"- com.shop.orders.OrderController.place (method) at java/com/shop/orders/OrderController.java:",
+		"- com.shop.orders.OrderService.place (method) at java/com/shop/orders/OrderService.java:",
+	} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("candidate list missing %q:\n%s", want, txt)
+		}
+	}
+	if strings.Contains(txt, "```") {
+		t.Errorf("candidate list should not include source:\n%s", txt)
+	}
+
+	// Java overloads share one qualified name and stay one symbol.
+	if got := callText(t, cs, "get_symbol", map[string]any{"name": "Billing.charge"}); strings.Contains(got, "matches") || !strings.Contains(got, "```java") {
+		t.Errorf("overloads should be shown as one symbol with source:\n%s", got)
+	}
+
+	// More candidates than the limit: say how many were left out.
+	defer server.SetLimits(1, 200, 20)()
+	if got := callText(t, cs, "get_symbol", map[string]any{"name": "place"}); !strings.Contains(got, "- ... and 1 more") {
+		t.Errorf("truncated candidate list should say how many are missing:\n%s", got)
+	}
+}
+
+func TestOutputLimits(t *testing.T) {
+	defer server.SetLimits(30, 2, 1)()
+	cs := connect(t)
+
+	// TokenBucket.Allow spans lines 21-26: 2 lines shown, 4 left out.
+	res := callTool(t, cs, "get_symbol", map[string]any{"name": "TokenBucket.Allow"})
+	var sym server.SymbolOutput
+	structured(t, res, &sym)
+	if len(sym.Matches) != 1 || sym.Matches[0].BodyOmittedLines != 4 || strings.Count(sym.Matches[0].Body, "\n") != 1 {
+		t.Fatalf("body not cut to 2 lines: %+v", sym.Matches)
+	}
+	txt := res.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(txt, "(4 more line(s) not shown: read ratelimit/limiter.go lines 23-26)") {
+		t.Errorf("truncated body should say where the rest is:\n%s", txt)
+	}
+
+	// OrderService.java calls into 3 other files: 1 shown, 2 left out.
+	res = callTool(t, cs, "get_file_summary", map[string]any{"path": "OrderService.java"})
+	var fs server.FileOutput
+	structured(t, res, &fs)
+	if len(fs.Summary.DependsOn) != 1 || fs.MoreDependsOn != 2 {
+		t.Fatalf("depends_on not cut to 1: %d shown, %d more", len(fs.Summary.DependsOn), fs.MoreDependsOn)
+	}
+	if txt := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(txt, "- ... and 2 more file(s) with fewer call sites") {
+		t.Errorf("truncated file links should say how many are missing:\n%s", txt)
 	}
 }
