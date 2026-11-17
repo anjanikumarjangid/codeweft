@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "7"
+const SchemaVersion = "8"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS files (
 	qual    TEXT NOT NULL,
 	doc     TEXT NOT NULL,
 	hash    TEXT NOT NULL,
-	test    INTEGER NOT NULL DEFAULT 0 -- 1: test-only file, its functions are in test_funcs
+	test    INTEGER NOT NULL DEFAULT 0, -- 1: test-only file, its functions are in test_funcs
+	generated INTEGER NOT NULL DEFAULT 0 -- 1: marked "Code generated ... DO NOT EDIT."
 );
 CREATE INDEX IF NOT EXISTS files_dir ON files(dir);
 CREATE TABLE IF NOT EXISTS symbols (
@@ -167,20 +168,22 @@ type Symbol struct {
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
 	Exported  bool   `json:"exported"`
+	Generated bool   `json:"generated,omitempty"` // declared in a generated file
 	Body      string `json:"body,omitempty"`
 }
 
 // File is one indexed source file.
 type File struct {
-	ID      int64
-	Path    string // slash-separated, relative to the repository root
-	Dir     string // slash-separated directory, "." for the root
-	Lang    string
-	Package string // package or module name as declared in the source
-	Qual    string // prefix used for qualified symbol names in this file
-	Doc     string // package or module doc comment
-	Hash    string
-	Test    bool // a test-only file: no symbols, its functions go to test_funcs
+	ID        int64
+	Path      string // slash-separated, relative to the repository root
+	Dir       string // slash-separated directory, "." for the root
+	Lang      string
+	Package   string // package or module name as declared in the source
+	Qual      string // prefix used for qualified symbol names in this file
+	Doc       string // package or module doc comment
+	Hash      string
+	Test      bool // a test-only file: no symbols, its functions go to test_funcs
+	Generated bool // generated code, ranked after hand-written code in search
 }
 
 // TestFunc is a function or method declared in a test file.

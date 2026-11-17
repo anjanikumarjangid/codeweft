@@ -1049,5 +1049,19 @@
     "start_line": 34,
     "end_line": 36,
     "exported": false
+  },
+  {
+    "file": "ratelimit/zz_generated.go",
+    "lang": "go",
+    "package": "ratelimit",
+    "name": "GeneratedHelper",
+    "qualified": "ratelimit.GeneratedHelper",
+    "kind": "func",
+    "signature": "func GeneratedHelper() float64",
+    "doc": "GeneratedHelper is generated code calling hand-written code.",
+    "start_line": 6,
+    "end_line": 6,
+    "exported": true,
+    "generated": true
   }
 ]

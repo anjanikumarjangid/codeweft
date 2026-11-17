@@ -8,7 +8,7 @@ import (
 )
 
 const selectSymbol = `SELECT s.id, f.path, f.lang, s.package, s.name, s.qualified, s.kind,
-	s.signature, s.doc, s.start_line, s.end_line, s.exported, s.body
+	s.signature, s.doc, s.start_line, s.end_line, s.exported, f.generated, s.body
 	FROM symbols s JOIN files f ON f.id = s.file_id`
 
 func scanSymbols(rows *sql.Rows) ([]Symbol, error) {
@@ -17,7 +17,7 @@ func scanSymbols(rows *sql.Rows) ([]Symbol, error) {
 	for rows.Next() {
 		var s Symbol
 		if err := rows.Scan(&s.ID, &s.File, &s.Lang, &s.Package, &s.Name, &s.Qualified, &s.Kind,
-			&s.Signature, &s.Doc, &s.StartLine, &s.EndLine, &s.Exported, &s.Body); err != nil {
+			&s.Signature, &s.Doc, &s.StartLine, &s.EndLine, &s.Exported, &s.Generated, &s.Body); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -67,8 +67,9 @@ func (s *Store) search(match string, opts SearchOptions) ([]Symbol, error) {
 		q += ` AND f.path LIKE ? ESCAPE '\'`
 		args = append(args, escapeLike(strings.TrimPrefix(opts.Path, "./"))+"%")
 	}
-	// Weight names above split name words, then signatures, then doc text.
-	q += ` ORDER BY bm25(symbols_fts, 10.0, 5.0, 4.0, 2.0, 1.0), s.qualified LIMIT ?`
+	// Hand-written code first. Then weight names above split name words,
+	// then signatures, then doc text.
+	q += ` ORDER BY f.generated, bm25(symbols_fts, 10.0, 5.0, 4.0, 2.0, 1.0), s.qualified LIMIT ?`
 	args = append(args, opts.Limit)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {

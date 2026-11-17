@@ -28,10 +28,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 5 Go, 5 Java and 4 Python files; the generated Go file is skipped and
-	// the _test.go file ignored.
-	if res.Files != 14 || res.Skipped != 1 {
-		t.Fatalf("got %d files, %d skipped; want 14 and 1", res.Files, res.Skipped)
+	// 6 Go (one of them generated), 5 Java and 4 Python files; test files
+	// are kept apart and not counted.
+	if res.Files != 15 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 15 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 14 || syms != 83 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 83", files, syms)
+	if files != 15 || syms != 84 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 84", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -383,7 +383,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 17 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 18 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -406,7 +406,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 15 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 16 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -460,10 +460,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 14 default files + 2 Go and Java test files - 4 Python files under
+	// 15 default files + 2 Go and Java test files - 4 Python files under
 	// py/ (the Python test file is under py/ too).
-	if res.Files != 12 {
-		t.Fatalf("indexed %d files, want 12", res.Files)
+	if res.Files != 13 {
+		t.Fatalf("indexed %d files, want 13", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -484,8 +484,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 11 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 11 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 12 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 12 unchanged, 0 removed", res)
 	}
 }
 
@@ -953,5 +953,37 @@ class Sub extends Outer.Inner {
 		if got := callees(c.name); got != c.want {
 			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
 		}
+	}
+}
+
+// TestGeneratedCode checks that generated files are indexed, flagged and
+// ranked after hand-written code, and left out with SkipGenerated.
+func TestGeneratedCode(t *testing.T) {
+	st := indexSample(t)
+	hits, err := st.Search("helper", store.SearchOptions{})
+	if err != nil || len(hits) == 0 {
+		t.Fatalf("search: %v %v", hits, err)
+	}
+	last := hits[len(hits)-1]
+	if last.Qualified != "ratelimit.GeneratedHelper" || !last.Generated {
+		t.Errorf("generated code should come last and be flagged: %+v", hits)
+	}
+	for _, h := range hits[:len(hits)-1] {
+		if h.Generated {
+			t.Errorf("%s flagged as generated", h.Qualified)
+		}
+	}
+
+	st2, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
+	if err != nil || res.Files != 14 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 14 files, 1 skipped", res, err)
+	}
+	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
+		t.Error("generated symbol indexed with SkipGenerated")
 	}
 }

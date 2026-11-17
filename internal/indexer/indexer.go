@@ -91,6 +91,9 @@ type Options struct {
 	IncludeTests bool     `json:"include_tests,omitempty"`  // index test files
 	Exclude      []string `json:"exclude,omitempty"`        // extra directory names to skip
 	MaxFileBytes int64    `json:"max_file_bytes,omitempty"` // skip larger files (likely generated); 0 means 1 MiB
+	// SkipGenerated leaves out files marked as generated ("Code generated
+	// ... DO NOT EDIT."). By default they are indexed and ranked last.
+	SkipGenerated bool `json:"skip_generated,omitempty"`
 }
 
 const optionsKey = "options"
@@ -117,7 +120,8 @@ type Result struct {
 	Removed   int // files deleted from the index
 	Symbols   int // symbols written in this run
 	Edges     int // resolved call edges in the whole index
-	Skipped   int // generated, oversized or unparsable files
+	Generated int // generated files among Files
+	Skipped   int // oversized or unparsable files, and generated ones with SkipGenerated
 }
 
 var defaultSkipDirs = map[string]bool{
@@ -273,7 +277,8 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 					results[i].err = err
 					continue
 				}
-				if j.lang.generated(src) {
+				generated := j.lang.generated(src)
+				if generated && opts.SkipGenerated {
 					results[i].skipped = true
 					continue
 				}
@@ -295,6 +300,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 				}
 				fr.File.Hash = strings.TrimPrefix(hash, "test:")
 				fr.File.Test = j.testOnly
+				fr.File.Generated = generated
 				results[i].fr = fr
 			}
 		}()
@@ -336,6 +342,9 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 		}
 		res.Files++
 		res.Symbols += len(r.fr.Symbols)
+		if r.fr.File.Generated {
+			res.Generated++
+		}
 	}
 
 	for p := range known {

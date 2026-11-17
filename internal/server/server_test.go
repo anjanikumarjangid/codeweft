@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (5 files), java (5 files), python (4 files)",
+		"Languages: go (6 files), java (5 files), python (4 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 25 symbols] - Package payments processes customer payments.",
@@ -429,5 +429,15 @@ func TestFindTests(t *testing.T) {
 	// Test code is not searchable.
 	if got := callText(t, cs, "search_code", map[string]any{"query": "allowTwice"}); !strings.Contains(got, "No symbols match") {
 		t.Errorf("test helper found by search_code:\n%s", got)
+	}
+}
+
+func TestGeneratedLabel(t *testing.T) {
+	cs := connect(t)
+	if got := callText(t, cs, "get_symbol", map[string]any{"name": "GeneratedHelper"}); !strings.Contains(got, "ratelimit.GeneratedHelper (func, generated code)") {
+		t.Errorf("get_symbol should label generated code:\n%s", got)
+	}
+	if got := callText(t, cs, "search_code", map[string]any{"query": "GeneratedHelper"}); !strings.Contains(got, "(func, generated code)") {
+		t.Errorf("search_code should label generated code:\n%s", got)
 	}
 }

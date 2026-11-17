@@ -94,8 +94,8 @@ func (t *Tx) DeleteFile(path string) error {
 
 // AddFile inserts a file and returns its id.
 func (t *Tx) AddFile(f File) (int64, error) {
-	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test)
+	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test, f.Generated)
 	if err != nil {
 		return 0, err
 	}
