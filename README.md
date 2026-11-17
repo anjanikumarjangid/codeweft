@@ -117,13 +117,13 @@ Java `extends`/`implements` and Python base classes are recorded as declared. Go
 - type names in signatures are resolved through each file's package and imports, so `payments.Card` and `Card` inside package `payments` match while `fs.File` and `http.File` do not; `byte`/`uint8`, `rune`/`int32` and `interface{}`/`any` are treated as the same type, and type aliases declared in the repository are followed;
 - an interface that embeds an interface from outside the repository has a method set the index cannot see in full, so nothing is said to implement it.
 
-Measured against the Go type checker (`go/types`) on the Go 1.24 standard library, for the 263 non-generic interfaces and 2,921 non-generic concrete types it type-checks:
+Measured against the Go type checker (`go/types`) on the Go 1.24 standard library, for the 263 non-generic interfaces and 2,921 non-generic concrete types it type-checks (see [Accuracy](#accuracy)):
 
 | | |
 |---|---|
-| Precision | 99.97% (3,368 of 3,369 reported implementations are real) |
-| Recall, where both types are indexed | 96.6% (3,368 of 3,485) |
-| Recall, overall | 84.8% (3,368 of 3,970) |
+| Precision | 99.97% (3,392 of 3,393 reported implementations are real) |
+| Recall, where both types are indexed | 96.7% (3,392 of 3,509) |
+| Recall, overall | 85.4% (3,392 of 3,970) |
 
 The one false positive is a type declared differently per operating system: files are indexed regardless of build tags, so their methods are merged. Most missed implementations are methods in generated files (for example `stringer` output and the bundled HTTP/2 code), which are skipped by design. Generic types are not matched.
 
@@ -133,16 +133,18 @@ Test files (`*_test.go`; `*Test.java`, `*Tests.java`, `*IT.java` and `src/test/`
 
 `--include-tests` additionally indexes test code as ordinary code, so it shows up in search and the call graph.
 
-Parsing tests costs index time. Best of three runs on a 4-vCPU Linux cloud VM:
+Parsing tests costs index time. Best of three runs, measured side by side on the machine described under [Benchmarks](#benchmarks):
 
 | Repository | Test files | Tests | Index without tests | With tests |
 |---|---|---|---|---|
-| Go standard library `src/` (Go 1.24) | 1,508 | 10,365 | 3.40 s | 4.98 s |
-| Guava | 1,111 | 15,503 | 3.33 s | 6.09 s |
+| Go standard library `src/` (Go 1.24) | 1,519 | 10,419 | 3.44 s | 5.17 s |
+| Guava | 1,111 | 15,503 | 3.36 s | 6.00 s |
 | requests | 15 | 347 | 0.06 s | 0.11 s |
 | Spring PetClinic | 20 | 81 | 0.02 s | 0.05 s |
 
-`find_tests` for the most-called functions answers in 0.07 s (`fmt.Sprintf`, 3,405 tests) and 0.13 s (Guava's `Preconditions.checkNotNull`, 4,570 tests).
+("Without tests" is the version before test files were parsed, which also skipped the standard library's 25 `go/build` and `cmd/dist` files.)
+
+`find_tests` for the most-called functions answers in 0.07 s (`fmt.Sprintf`, 3,449 tests) and 0.13 s (Guava's `Preconditions.checkNotNull`, 4,570 tests).
 
 ### Incremental re-index
 
@@ -168,19 +170,42 @@ On the Go standard library, `get_symbol String` went from 12.1 KB of text (the f
 | Call graph | Syntactic resolution, no type checker | Works on any checkout without building it; precision is marked per edge. |
 | Transport | stdio | What local MCP clients like Claude Code use. |
 
+## Accuracy
+
+The call graph and the Go type hierarchy are checked against the Go type checker on the Go 1.24.7 standard library: `scripts/accuracy` type-checks every package and compares the result with an index of `$(go env GOROOT)/src`.
+
+| | Precision | Recall | Recall where both ends are indexed |
+|---|---|---|---|
+| Call graph (distinct caller → callee pairs) | 97.3% (33,667 of 34,595) | 75.4% (33,667 of 44,654) | 84.6% (33,667 of 39,787) |
+| Go implementations | 99.97% (3,392 of 3,393) | 85.4% (3,392 of 3,970) | 96.7% (3,392 of 3,509) |
+
+- The type checker sees one platform's files (linux/amd64); codewiki indexes every platform's, and a function declared once per operating system is one symbol. 891 of the 928 call edges counted as wrong are calls made by another platform's version of the caller, so they exist in the code; without them, call graph precision is 99.89%.
+- Edges matched only by a unique method name (*matched by method name*) are as precise as the rest: 97.5% (1,795 of 1,841).
+- Most missed edges are code in generated files, which is not indexed (4,867), and method calls on values whose type the syntax does not state, such as package-level variables, results of other calls and deeper field chains (4,827 calls to methods, 1,181 to interface methods).
+
+To reproduce:
+
+```bash
+make build && ./bin/codewiki index --db /tmp/std.db "$(go env GOROOT)/src"
+cd scripts/accuracy && mkdir -p /tmp/truth
+go run ./calls /tmp/truth && go run ./implements /tmp/truth
+python3 compare.py calls /tmp/std.db /tmp/truth
+python3 compare.py implements /tmp/std.db /tmp/truth
+```
+
 ## Benchmarks
 
-Measured on a 2-vCPU Linux cloud VM:
+Measured on a Linux cloud VM with 4 vCPUs (Intel Xeon @ 2.10 GHz) and 15 GB of RAM, Go 1.24.7. Times are the best of three runs; runs vary by about 10%. "Query" is a whole `codewiki query` process, start to exit.
 
-| Repository | Files | Symbols | Full index | Query (whole process) |
-|---|---|---|---|---|
-| MCP Go SDK v1.1.0 | 60 | 949 (669 call edges) | 0.11 s | < 10 ms |
-| Go standard library `src/` (Go 1.24) | 3,260 | 41,150 (77,286 call edges) | 4.3 s | 6–7 ms |
-| [Guava](https://github.com/google/guava) (Java, ~477k lines) | 2,156 | 36,632 (37,839 call edges) | 5.3 s | < 10 ms |
-| [requests](https://github.com/psf/requests) (Python) | 22 | 306 (282 call edges) | 0.07 s | < 10 ms |
-| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) (Java) | 30 | 118 (91 call edges, 17 endpoints) | 0.02 s | < 10 ms |
+| Repository | Files | Test files | Symbols | Call edges | Full index | Query |
+|---|---|---|---|---|---|---|
+| [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.1.0 | 60 | 42 | 949 | 669 | 0.10 s | 6 ms |
+| Go standard library `src/` (Go 1.24.7) | 3,286 | 1,519 | 41,524 | 130,267 | 4.65 s | 8 ms |
+| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 37,839 | 5.97 s | 11 ms |
+| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 282 | 0.11 s | 6 ms |
+| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 91 | 0.05 s | 7 ms |
 
-Re-indexing the standard library after changing one file takes 1.6 s (one file parsed, the call graph rebuilt).
+Re-indexing the standard library after changing one file takes 2.1 s: one file is parsed, then the call graph, the type hierarchy and the test edges are rebuilt from stored data.
 
 ## Development
 
@@ -189,7 +214,9 @@ make test   # unit, golden-file and MCP protocol tests
 make vet
 ```
 
-- `internal/indexer`: golden-file tests over a fixture repo in `testdata/sample`, for both the extracted symbols and the full call graph. After an intended change, run `go test -tags sqlite_fts5 ./internal/indexer -update` and review the diff.
+`scripts/accuracy` is a separate Go module, so its tools are not part of the build; see [Accuracy](#accuracy).
+
+- `internal/indexer`: golden-file tests over a fixture repo in `testdata/sample`, for the extracted symbols, the full call graph and the type hierarchy. After an intended change, run `go test -tags sqlite_fts5 ./internal/indexer -update` and review the diff.
 - `internal/server`: drives the real MCP protocol through an in-memory client session.
 
 ## Roadmap
