@@ -1228,3 +1228,84 @@ func TestStdModuleQualifiers(t *testing.T) {
 		t.Errorf("app.Roll callees = %+v, %v; want the internal math/rand/v2/rand.Uint64", refs, err)
 	}
 }
+
+// TestJavaScopes covers how Java resolves names the way javac does:
+// inherited and enclosing-class methods called without a receiver, nested
+// types named without their outer class, member types inherited from a
+// supertype, type variables, java.lang, and implicit super() calls.
+func TestJavaScopes(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "j"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package j;
+class Base {
+    Base() {}
+    int size() { return 0; }
+    static class Entry { void touch() {} }
+}
+class Outer {
+    static void check() {}
+    class Inner extends Base {
+        Inner() { }
+        int count() { check(); return size(); }
+        void entry() { new Entry().touch(); }
+    }
+    static class Form { Form() {} }
+    Object writeReplace() { return new Form(); }
+}
+class Box<T extends Base> {
+    T item;
+    int total(T t) { return t.size(); }
+    String name() { return String.valueOf(1); }
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "j", "All.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		var out []string
+		for _, s := range syms {
+			refs, err := st.Callees(s.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range refs {
+				out = append(out, r.Qualified+"["+r.Confidence+"]")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// check() is the enclosing class's; size() is inherited from Base.
+		{"j.Outer.Inner.count", "j.Outer.check[exact] j.Base.size[exact]"},
+		// Entry is a member type Inner inherits from Base. (The method on
+		// the new object is found by its name only: Java expression typing
+		// comes later.)
+		{"j.Outer.Inner.entry", "j.Base.Entry.touch[name] j.Base.Entry[exact]"},
+		// Inner's constructor calls Base's implicitly.
+		{"j.Outer.Inner.Inner", "j.Base.Base[exact]"},
+		// Form is Outer's nested class, named without Outer.
+		{"j.Outer.writeReplace", "j.Outer.Form.Form[exact]"},
+		// T is bounded by Base; String is java.lang.String.
+		{"j.Box.total", "j.Base.size[exact]"},
+		{"j.Box.name", "java.lang.String.valueOf[external]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}

@@ -35,6 +35,9 @@ func resolve(tx *store.Tx, module string) (int, error) {
 		return 0, err
 	}
 	r := resolver{in: in}
+	// Twice: Java supertypes may be nested types inherited from other
+	// supertypes, which needs the first pass to look them up.
+	r.supers = r.declaredSupers(types.Supertypes)
 	r.supers = r.declaredSupers(types.Supertypes)
 	r.typer = newGoTyper(types, r)
 	var edges []store.Edge
@@ -99,6 +102,129 @@ func (r resolver) declaredSupers(sts []store.Supertype) map[string][]superType {
 		}
 	}
 	return out
+}
+
+// javaLang are the java.lang types used without an import.
+var javaLang = map[string]bool{
+	"Object": true, "String": true, "StringBuilder": true, "CharSequence": true, "Integer": true, "Long": true,
+	"Short": true, "Byte": true, "Character": true, "Boolean": true, "Double": true, "Float": true, "Number": true,
+	"Math": true, "StrictMath": true, "System": true, "Thread": true, "ThreadLocal": true, "Runtime": true,
+	"Class": true, "ClassLoader": true, "Enum": true, "Record": true, "Iterable": true, "Comparable": true,
+	"Runnable": true, "AutoCloseable": true, "Cloneable": true, "Appendable": true, "Readable": true, "Void": true,
+	"Throwable": true, "Exception": true, "Error": true, "RuntimeException": true, "AssertionError": true,
+	"IllegalArgumentException": true, "IllegalStateException": true, "NullPointerException": true,
+	"UnsupportedOperationException": true, "IndexOutOfBoundsException": true, "ArrayIndexOutOfBoundsException": true,
+	"ClassCastException": true, "ArithmeticException": true, "InterruptedException": true,
+	"CloneNotSupportedException": true, "NumberFormatException": true, "SecurityException": true,
+	"StackOverflowError": true, "OutOfMemoryError": true, "ReflectiveOperationException": true,
+	"StackTraceElement": true, "Process": true, "ProcessBuilder": true, "SuppressWarnings": true, "Override": true,
+	"Deprecated": true, "FunctionalInterface": true, "SafeVarargs": true,
+}
+
+// scopedType resolves a Java simple type name as written inside a class:
+// "SCOPE|Name" or "SCOPE|Outer.Inner". Like javac, it looks for a member
+// type of the class, of its enclosing classes, and of their supertypes,
+// then a type of the package, then java.lang; else a short name that only
+// one type has.
+func (r resolver) scopedType(ref string) (string, bool) {
+	scope, name, _ := strings.Cut(ref, "|")
+	first, rest, _ := strings.Cut(name, ".")
+	join := func(q string) string {
+		if rest != "" {
+			return q + "." + rest
+		}
+		return q
+	}
+	for s := scope; r.isType(s); s = s[:max(strings.LastIndex(s, "."), 0)] {
+		if q := r.memberType(s, first, map[string]bool{}); q != "" {
+			return join(q), false
+		}
+		if !strings.Contains(s, ".") {
+			break
+		}
+	}
+	// The package: the longest prefix of the scope that declares the type
+	// (the scope itself may not be indexed, such as a class in a test file).
+	for p := scope; p != ""; p = p[:max(strings.LastIndex(p, "."), 0)] {
+		if r.isType(p + "." + first) {
+			return join(p + "." + first), false
+		}
+		if !strings.Contains(p, ".") {
+			break
+		}
+	}
+	if javaLang[first] {
+		return join("java.lang." + first), true
+	}
+	return r.typeRef("?" + name[strings.LastIndex(name, ".")+1:])
+}
+
+// memberType finds the member type name declared in type t or inherited
+// from its supertypes.
+func (r resolver) memberType(t, name string, seen map[string]bool) string {
+	if seen[t] {
+		return ""
+	}
+	seen[t] = true
+	if r.isType(t + "." + name) {
+		return t + "." + name
+	}
+	for _, s := range r.supers[t] {
+		if !s.external {
+			if q := r.memberType(s.q, name, seen); q != "" {
+				return q
+			}
+		}
+	}
+	return ""
+}
+
+// isType reports whether q is a type declared in the repository.
+func (r resolver) isType(q string) bool {
+	id, ok := r.in.Symbols[q]
+	if !ok {
+		return false
+	}
+	switch r.in.Kinds[id] {
+	case "class", "interface", "enum", "record", "struct", "type", "annotation":
+		return true
+	}
+	return false
+}
+
+// inherited finds method m declared on type t or on one of its supertypes,
+// searched depth first in declaration order.
+func (r resolver) inherited(t, m string, seen map[string]bool) (int64, string) {
+	if seen[t] {
+		return 0, ""
+	}
+	seen[t] = true
+	if id, ok := r.in.Symbols[t+"."+m]; ok {
+		return id, t + "." + m
+	}
+	for _, s := range r.supers[t] {
+		if !s.external {
+			if id, q := r.inherited(s.q, m, seen); id != 0 {
+				return id, q
+			}
+		}
+	}
+	return 0, ""
+}
+
+// inheritedOrEnclosing resolves a call of m without a receiver in type
+// owner: owner's own or inherited method, else, for a nested class, the
+// method of the nearest enclosing class that has one (also inherited).
+func (r resolver) inheritedOrEnclosing(owner, m string) (int64, string) {
+	for t := owner; r.isType(t); t = t[:max(strings.LastIndex(t, "."), 0)] {
+		if id, q := r.inherited(t, m, map[string]bool{}); id != 0 {
+			return id, q
+		}
+		if !strings.Contains(t, ".") {
+			break
+		}
+	}
+	return 0, ""
 }
 
 // superCall resolves super.m() (or super().m() in Python) made in type
@@ -244,6 +370,8 @@ func (r resolver) typeRef(ref string) (q string, external bool) {
 			}
 		}
 		return ref, true
+	case strings.HasPrefix(ref, "^"):
+		return r.scopedType(ref[1:])
 	case strings.HasPrefix(ref, "~"):
 		ref = ref[1:]
 		if _, ok := r.in.Symbols[ref]; ok {
@@ -274,9 +402,13 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 		if id, q, conf := r.exact(c.A); id != 0 {
 			return id, q, conf
 		}
-		// A method call on the receiver that is not declared on the receiver
-		// type is usually promoted from an embedded field.
 		if c.B != "" {
+			// A method called without a receiver that its class does not
+			// declare: inherited from a supertype, or a method of an
+			// enclosing class (Java nested classes).
+			if id, q := r.inheritedOrEnclosing(strings.TrimSuffix(c.A, "."+c.B), c.B); id != 0 {
+				return id, q, "exact"
+			}
 			return r.byMethodName(c.B)
 		}
 		return 0, "", ""

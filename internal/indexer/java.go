@@ -33,6 +33,50 @@ type javaFile struct {
 	imports map[string]string // simple name -> fully qualified name
 	statics map[string]string // statically imported member -> owning class
 	res     *FileResult
+	// class is the innermost class being parsed: simple type names are
+	// looked up from it (nested types, enclosing classes, inherited
+	// member types, the package).
+	class string
+	// typeVars maps the type variables in scope to their bound's type
+	// reference ("" when unbounded): class and method type parameters.
+	typeVars map[string]string
+}
+
+// withTypeParams adds the type parameters declared by n (a class or a
+// method) to the scope while fn runs.
+func (jf *javaFile) withTypeParams(n *sitter.Node, fn func()) {
+	tps := field(n, "type_parameters")
+	if tps == nil {
+		fn()
+		return
+	}
+	saved := jf.typeVars
+	vars := make(map[string]string, len(saved))
+	for k, v := range saved {
+		vars[k] = v
+	}
+	jf.typeVars = vars
+	for _, tp := range namedChildren(tps) {
+		var name, bound string
+		for _, c := range namedChildren(tp) {
+			switch c.Type() {
+			case "type_identifier", "identifier":
+				if name == "" {
+					name = text(c, jf.src)
+				}
+			case "type_bound":
+				if b := namedChildren(c); len(b) > 0 {
+					vars[name] = "" // the bound may mention the variable itself
+					bound = jf.typeRef(b[0])
+				}
+			}
+		}
+		if name != "" {
+			vars[name] = bound
+		}
+	}
+	fn()
+	jf.typeVars = saved
 }
 
 // ParseJava extracts classes, interfaces, enums, records, their methods,
@@ -158,12 +202,9 @@ func (jf *javaFile) typeRef(n *sitter.Node) string {
 		// Outer.Inner is a nested type, found like Outer itself; anything
 		// else (java.util.List) is a full name.
 		t := text(n, jf.src)
-		first, rest, _ := strings.Cut(t, ".")
-		if full, ok := jf.imports[first]; ok {
-			return "@" + full + "." + rest
-		}
-		if isCapitalized(first) {
-			return "~" + jf.pkg + "." + t
+		first, _, _ := strings.Cut(t, ".")
+		if _, ok := jf.imports[first]; ok || isCapitalized(first) {
+			return jf.nameRef(t)
 		}
 		return "@" + t
 	case "type_identifier", "identifier":
@@ -176,8 +217,21 @@ func (jf *javaFile) nameRef(name string) string {
 	if name == "" || javaPrimitives[name] {
 		return ""
 	}
-	if full, ok := jf.imports[name]; ok {
+	first, rest, _ := strings.Cut(name, ".")
+	if bound, ok := jf.typeVars[first]; ok { // a type variable: its bound
+		if rest != "" {
+			return ""
+		}
+		return bound
+	}
+	if full, ok := jf.imports[first]; ok {
+		if rest != "" {
+			return "@" + full + "." + rest
+		}
 		return "@" + full
+	}
+	if jf.class != "" {
+		return "^" + jf.class + "|" + name
 	}
 	return "~" + jf.pkg + "." + name
 }
@@ -227,6 +281,14 @@ func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 		return
 	}
 	qual := prefix + "." + name
+	savedClass := jf.class
+	jf.class = qual
+	defer func() { jf.class = savedClass }()
+	jf.withTypeParams(n, func() { jf.typeBody(n, name, qual, inInterface) })
+}
+
+// typeBody parses a type declaration with its scope set up.
+func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool) {
 	kind := strings.TrimSuffix(strings.TrimSuffix(n.Type(), "_declaration"), "_type")
 	if n.Type() == "annotation_type_declaration" {
 		kind = "annotation"
@@ -294,7 +356,14 @@ func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 			jf.add(m, mname, mq, kind, header(m, mbody, jf.src), javadoc(m, jf.src),
 				isInterface || hasModifier(m, jf.src, "public"))
 			if mbody != nil {
-				jf.calls(m, mbody, mq, qual, fields)
+				jf.withTypeParams(m, func() {
+					jf.calls(m, mbody, mq, qual, fields)
+					if kind == "constructor" && field(n, "superclass") != nil && !explicitConstructorCall(mbody) {
+						// A constructor without this(...) or super(...) calls
+						// the superclass constructor implicitly.
+						jf.res.Calls = append(jf.res.Calls, store.RawCall{Caller: mq, Form: store.CallSuper, A: qual, Line: line(m)})
+					}
+				})
 			}
 			if method, p, fw, ok := javaRoute(modifiersOf(m), jf.src); ok && method != "" {
 				route := joinRoute(classPrefix, p)
@@ -340,7 +409,7 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 		case "object_creation_expression":
 			t := field(n, "type")
 			if ref := jf.typeRef(t); ref != "" {
-				short := ref[strings.LastIndexAny(ref, ".@~?")+1:]
+				short := ref[strings.LastIndexAny(ref, ".@~?^|")+1:]
 				jf.res.Calls = append(jf.res.Calls, store.RawCall{Caller: caller, Form: store.CallTyped, A: ref, B: short, Line: line(n)})
 			}
 		case "explicit_constructor_invocation":
@@ -405,6 +474,18 @@ func hasChild(n *sitter.Node, typ string) bool {
 		if n.Child(i).Type() == typ {
 			return true
 		}
+	}
+	return false
+}
+
+// explicitConstructorCall reports whether a constructor body starts with
+// this(...) or super(...).
+func explicitConstructorCall(body *sitter.Node) bool {
+	for _, c := range namedChildren(body) {
+		if c.Type() == "line_comment" || c.Type() == "block_comment" {
+			continue
+		}
+		return c.Type() == "explicit_constructor_invocation"
 	}
 	return false
 }
