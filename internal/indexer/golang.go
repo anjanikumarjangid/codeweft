@@ -206,6 +206,10 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 			}
 		}
 	}
+	res.Endpoints = goEndpoints(fset, f, qual, aliases)
+	for i := range res.Endpoints {
+		res.Endpoints[i].File = relPath
+	}
 	return res, nil
 }
 

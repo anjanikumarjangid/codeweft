@@ -29,7 +29,10 @@ Usage:
   codewiki reindex [--db FILE] [--include-tests] [--exclude dir1,dir2] [PATH]
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
   codewiki file   [--db FILE] [--json] PATH
-  codewiki serve  [--db FILE]
+  codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
+  codewiki overview [--db FILE] [--json]
+  codewiki watch  [--db FILE] [--interval 2s] [PATH]
+  codewiki serve  [--db FILE] [--watch]
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
 look for .codewiki/index.db in the current directory.
@@ -54,6 +57,12 @@ func main() {
 		err = runReindex(os.Args[2:])
 	case "file":
 		err = runFile(os.Args[2:])
+	case "apis":
+		err = runAPIs(os.Args[2:])
+	case "overview":
+		err = runOverview(os.Args[2:])
+	case "watch":
+		err = runWatch(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "version", "--version":
@@ -320,6 +329,7 @@ func runDeps(args []string) error {
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	db := fs.String("db", defaultDB, "index file")
+	watch := fs.Bool("watch", false, "keep the index up to date while serving")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck
 	st, err := openExisting(*db)
 	if err != nil {
@@ -328,8 +338,100 @@ func runServe(args []string) error {
 	defer st.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if *watch {
+		root, err := st.Meta("root")
+		if err != nil || root == "" {
+			return errors.New("--watch needs an index that records its root; run `codewiki index PATH` first")
+		}
+		go indexer.Watch(ctx, root, st, indexer.Options{}, 2*time.Second, func(res indexer.Result, err error) { //nolint:errcheck
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "codewiki: re-index failed:", err)
+			}
+		})
+	}
 	// stdout carries the MCP protocol; anything else must go to stderr.
 	return server.New(st).Run(ctx, &mcp.StdioTransport{})
+}
+
+func runWatch(args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	interval := fs.Duration("interval", 2*time.Second, "how often to check for changes")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	root := fs.Arg(0)
+	if root == "" {
+		if root, err = st.Meta("root"); err != nil || root == "" {
+			return errors.New("no PATH given and none recorded in the index")
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	fmt.Fprintf(os.Stderr, "watching %s (Ctrl-C to stop)\n", root)
+	return indexer.Watch(ctx, root, st, indexer.Options{}, *interval, func(res indexer.Result, err error) {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "re-index failed:", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "%s re-indexed %d file(s), %d removed; %d call edges\n",
+			time.Now().Format("15:04:05"), res.Files, res.Removed, res.Edges)
+	})
+}
+
+func runAPIs(args []string) error {
+	fs := flag.NewFlagSet("apis", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	method := fs.String("method", "", "only this HTTP method")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	eps, err := st.ListEndpoints(store.EndpointFilter{Path: fs.Arg(0), Method: *method, Limit: 1000})
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(eps)
+	}
+	for _, e := range eps {
+		loc := e.HandlerLocation
+		if loc == "" {
+			loc = fmt.Sprintf("%s:%d", e.File, e.Line)
+		}
+		fmt.Printf("%-7s %-40s %s  %s  [%s]\n", e.Method, e.Path, e.Handler, loc, e.Framework)
+	}
+	if len(eps) == 0 {
+		fmt.Println("no HTTP endpoints found")
+	}
+	return nil
+}
+
+func runOverview(args []string) error {
+	fs := flag.NewFlagSet("overview", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	o, err := st.BuildOverview(15)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(o)
+	}
+	fmt.Print(server.FormatOverview(o))
+	return nil
 }
 
 // interspersed lets flags appear after positional arguments, so both

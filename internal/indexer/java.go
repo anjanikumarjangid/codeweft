@@ -119,6 +119,15 @@ func javadoc(n *sitter.Node, src []byte) string {
 	return ""
 }
 
+func modifiersOf(n *sitter.Node) *sitter.Node {
+	for _, c := range namedChildren(n) {
+		if c.Type() == "modifiers" {
+			return c
+		}
+	}
+	return nil
+}
+
 func hasModifier(n *sitter.Node, src []byte, mod string) bool {
 	for _, c := range namedChildren(n) {
 		if c.Type() == "modifiers" {
@@ -185,6 +194,10 @@ func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 	jf.add(n, name, qual, kind, header(n, body, jf.src), javadoc(n, jf.src),
 		hasModifier(n, jf.src, "public") || inInterface)
 	isInterface := n.Type() == "interface_declaration"
+	classPrefix := ""
+	if _, p, _, ok := javaRoute(modifiersOf(n), jf.src); ok {
+		classPrefix = p
+	}
 
 	fields := map[string]string{}
 	// Record components are fields with generated accessor methods.
@@ -240,6 +253,15 @@ func (jf *javaFile) typeDecl(n *sitter.Node, prefix string, inInterface bool) {
 				isInterface || hasModifier(m, jf.src, "public"))
 			if mbody != nil {
 				jf.calls(m, mbody, mq, qual, fields)
+			}
+			if method, p, fw, ok := javaRoute(modifiersOf(m), jf.src); ok && method != "" {
+				route := joinRoute(classPrefix, p)
+				if route == "" {
+					route = "/"
+				}
+				jf.res.Endpoints = append(jf.res.Endpoints, store.Endpoint{
+					Method: method, Path: route, Handler: mq, Framework: fw, File: jf.rel, Line: line(m),
+				})
 			}
 		}
 	}

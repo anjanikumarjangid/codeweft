@@ -26,12 +26,13 @@ func pythonModule(rel string) string {
 }
 
 type pyFile struct {
-	src     []byte
-	rel     string
-	module  string
-	pkg     string            // package the module lives in, for relative imports
-	imports map[string]string // local name -> dotted target
-	res     *FileResult
+	src      []byte
+	rel      string
+	module   string
+	pkg      string            // package the module lives in, for relative imports
+	imports  map[string]string // local name -> dotted target
+	prefixes map[string]string // router/blueprint variable -> URL prefix
+	res      *FileResult
 }
 
 // ParsePython extracts classes, methods and functions, imports, attribute
@@ -44,7 +45,7 @@ func ParsePython(rel string, src []byte) (*FileResult, error) {
 	defer done()
 
 	mod := pythonModule(rel)
-	pf := &pyFile{src: src, rel: rel, module: mod, imports: map[string]string{}}
+	pf := &pyFile{src: src, rel: rel, module: mod, imports: map[string]string{}, prefixes: map[string]string{}}
 	pf.pkg = mod
 	if path.Base(rel) != "__init__.py" {
 		if i := strings.LastIndex(mod, "."); i >= 0 {
@@ -65,6 +66,10 @@ func ParsePython(rel string, src []byte) (*FileResult, error) {
 		case "import_from_statement":
 			pf.importFrom(n)
 		}
+	}
+	for _, n := range namedChildren(root) {
+		pf.routerPrefix(n)
+		pf.mainGuard(n)
 	}
 	for _, n := range namedChildren(root) {
 		def := unwrapDecorated(n)
@@ -233,6 +238,68 @@ func (pf *pyFile) function(def, outer *sitter.Node, prefix, class string) {
 	body := field(def, "body")
 	pf.add(outer, name, qual, kind, strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
 	pf.calls(def, body, qual, class)
+	if outer.Type() == "decorated_definition" {
+		for _, dec := range namedChildren(outer) {
+			if dec.Type() != "decorator" {
+				continue
+			}
+			if methods, route, _, ok := pythonRoute(dec, pf.src, pf.prefixes); ok {
+				for _, m := range methods {
+					pf.res.Endpoints = append(pf.res.Endpoints, store.Endpoint{
+						Method: m, Path: route, Handler: qual, Framework: pf.framework(), File: pf.rel, Line: line(dec),
+					})
+				}
+			}
+		}
+	}
+}
+
+func (pf *pyFile) framework() string {
+	for _, p := range pf.imports {
+		root := strings.SplitN(p, ".", 2)[0]
+		if root == "fastapi" || root == "flask" || root == "starlette" || root == "sanic" || root == "quart" {
+			return root
+		}
+	}
+	return "python"
+}
+
+// routerPrefix records `router = APIRouter(prefix="/items")` and
+// `bp = Blueprint("x", __name__, url_prefix="/x")`.
+func (pf *pyFile) routerPrefix(n *sitter.Node) {
+	if n.Type() != "expression_statement" {
+		return
+	}
+	as := n.NamedChild(0)
+	if as == nil || as.Type() != "assignment" {
+		return
+	}
+	left, right := field(as, "left"), field(as, "right")
+	if left == nil || left.Type() != "identifier" || right == nil || right.Type() != "call" {
+		return
+	}
+	for _, a := range namedChildren(field(right, "arguments")) {
+		if a.Type() != "keyword_argument" {
+			continue
+		}
+		k := text(field(a, "name"), pf.src)
+		if v := field(a, "value"); (k == "prefix" || k == "url_prefix") && v != nil && v.Type() == "string" {
+			pf.prefixes[text(left, pf.src)] = pyString(v, pf.src)
+		}
+	}
+}
+
+// mainGuard indexes `if __name__ == "__main__":` as the module's entry point.
+func (pf *pyFile) mainGuard(n *sitter.Node) {
+	if n.Type() != "if_statement" {
+		return
+	}
+	cond := strings.Join(strings.Fields(text(field(n, "condition"), pf.src)), "")
+	if cond != `__name__=="__main__"` && cond != `__name__=='__main__'` {
+		return
+	}
+	pf.add(n, "__main__", pf.module+".__main__", "entry point", `if __name__ == "__main__"`, "Script entry point of "+pf.module+".")
+	pf.calls(n, field(n, "consequence"), pf.module+".__main__", "")
 }
 
 func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {

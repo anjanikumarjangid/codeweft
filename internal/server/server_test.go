@@ -75,7 +75,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s is missing a description or input schema", tool.Name)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -177,5 +177,27 @@ func TestJavaAndPython(t *testing.T) {
 	up := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "Billing.charge", "direction": "callers"})
 	if !strings.Contains(up, "- com.shop.orders.OrderService.place") {
 		t.Errorf("java callers:\n%s", up)
+	}
+}
+
+func TestOverviewAndAPIs(t *testing.T) {
+	cs := connect(t)
+	o := callText(t, cs, "get_architecture_overview", map[string]any{})
+	for _, want := range []string{
+		"Languages: go (5 files), java (5 files), python (4 files)",
+		"HTTP frameworks:",
+		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
+		"- payments [go, 1 file(s), 6 symbols] - Package payments processes customer payments.",
+		"Most-used external packages",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("overview missing %q:\n%s", want, o)
+		}
+	}
+	apis := callText(t, cs, "list_apis", map[string]any{"method": "post"})
+	for _, want := range []string{"3 endpoint(s) with method POST", "POST    /orders", "-> checkout.handleCheckout (checkout/http.go:23) [net/http]"} {
+		if !strings.Contains(apis, want) {
+			t.Errorf("list_apis missing %q:\n%s", want, apis)
+		}
 	}
 }

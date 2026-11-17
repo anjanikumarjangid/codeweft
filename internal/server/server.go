@@ -12,7 +12,7 @@ import (
 )
 
 // Version is reported to MCP clients and by `codewiki version`.
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 const maxRefs = 15 // callers/callees listed inline by get_symbol
 
@@ -20,6 +20,7 @@ const maxRefs = 15 // callers/callees listed inline by get_symbol
 func New(st *store.Store) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{
 		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
+			"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
 			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
 			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
 			"or what depends on it, and get_file_summary for an overview of a file before reading it. " +
@@ -50,7 +51,129 @@ func New(st *store.Store) *mcp.Server {
 			"declaration with its signature, and which other files it calls into or is called from. " +
 			"Accepts a repository-relative path or a unique suffix such as 'store/query.go'.",
 	}, h.fileSummary)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "get_architecture_overview",
+		Description: "Project-level map of the indexed codebase: languages, main packages or directories with " +
+			"their purpose, entry points (main functions, Python __main__ blocks), HTTP frameworks, how " +
+			"packages depend on each other, the most-called functions, and the most-used external libraries. " +
+			"Use it first when working in an unfamiliar repository.",
+	}, h.overview)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "list_apis",
+		Description: "HTTP endpoints defined in the code, with method, route, handler function and location. " +
+			"Detects Go net/http, gin, echo, chi and fiber routes, Spring and JAX-RS annotations, and " +
+			"Flask and FastAPI decorators, including router and group prefixes.",
+	}, h.listAPIs)
 	return s
+}
+
+// OverviewInput is the input of get_architecture_overview.
+type OverviewInput struct {
+	Limit int `json:"limit,omitempty" jsonschema:"maximum entries per section, default 15"`
+}
+
+func (h handlers) overview(ctx context.Context, req *mcp.CallToolRequest, in OverviewInput) (*mcp.CallToolResult, *store.Overview, error) {
+	o, err := h.st.BuildOverview(min(max(in.Limit, 0), 50))
+	if err != nil {
+		return nil, nil, err
+	}
+	return text(FormatOverview(o)), o, nil
+}
+
+// APIsInput is the input of list_apis.
+type APIsInput struct {
+	Path   string `json:"path,omitempty" jsonschema:"optional: only routes containing this text, e.g. '/orders'"`
+	Method string `json:"method,omitempty" jsonschema:"optional: GET, POST, PUT, PATCH or DELETE"`
+}
+
+// APIsOutput is the structured result of list_apis.
+type APIsOutput struct {
+	Endpoints []store.EndpointInfo `json:"endpoints"`
+}
+
+func (h handlers) listAPIs(ctx context.Context, req *mcp.CallToolRequest, in APIsInput) (*mcp.CallToolResult, APIsOutput, error) {
+	eps, err := h.st.ListEndpoints(store.EndpointFilter{Path: in.Path, Method: in.Method, Limit: 300})
+	if err != nil {
+		return nil, APIsOutput{}, err
+	}
+	if len(eps) == 0 {
+		return text("No HTTP endpoints found" + filterNote(in) + "."), APIsOutput{Endpoints: eps}, nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d endpoint(s)%s:\n\n", len(eps), filterNote(in))
+	for _, e := range eps {
+		loc := e.HandlerLocation
+		if loc == "" {
+			loc = fmt.Sprintf("registered at %s:%d", e.File, e.Line)
+		}
+		fmt.Fprintf(&b, "%-7s %s\n        -> %s (%s) [%s]\n", e.Method, e.Path, e.Handler, loc, e.Framework)
+	}
+	return text(b.String()), APIsOutput{Endpoints: eps}, nil
+}
+
+func filterNote(in APIsInput) string {
+	var parts []string
+	if in.Method != "" {
+		parts = append(parts, "method "+strings.ToUpper(in.Method))
+	}
+	if in.Path != "" {
+		parts = append(parts, fmt.Sprintf("route containing %q", in.Path))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " with " + strings.Join(parts, " and ")
+}
+
+// FormatOverview renders an overview as plain text.
+func FormatOverview(o *store.Overview) string {
+	var b strings.Builder
+	langs := make([]string, 0, len(o.Languages))
+	for _, l := range o.Languages {
+		langs = append(langs, fmt.Sprintf("%s (%d files)", l.Name, l.Count))
+	}
+	fmt.Fprintf(&b, "Repository: %s\nLanguages: %s\nIndexed: %d files, %d symbols, %d call edges, %d HTTP endpoints\n",
+		o.Root, strings.Join(langs, ", "), o.Files, o.Symbols, o.Edges, o.Endpoints)
+	if len(o.Frameworks) > 0 {
+		var fw []string
+		for _, f := range o.Frameworks {
+			fw = append(fw, fmt.Sprintf("%s (%d routes)", f.Name, f.Count))
+		}
+		fmt.Fprintf(&b, "HTTP frameworks: %s\n", strings.Join(fw, ", "))
+	}
+	fmt.Fprintf(&b, "\nPackages and directories:\n")
+	for _, p := range o.Packages {
+		doc := ""
+		if p.Doc != "" {
+			doc = " - " + p.Doc
+		}
+		fmt.Fprintf(&b, "- %s [%s, %d file(s), %d symbols]%s\n", p.Dir, p.Lang, p.Files, p.Symbols, doc)
+	}
+	if len(o.EntryPoints) > 0 {
+		fmt.Fprintf(&b, "\nEntry points:\n")
+		for _, e := range o.EntryPoints {
+			fmt.Fprintf(&b, "- %s at %s\n", e.Qualified, e.Location)
+		}
+	}
+	if len(o.Dependencies) > 0 {
+		fmt.Fprintf(&b, "\nPackage dependencies (calls from -> into):\n")
+		for _, d := range o.Dependencies {
+			fmt.Fprintf(&b, "- %s -> %s (%d)\n", d.From, d.To, d.Calls)
+		}
+	}
+	if len(o.Hotspots) > 0 {
+		fmt.Fprintf(&b, "\nMost-called functions (distinct callers):\n")
+		for _, c := range o.Hotspots {
+			fmt.Fprintf(&b, "- %s (%d)\n", c.Name, c.Count)
+		}
+	}
+	if len(o.External) > 0 {
+		fmt.Fprintf(&b, "\nMost-used external packages (call sites):\n")
+		for _, c := range o.External {
+			fmt.Fprintf(&b, "- %s (%d)\n", c.Name, c.Count)
+		}
+	}
+	return b.String()
 }
 
 // FileInput is the input of get_file_summary.

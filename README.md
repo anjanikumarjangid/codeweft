@@ -8,7 +8,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 - **Local:** one binary and one SQLite file. No cloud service, no API keys, no embeddings.
 - **Agent-native:** exposed as MCP tools, so any MCP client can use it.
 
-> Status: v0.5. Supports **Go, Java and Python**; see the [roadmap](#roadmap).
+> Status: v0.6. Supports **Go, Java and Python**; see the [roadmap](#roadmap).
 
 ## MCP tools
 
@@ -18,6 +18,8 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 | `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). |
 | `get_dependency_graph` | What a symbol calls, or what calls it, several levels deep. Given an external package such as `database/sql`, lists every place that calls into it. |
 | `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
+| `get_architecture_overview` | The repository at a glance: languages, packages and what they are for, entry points, HTTP frameworks, package-to-package dependencies, most-called functions and most-used external libraries. |
+| `list_apis` | Every HTTP endpoint with method, route and handler: Go `net/http`, gin, echo, chi and fiber; Spring and JAX-RS; Flask and FastAPI, including router, group and class-level prefixes. |
 
 ## Quick start
 
@@ -42,7 +44,7 @@ cd /path/to/repo
 claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve --db /abs/path/to/repo/.codewiki/index.db
 ```
 
-Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"*
+Add `--watch` after `serve` to keep the index up to date as you edit. Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
 
 ### CLI
 
@@ -53,7 +55,10 @@ codewiki symbol [--db FILE] [--json] NAME
 codewiki reindex [--db FILE] [PATH]
 codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
 codewiki file   [--db FILE] [--json] PATH
-codewiki serve  [--db FILE]
+codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
+codewiki overview [--db FILE] [--json]
+codewiki watch  [--db FILE] [--interval 2s] [PATH]
+codewiki serve  [--db FILE] [--watch]
 ```
 
 ## How it works
@@ -97,6 +102,8 @@ Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so
 
 `codewiki reindex` hashes every file, re-parses only those whose content changed, removes deleted ones, and then rebuilds the call graph from the stored call sites. Edges *into* a changed file stay correct even though the files calling it were not re-parsed.
 
+`codewiki watch` (or `serve --watch`) polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. Polling needs no platform-specific file events and stays cheap on large trees.
+
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
 
 ## Design decisions
@@ -118,7 +125,8 @@ Measured on a 2-vCPU Linux cloud VM:
 | MCP Go SDK v1.1.0 | 60 | 949 (669 call edges) | 0.11 s | < 10 ms |
 | Go standard library `src/` (Go 1.24) | 3,260 | 41,150 (77,286 call edges) | 4.3 s | 6–7 ms |
 | [Guava](https://github.com/google/guava) (Java, ~477k lines) | 2,156 | 36,632 (37,839 call edges) | 5.3 s | < 10 ms |
-| [requests](https://github.com/psf/requests) (Python) | 22 | 304 (279 call edges) | 0.08 s | < 10 ms |
+| [requests](https://github.com/psf/requests) (Python) | 22 | 306 (282 call edges) | 0.07 s | < 10 ms |
+| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) (Java) | 30 | 118 (91 call edges, 17 endpoints) | 0.02 s | < 10 ms |
 
 Re-indexing the standard library after changing one file takes 1.6 s (one file parsed, the call graph rebuilt).
 
@@ -139,7 +147,8 @@ make vet
 - [x] **v0.3:** call graph: `get_dependency_graph`, callers and callees in `get_symbol`
 - [x] **v0.4:** `get_file_summary`, incremental re-index using file hashes
 - [x] **v0.5:** Java and Python via tree-sitter
-- [ ] Later: watch mode, architecture overview, REST endpoint listing, multi-repo indexes
+- [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
+- [ ] Later: multi-repo indexes, TypeScript and Rust, optional semantic search with local embeddings
 
 ## License
 

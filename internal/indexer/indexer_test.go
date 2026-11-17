@@ -1,6 +1,7 @@
 package indexer_test
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
@@ -26,10 +28,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 3 Go, 4 Java and 3 Python files; the generated Go file is skipped and
+	// 5 Go, 5 Java and 4 Python files; the generated Go file is skipped and
 	// the _test.go file ignored.
-	if res.Files != 10 || res.Skipped != 1 {
-		t.Fatalf("got %d files, %d skipped; want 10 and 1", res.Files, res.Skipped)
+	if res.Files != 14 || res.Skipped != 1 {
+		t.Fatalf("got %d files, %d skipped; want 14 and 1", res.Files, res.Skipped)
 	}
 	return st
 }
@@ -73,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 10 || syms != 40 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 10 and 40", files, syms)
+	if files != 14 || syms != 55 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 55", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -273,7 +275,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 10 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 14 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -296,7 +298,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 8 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 12 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -327,5 +329,82 @@ func TestReindexIncremental(t *testing.T) {
 	callees, err := st.Callees(refund[0].ID, false)
 	if err != nil || len(callees) != 1 || callees[0].Qualified != "payments.Gateway.Refund" {
 		t.Errorf("Refund callees = %+v, %v", callees, err)
+	}
+}
+
+func TestWatchPicksUpChanges(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan indexer.Result, 1)
+	go indexer.Watch(ctx, repo, st, indexer.Options{}, 20*time.Millisecond, func(r indexer.Result, err error) {
+		if err == nil {
+			select {
+			case done <- r:
+			default:
+			}
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+	src := "package payments\n\n// Audit records a charge.\nfunc Audit(id string) {}\n"
+	if err := os.WriteFile(filepath.Join(repo, "payments", "audit.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.Files != 1 {
+			t.Errorf("watch re-indexed %d files, want 1", r.Files)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not re-index the new file")
+	}
+	if syms, _ := st.Lookup("payments.Audit"); len(syms) != 1 {
+		t.Error("new symbol not searchable after watch re-index")
+	}
+}
+
+func TestEndpointsAndOverview(t *testing.T) {
+	st := indexSample(t)
+	eps, err := st.ListEndpoints(store.EndpointFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range eps {
+		got = append(got, fmt.Sprintf("%s %s -> %s [%s] %s", e.Method, e.Path, e.Handler, e.Framework, e.HandlerLocation))
+	}
+	want := []string{
+		"POST /api/v1/checkout -> checkout.handleCheckout [net/http] checkout/http.go:23",
+		"GET /api/v1/orders/{id} -> checkout.Handler.getOrder [net/http] checkout/http.go:27",
+		"GET /inventory/stock/{sku} -> py.inventory.api.get_stock [fastapi] py/inventory/api.py:9",
+		"POST /inventory/stock/{sku}/reserve -> py.inventory.api.reserve [fastapi] py/inventory/api.py:15",
+		"POST /orders -> com.shop.orders.OrderController.place [spring] java/com/shop/orders/OrderController.java:19",
+		"GET /orders/{id} -> com.shop.orders.OrderController.get [spring] java/com/shop/orders/OrderController.java:25",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("endpoints:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	o, err := st.BuildOverview(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Languages) != 3 || o.Endpoints != 6 {
+		t.Errorf("overview languages=%v endpoints=%d", o.Languages, o.Endpoints)
+	}
+	entries := map[string]bool{}
+	for _, e := range o.EntryPoints {
+		entries[e.Qualified] = true
+	}
+	if !entries["checkout/cmd/server/main.main"] || !entries["py.inventory.api.__main__"] {
+		t.Errorf("entry points = %+v", o.EntryPoints)
 	}
 }

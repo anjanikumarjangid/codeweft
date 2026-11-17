@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "3"
+const SchemaVersion = "4"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS raw_calls (
 	line    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS raw_calls_file ON raw_calls(file_id);
+CREATE TABLE IF NOT EXISTS endpoints (
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	method    TEXT NOT NULL,
+	path      TEXT NOT NULL,
+	handler   TEXT NOT NULL,
+	framework TEXT NOT NULL,
+	line      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS endpoints_file ON endpoints(file_id);
 CREATE TABLE IF NOT EXISTS edges (
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
@@ -102,7 +111,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "edges", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -146,6 +155,16 @@ type Field struct {
 	Owner   string
 	Name    string
 	TypeRef string
+}
+
+// Endpoint is an HTTP route found in the code.
+type Endpoint struct {
+	Method    string `json:"method"` // GET, POST, ... or ANY
+	Path      string `json:"path"`
+	Handler   string `json:"handler"` // qualified name of the handler, when known
+	Framework string `json:"framework"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
 }
 
 // Call forms understood by the resolver.

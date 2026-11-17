@@ -45,7 +45,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM edges`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {
@@ -124,6 +124,13 @@ func (t *Tx) AddImport(fileID int64, imp Import) error {
 func (t *Tx) AddField(fileID int64, f Field) error {
 	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref) VALUES(?, ?, ?, ?)`,
 		fileID, f.Owner, f.Name, f.TypeRef)
+	return err
+}
+
+// AddEndpoint records an HTTP route.
+func (t *Tx) AddEndpoint(fileID int64, e Endpoint) error {
+	_, err := t.exec(`INSERT INTO endpoints(file_id, method, path, handler, framework, line) VALUES(?, ?, ?, ?, ?, ?)`,
+		fileID, e.Method, e.Path, e.Handler, e.Framework, e.Line)
 	return err
 }
 
