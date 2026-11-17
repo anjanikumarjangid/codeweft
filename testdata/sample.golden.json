@@ -38,6 +38,19 @@
     "exported": false
   },
   {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "audit",
+    "qualified": "checkout.audit",
+    "kind": "func",
+    "signature": "func audit(lookup func() *payments.PaymentService)",
+    "doc": "audit charges through a service it gets from a function value. Its type\nis not stated anywhere the index can see, so the call is linked by the\nmethod's unique name.",
+    "start_line": 33,
+    "end_line": 35,
+    "exported": false
+  },
+  {
     "file": "checkout/cmd/server/main.go",
     "lang": "go",
     "package": "main",

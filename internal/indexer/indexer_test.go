@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 14 || syms != 82 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 82", files, syms)
+	if files != 14 || syms != 83 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 83", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -303,8 +303,11 @@ func TestCallersAndGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers) != 1 || callers[0].Qualified != "checkout.Checkout" {
-		t.Fatalf("callers of ProcessPayment = %+v, want checkout.Checkout", callers)
+	// Checkout's call is exact (svc's type comes from NewPaymentService's
+	// result); audit's goes through a function value, matched by name.
+	if len(callers) != 2 || callers[0].Qualified != "checkout.Checkout" || callers[0].Confidence != "exact" ||
+		callers[1].Qualified != "checkout.audit" || callers[1].Confidence != "name" {
+		t.Fatalf("callers of ProcessPayment = %+v, want checkout.Checkout (exact) and checkout.audit (name)", callers)
 	}
 
 	// Checkout -> ProcessPayment -> Gateway.Charge, two levels deep.

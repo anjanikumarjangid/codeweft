@@ -46,7 +46,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM vars`, `DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {
@@ -129,8 +129,14 @@ func (t *Tx) AddImport(fileID int64, imp Import) error {
 
 // AddField records a struct or class field with its type.
 func (t *Tx) AddField(fileID int64, f Field) error {
-	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref) VALUES(?, ?, ?, ?)`,
-		fileID, f.Owner, f.Name, f.TypeRef)
+	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref, type_expr) VALUES(?, ?, ?, ?, ?)`,
+		fileID, f.Owner, f.Name, f.TypeRef, f.TypeExpr)
+	return err
+}
+
+// AddVar records a package-level variable.
+func (t *Tx) AddVar(fileID int64, v Var) error {
+	_, err := t.exec(`INSERT INTO vars(file_id, qualified, expr) VALUES(?, ?, ?)`, fileID, v.Qualified, v.Expr)
 	return err
 }
 

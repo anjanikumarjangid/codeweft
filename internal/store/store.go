@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "6"
+const SchemaVersion = "7"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -65,11 +65,18 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE INDEX IF NOT EXISTS imports_file ON imports(file_id);
 CREATE TABLE IF NOT EXISTS fields (
 	file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-	owner    TEXT NOT NULL,
-	name     TEXT NOT NULL,
-	type_ref TEXT NOT NULL
+	owner     TEXT NOT NULL,
+	name      TEXT NOT NULL,
+	type_ref  TEXT NOT NULL,
+	type_expr TEXT NOT NULL DEFAULT '' -- Go: the field's type as written
 );
 CREATE INDEX IF NOT EXISTS fields_owner ON fields(owner, name);
+CREATE TABLE IF NOT EXISTS vars (
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	qualified TEXT NOT NULL,
+	expr      TEXT NOT NULL -- how its type can be found, see indexer/goexpr.go
+);
+CREATE INDEX IF NOT EXISTS vars_file ON vars(file_id);
 CREATE TABLE IF NOT EXISTS raw_calls (
 	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 	caller  TEXT NOT NULL,
@@ -144,7 +151,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -193,9 +200,17 @@ type Import struct {
 // TypeRef. TypeRef is either a qualified type name, or "@importpath.Type"
 // for a type from another package, resolved later.
 type Field struct {
-	Owner   string
-	Name    string
-	TypeRef string
+	Owner    string
+	Name     string
+	TypeRef  string
+	TypeExpr string // Go: the field's type expression as written, e.g. "[]*Item"
+}
+
+// Var is a package-level variable and how its type can be found: an
+// encoded expression (see indexer/goexpr.go).
+type Var struct {
+	Qualified string
+	Expr      string
 }
 
 // Endpoint is an HTTP route found in the code.
@@ -233,6 +248,7 @@ const (
 	CallMethod    = "method"    // B method name on a value of unknown type
 	CallTyped     = "typed"     // A type ref of the value, B method
 	CallSuper     = "super"     // A calling type, B method on a supertype ("" for its constructor)
+	CallExpr      = "expr"      // A encoded receiver expression (Go), B method
 )
 
 // RawCall is a call site as the parser saw it, before resolution.

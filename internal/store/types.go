@@ -13,7 +13,11 @@ type TypeInput struct {
 	Supertypes []Supertype
 	GoTypes    map[string]GoDecl            // qualified type -> declaration
 	GoMethods  map[string]map[string]GoDecl // owner type -> method name -> declaration
+	GoFuncs    map[string]GoDecl            // qualified function -> declaration
+	GoFields   map[[2]string]GoDecl         // (owner type, field) -> type expression (in Signature)
+	GoVars     map[string]GoDecl            // qualified package-level variable -> encoded expression (in Signature)
 	GoFiles    map[int64]GoFile
+	GoPaths    map[string]int64 // file path -> id
 }
 
 // GoDecl is a Go type or method declaration.
@@ -35,7 +39,11 @@ func (t *Tx) LoadTypeInput() (*TypeInput, error) {
 	in := &TypeInput{
 		GoTypes:   map[string]GoDecl{},
 		GoMethods: map[string]map[string]GoDecl{},
+		GoFuncs:   map[string]GoDecl{},
+		GoFields:  map[[2]string]GoDecl{},
+		GoVars:    map[string]GoDecl{},
 		GoFiles:   map[int64]GoFile{},
+		GoPaths:   map[string]int64{},
 	}
 	rows, err := t.tx.Query(`SELECT owner, kind, type_ref FROM supertypes ORDER BY rowid`)
 	if err != nil {
@@ -54,18 +62,19 @@ func (t *Tx) LoadTypeInput() (*TypeInput, error) {
 		return nil, err
 	}
 
-	rows, err = t.tx.Query(`SELECT id, qual FROM files WHERE lang = 'go'`)
+	rows, err = t.tx.Query(`SELECT id, qual, path FROM files WHERE lang = 'go'`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id int64
-		var q string
-		if err := rows.Scan(&id, &q); err != nil {
+		var q, p string
+		if err := rows.Scan(&id, &q, &p); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		in.GoFiles[id] = GoFile{Qual: q, Imports: map[string]string{}}
+		in.GoPaths[p] = id
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -91,9 +100,47 @@ func (t *Tx) LoadTypeInput() (*TypeInput, error) {
 		return nil, err
 	}
 
+	rows, err = t.tx.Query(`SELECT fl.owner, fl.name, fl.type_expr, fl.file_id FROM fields fl
+		JOIN files f ON f.id = fl.file_id WHERE f.lang = 'go' AND fl.type_expr != ''`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var owner, name string
+		var d GoDecl
+		if err := rows.Scan(&owner, &name, &d.Signature, &d.File); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		in.GoFields[[2]string{owner, name}] = d
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = t.tx.Query(`SELECT v.qualified, v.expr, v.file_id FROM vars v
+		JOIN files f ON f.id = v.file_id WHERE f.test = 0`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var q string
+		var d GoDecl
+		if err := rows.Scan(&q, &d.Signature, &d.File); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		in.GoVars[q] = d
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	rows, err = t.tx.Query(`SELECT s.name, s.qualified, s.kind, s.signature, s.file_id
 		FROM symbols s JOIN files f ON f.id = s.file_id
-		WHERE f.lang = 'go' AND s.kind IN ('struct', 'interface', 'type', 'method', 'interface method')
+		WHERE f.lang = 'go' AND s.kind IN ('struct', 'interface', 'type', 'method', 'interface method', 'func')
 		ORDER BY s.id`)
 	if err != nil {
 		return nil, err
@@ -112,6 +159,8 @@ func (t *Tx) LoadTypeInput() (*TypeInput, error) {
 				in.GoMethods[owner] = map[string]GoDecl{}
 			}
 			in.GoMethods[owner][name] = d
+		case "func":
+			in.GoFuncs[q] = d
 		default:
 			in.GoTypes[q] = d
 		}

@@ -36,14 +36,16 @@ func resolve(tx *store.Tx, module string) (int, error) {
 	}
 	r := resolver{in: in}
 	r.supers = r.declaredSupers(types.Supertypes)
+	r.typer = newGoTyper(types, r)
 	var edges []store.Edge
 	var testEdges []store.TestEdge
 	resolved := 0
-	for _, c := range in.Calls {
+	for i, c := range in.Calls {
+		path := in.CallFiles[i]
 		// Calls made in tests: into the repository's code, or into another
 		// test function such as a helper.
 		if from, ok := in.TestFuncs[c.Caller]; ok {
-			if toID, _, _ := r.call(c); toID != 0 {
+			if toID, _, _ := r.callIn(c, path); toID != 0 {
 				testEdges = append(testEdges, store.TestEdge{FromTest: from, ToID: toID, Line: c.Line})
 			} else if to := r.testCallee(c); to != 0 && to != from {
 				testEdges = append(testEdges, store.TestEdge{FromTest: from, ToTest: to, Line: c.Line})
@@ -53,7 +55,7 @@ func resolve(tx *store.Tx, module string) (int, error) {
 		if !ok {
 			continue
 		}
-		toID, ref, conf := r.call(c)
+		toID, ref, conf := r.callIn(c, path)
 		if ref == "" {
 			continue
 		}
@@ -72,7 +74,8 @@ func resolve(tx *store.Tx, module string) (int, error) {
 }
 
 type resolver struct {
-	in *store.ResolveInput
+	in    *store.ResolveInput
+	typer *goTyper
 	// supers lists each type's declared supertypes (extends and implements,
 	// not Go embedding), in declaration order: for a Java class its
 	// superclass first, for a Python class its bases left to right.
@@ -251,6 +254,14 @@ func (r resolver) typeRef(ref string) (q string, external bool) {
 		return name, true
 	}
 	return ref, false
+}
+
+// callIn resolves a call site found in the file at path.
+func (r resolver) callIn(c store.RawCall, path string) (int64, string, string) {
+	if c.Form == store.CallExpr {
+		return r.exprCall(c, path)
+	}
+	return r.call(c)
 }
 
 func (r resolver) call(c store.RawCall) (int64, string, string) {

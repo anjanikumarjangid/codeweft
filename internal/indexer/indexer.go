@@ -30,6 +30,7 @@ type FileResult struct {
 	Symbols    []store.Symbol
 	Imports    []store.Import
 	Fields     []store.Field
+	Vars       []store.Var
 	Supertypes []store.Supertype
 	Calls      []store.RawCall
 	Endpoints  []store.Endpoint
@@ -379,6 +380,11 @@ func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 		}
 	}
 	if fr.File.Test {
+		for _, imp := range fr.Imports { // the context of its calls
+			if err := tx.AddImport(id, imp); err != nil {
+				return err
+			}
+		}
 		for _, c := range fr.Calls {
 			if err := tx.AddRawCall(id, c); err != nil {
 				return err
@@ -398,6 +404,11 @@ func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 	}
 	for _, f := range fr.Fields {
 		if err := tx.AddField(id, f); err != nil {
+			return err
+		}
+	}
+	for _, v := range fr.Vars {
+		if err := tx.AddVar(id, v); err != nil {
 			return err
 		}
 	}

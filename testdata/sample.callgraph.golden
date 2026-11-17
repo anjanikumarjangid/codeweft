@@ -1,7 +1,8 @@
 checkout.Checkout -> payments.NewPaymentService [exact] line 18
-checkout.Checkout -> payments.PaymentService.ProcessPayment [name] line 19
+checkout.Checkout -> payments.PaymentService.ProcessPayment [exact] line 19
 checkout.Checkout -> checkout.newOrder [exact] line 23
 checkout.Checkout -> fmt.Errorf [external] line 21
+checkout.audit -> payments.PaymentService.ProcessPayment [name] line 34
 checkout/cmd/server/main.main -> checkout.Routes [exact] line 13
 checkout/cmd/server/main.main -> net/http.NewServeMux [external] line 12
 checkout/cmd/server/main.main -> log.Fatal [external] line 14

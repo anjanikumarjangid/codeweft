@@ -126,6 +126,14 @@ func TestDependencyGraph(t *testing.T) {
 	for _, want := range []string{
 		"- payments.PaymentService.ProcessPayment",
 		"    - payments.Gateway.Charge",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("callees graph missing %q:\n%s", want, out)
+		}
+	}
+	out = callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "checkout.audit"})
+	for _, want := range []string{
+		"- payments.PaymentService.ProcessPayment",
 		"(matched by method name)",
 	} {
 		if !strings.Contains(out, want) {
@@ -150,7 +158,7 @@ func TestFileSummary(t *testing.T) {
 		"Package payments processes customer payments.",
 		"Imports: errors",
 		"func (s *PaymentService) ProcessPayment(customerID string, cents int64) (string, error)",
-		"Called from:\n- checkout/checkout.go (2 call site(s))",
+		"Called from:\n- checkout/checkout.go (3 call site(s))",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("file summary missing %q:\n%s", want, out)

@@ -26,3 +26,10 @@ func Checkout(gw payments.Gateway, customerID string, cents int64) (*Order, erro
 func newOrder(chargeID string) *Order {
 	return &Order{ID: "ord_" + chargeID, ChargeID: chargeID}
 }
+
+// audit charges through a service it gets from a function value. Its type
+// is not stated anywhere the index can see, so the call is linked by the
+// method's unique name.
+func audit(lookup func() *payments.PaymentService) {
+	lookup().ProcessPayment("audit", 1)
+}
