@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "8"
+const SchemaVersion = "10"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS symbols (
 	start_line INTEGER NOT NULL,
 	end_line   INTEGER NOT NULL,
 	exported   INTEGER NOT NULL,
-	body       TEXT NOT NULL
+	body       TEXT NOT NULL,
+	result     TEXT NOT NULL DEFAULT '', -- Java/Python: declared result type reference
+	arity      TEXT NOT NULL DEFAULT '' -- Java: "2" parameters, "1+" with varargs, "" unknown
 );
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_qualified ON symbols(qualified);
@@ -85,7 +87,8 @@ CREATE TABLE IF NOT EXISTS raw_calls (
 	a       TEXT NOT NULL,
 	b       TEXT NOT NULL,
 	c       TEXT NOT NULL,
-	line    INTEGER NOT NULL
+	line    INTEGER NOT NULL,
+	args    INTEGER NOT NULL DEFAULT -1 -- number of arguments, -1 when not recorded
 );
 CREATE INDEX IF NOT EXISTS raw_calls_file ON raw_calls(file_id);
 CREATE TABLE IF NOT EXISTS endpoints (
@@ -170,6 +173,12 @@ type Symbol struct {
 	Exported  bool   `json:"exported"`
 	Generated bool   `json:"generated,omitempty"` // declared in a generated file
 	Body      string `json:"body,omitempty"`
+	// Result is the declared result type of a Java or Python method, as a
+	// type reference the resolver can follow (not shown to clients).
+	Result string `json:"-"`
+	// Arity is a Java method's parameter count: "2", or "1+" with varargs,
+	// used to tell overloads declared in different classes apart.
+	Arity string `json:"-"`
 }
 
 // File is one indexed source file.
@@ -261,6 +270,7 @@ type RawCall struct {
 	A, B   string
 	C      string
 	Line   int
+	Args   int // number of arguments (Java), -1 when not recorded
 }
 
 // Store wraps the SQLite connection.

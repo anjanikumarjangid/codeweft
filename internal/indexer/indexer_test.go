@@ -1259,6 +1259,24 @@ class Box<T extends Base> {
     int total(T t) { return t.size(); }
     String name() { return String.valueOf(1); }
 }
+class Hasher {
+    Hasher putBytes(byte[] b) { return this; }
+}
+class Murmur extends Hasher {
+    Hasher putBytes(byte[] b, int off, int len) { return this; }
+    Hasher putString(String s) { return putBytes(s.getBytes()); }
+}
+class Uses {
+    Base base() { return new Base(); }
+    int chain() { return base().size(); }
+    void fail(java.util.List<Base> items) {
+        try { chain(); } catch (IllegalStateException e) { e.getMessage(); }
+        for (Base b : items) { b.size(); }
+        items.get(0).size();
+        getClass().getSimpleName();
+        Runnable r = new Runnable() { public void run() {} };
+    }
+}
 `
 	if err := os.WriteFile(filepath.Join(repo, "j", "All.java"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -1292,10 +1310,9 @@ class Box<T extends Base> {
 	for _, c := range []struct{ name, want string }{
 		// check() is the enclosing class's; size() is inherited from Base.
 		{"j.Outer.Inner.count", "j.Outer.check[exact] j.Base.size[exact]"},
-		// Entry is a member type Inner inherits from Base. (The method on
-		// the new object is found by its name only: Java expression typing
-		// comes later.)
-		{"j.Outer.Inner.entry", "j.Base.Entry.touch[name] j.Base.Entry[exact]"},
+		// Entry is a member type Inner inherits from Base; the method on
+		// the new object is found from the object's type.
+		{"j.Outer.Inner.entry", "j.Base.Entry.touch[exact] j.Base.Entry[exact]"},
 		// Inner's constructor calls Base's implicitly.
 		{"j.Outer.Inner.Inner", "j.Base.Base[exact]"},
 		// Form is Outer's nested class, named without Outer.
@@ -1303,6 +1320,16 @@ class Box<T extends Base> {
 		// T is bounded by Base; String is java.lang.String.
 		{"j.Box.total", "j.Base.size[exact]"},
 		{"j.Box.name", "java.lang.String.valueOf[external]"},
+		// putBytes(x) with one argument is the superclass's overload.
+		{"j.Murmur.putString", "j.Hasher.putBytes[exact] java.lang.String.getBytes[external]"},
+		// base() returns Base, so .size() is Base.size.
+		{"j.Uses.chain", "j.Base.size[exact] j.Uses.base[exact]"},
+		// A catch parameter and a for-each variable have their declared
+		// types; items.get(0) is a value of an outside type, so its size()
+		// is not guessed; getClass() is Object's; new Runnable() { ... }
+		// calls nothing of the interface.
+		{"j.Uses.fail", "j.Uses.chain[exact] j.Base.size[exact] java.lang.IllegalStateException.getMessage[external] " +
+			"java.util.List.get[external] java.lang.Class.getSimpleName[external] java.lang.Object.getClass[external]"},
 	} {
 		if got := callees(c.name); got != c.want {
 			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)

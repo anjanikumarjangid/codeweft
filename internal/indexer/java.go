@@ -1,7 +1,9 @@
 package indexer
 
 import (
+	"encoding/json"
 	"path"
+	"strconv"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -316,6 +318,8 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				jf.res.Fields = append(jf.res.Fields, store.Field{Owner: qual, Name: pn, TypeRef: ref})
 			}
 			jf.add(p, pn, qual+"."+pn, "method", text(pt, jf.src)+" "+pn+"()", "Accessor for the record component "+pn+".", true)
+			jf.res.Symbols[len(jf.res.Symbols)-1].Result = jf.typeRef(pt)
+			jf.res.Symbols[len(jf.res.Symbols)-1].Arity = "0"
 		}
 	}
 	members := namedChildren(body)
@@ -355,6 +359,13 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 			mq := qual + "." + mname
 			jf.add(m, mname, mq, kind, header(m, mbody, jf.src), javadoc(m, jf.src),
 				isInterface || hasModifier(m, jf.src, "public"))
+			sym := &jf.res.Symbols[len(jf.res.Symbols)-1]
+			sym.Arity = arity(field(m, "parameters"))
+			jf.withTypeParams(m, func() {
+				if t := field(m, "type"); t != nil {
+					sym.Result = jf.typeRef(t) // the declared return type
+				}
+			})
 			if mbody != nil {
 				jf.withTypeParams(m, func() {
 					jf.calls(m, mbody, mq, qual, fields)
@@ -381,13 +392,51 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 // calls records method invocations and constructor calls in a body.
 func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields map[string]string) {
 	locals := map[string]string{}
-	for _, p := range namedChildren(field(decl, "parameters")) {
-		if ref := jf.typeRef(field(p, "type")); ref != "" {
-			locals[text(field(p, "name"), jf.src)] = ref
+	// param records a parameter-like declaration: a method or lambda
+	// parameter, a varargs parameter (an array: its methods are Object's),
+	// a catch parameter (of the first type of a multi-catch), or a for-each
+	// variable.
+	param := func(n *sitter.Node) {
+		var typ, name *sitter.Node
+		switch n.Type() {
+		case "formal_parameter", "enhanced_for_statement":
+			typ, name = field(n, "type"), field(n, "name")
+		case "spread_parameter":
+			for _, c := range namedChildren(n) {
+				if c.Type() == "variable_declarator" {
+					name = field(c, "name")
+				}
+			}
+			if name != nil {
+				locals[text(name, jf.src)] = "@java.lang.Object"
+			}
+			return
+		case "catch_formal_parameter":
+			for _, c := range namedChildren(n) {
+				switch c.Type() {
+				case "catch_type":
+					if ts := namedChildren(c); len(ts) > 0 {
+						typ = ts[0]
+					}
+				case "identifier":
+					name = c
+				}
+			}
 		}
+		if typ == nil || name == nil {
+			return
+		}
+		if ref := jf.typeRef(typ); ref != "" {
+			locals[text(name, jf.src)] = ref
+		}
+	}
+	for _, p := range namedChildren(field(decl, "parameters")) {
+		param(p)
 	}
 	walk(body, func(n *sitter.Node) bool {
 		switch n.Type() {
+		case "formal_parameter", "spread_parameter", "catch_formal_parameter", "enhanced_for_statement":
+			param(n)
 		case "local_variable_declaration":
 			ref := jf.typeRef(field(n, "type"))
 			for _, d := range namedChildren(n) {
@@ -410,12 +459,16 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 			t := field(n, "type")
 			if ref := jf.typeRef(t); ref != "" {
 				short := ref[strings.LastIndexAny(ref, ".@~?^|")+1:]
-				jf.res.Calls = append(jf.res.Calls, store.RawCall{Caller: caller, Form: store.CallTyped, A: ref, B: short, Line: line(n)})
+				rc := store.RawCall{Caller: caller, Form: store.CallTyped, A: ref, B: short, Line: line(n), Args: argCount(n)}
+				if hasChild(n, "class_body") {
+					rc.C = "anonymous" // new T() { ... }: runs T's constructor only if T is a class
+				}
+				jf.res.Calls = append(jf.res.Calls, rc)
 			}
 		case "explicit_constructor_invocation":
 			// super(...) calls the superclass constructor; this(...) another
 			// constructor of the same class.
-			rc := store.RawCall{Caller: caller, Line: line(n)}
+			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			switch c := field(n, "constructor"); {
 			case c == nil:
 				return true
@@ -430,7 +483,7 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 			jf.res.Calls = append(jf.res.Calls, rc)
 		case "method_invocation":
 			name := text(field(n, "name"), jf.src)
-			rc := store.RawCall{Caller: caller, Line: line(n)}
+			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {
 			case obj == nil && jf.statics[name] != "": // import static a.b.C.name
@@ -451,13 +504,13 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 					rc.Form, rc.A, rc.B, rc.C = store.CallField, owner, x, name
 				case isCapitalized(x): // static call: Type.method()
 					rc.Form, rc.A, rc.B = store.CallTyped, jf.nameRef(x), name
-				default:
-					rc.Form, rc.B = store.CallMethod, name
+				default: // a field inherited from a supertype
+					jf.exprCall(&rc, obj, owner, locals, fields, name)
 				}
 			case obj.Type() == "field_access" && field(obj, "object") != nil && field(obj, "object").Type() == "this":
 				rc.Form, rc.A, rc.B, rc.C = store.CallField, owner, text(field(obj, "field"), jf.src), name
 			default:
-				rc.Form, rc.B = store.CallMethod, name
+				jf.exprCall(&rc, obj, owner, locals, fields, name)
 			}
 			if rc.Form == store.CallTyped && rc.A == "" {
 				return true
@@ -488,4 +541,116 @@ func explicitConstructorCall(body *sitter.Node) bool {
 		return c.Type() == "explicit_constructor_invocation"
 	}
 	return false
+}
+
+// exprCall makes rc a call on a receiver whose type the resolver works out
+// (store.CallExpr), or, when the receiver cannot be described, a call
+// matched by method name.
+func (jf *javaFile) exprCall(rc *store.RawCall, obj *sitter.Node, owner string, locals, fields map[string]string, name string) {
+	if e := jf.javaExpr(obj, owner, locals, fields, 0); e != nil {
+		if b, err := json.Marshal(e); err == nil {
+			rc.Form, rc.A, rc.B = store.CallExpr, string(b), name
+			return
+		}
+	}
+	rc.Form, rc.B = store.CallMethod, name
+}
+
+// javaExpr encodes an expression whose type the resolver can work out
+// from declarations, as a JSON-able tree:
+//
+//	["t", REF]           a type reference
+//	["f", EXPR, NAME]    the field NAME of EXPR (also inherited)
+//	["c", EXPR, NAME]    the result of calling method NAME on EXPR
+//	["C", CLASS, NAME]   the result of calling NAME without a receiver in
+//	                     CLASS (its own, inherited or an enclosing class's)
+//
+// It returns nil for anything else (an array element, a lambda's value).
+func (jf *javaFile) javaExpr(n *sitter.Node, owner string, locals, fields map[string]string, depth int) any {
+	if n == nil || depth > 10 {
+		return nil
+	}
+	this := []any{"t", "@" + owner}
+	switch n.Type() {
+	case "parenthesized_expression":
+		if kids := namedChildren(n); len(kids) == 1 {
+			return jf.javaExpr(kids[0], owner, locals, fields, depth+1)
+		}
+	case "this":
+		return this
+	case "identifier":
+		x := text(n, jf.src)
+		switch {
+		case locals[x] != "":
+			return []any{"t", locals[x]}
+		case fields[x] != "":
+			return []any{"t", fields[x]}
+		case isCapitalized(x):
+			return nil // a class: static calls are typed calls
+		}
+		return []any{"f", this, x} // a field inherited from a supertype
+	case "object_creation_expression", "cast_expression":
+		if ref := jf.typeRef(field(n, "type")); ref != "" {
+			return []any{"t", ref}
+		}
+	case "field_access":
+		obj, f := field(n, "object"), text(field(n, "field"), jf.src)
+		if obj != nil && obj.Type() == "this" {
+			return []any{"f", this, f}
+		}
+		if x := jf.javaExpr(obj, owner, locals, fields, depth+1); x != nil {
+			return []any{"f", x, f}
+		}
+	case "method_invocation":
+		obj, m := field(n, "object"), text(field(n, "name"), jf.src)
+		switch {
+		case obj == nil || obj.Type() == "this":
+			return []any{"C", owner, m}
+		case obj.Type() == "super":
+			return nil
+		case obj.Type() == "identifier" && locals[text(obj, jf.src)] == "" && fields[text(obj, jf.src)] == "" &&
+			isCapitalized(text(obj, jf.src)):
+			if ref := jf.nameRef(text(obj, jf.src)); ref != "" { // Type.staticMethod()
+				return []any{"c", []any{"t", ref}, m}
+			}
+		default:
+			if x := jf.javaExpr(obj, owner, locals, fields, depth+1); x != nil {
+				return []any{"c", x, m}
+			}
+		}
+	}
+	return nil
+}
+
+// argCount is the number of arguments of a call or object creation.
+func argCount(n *sitter.Node) int {
+	args := field(n, "arguments")
+	if args == nil {
+		return -1
+	}
+	count := 0
+	for _, c := range namedChildren(args) {
+		if c.Type() != "line_comment" && c.Type() != "block_comment" {
+			count++
+		}
+	}
+	return count
+}
+
+// arity describes a parameter list: "2", or "1+" when the last parameter
+// is varargs (it accepts one or more parameters before it, then any number).
+func arity(params *sitter.Node) string {
+	n, varargs := 0, false
+	for _, p := range namedChildren(params) {
+		switch p.Type() {
+		case "formal_parameter":
+			n++
+		case "spread_parameter":
+			varargs = true
+		}
+	}
+	if varargs {
+		return strconv.Itoa(n) + "+"
+	}
+	return strconv.Itoa(n)
 }

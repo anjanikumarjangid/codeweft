@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
@@ -104,6 +105,14 @@ func (r resolver) declaredSupers(sts []store.Supertype) map[string][]superType {
 	return out
 }
 
+// objectMethods are the methods every Java class inherits from
+// java.lang.Object, with their result type references ("" for primitives
+// and void).
+var objectMethods = map[string]string{
+	"getClass": "@java.lang.Class", "toString": "@java.lang.String", "hashCode": "", "equals": "",
+	"clone": "@java.lang.Object", "notify": "", "notifyAll": "", "wait": "", "finalize": "",
+}
+
 // javaLang are the java.lang types used without an import.
 var javaLang = map[string]bool{
 	"Object": true, "String": true, "StringBuilder": true, "CharSequence": true, "Integer": true, "Long": true,
@@ -192,19 +201,31 @@ func (r resolver) isType(q string) bool {
 	return false
 }
 
+// declared returns the declaration of q that a call with args arguments
+// can call (-1: any), if q is declared.
+func (r resolver) declared(q string, args int) (int64, bool) {
+	for _, o := range r.in.Overloads[q] {
+		if o.Fits(args) {
+			return o.ID, true
+		}
+	}
+	return 0, false
+}
+
 // inherited finds method m declared on type t or on one of its supertypes,
-// searched depth first in declaration order.
-func (r resolver) inherited(t, m string, seen map[string]bool) (int64, string) {
+// searched depth first in declaration order, among the overloads that take
+// args arguments (-1: any number).
+func (r resolver) inherited(t, m string, args int, seen map[string]bool) (int64, string) {
 	if seen[t] {
 		return 0, ""
 	}
 	seen[t] = true
-	if id, ok := r.in.Symbols[t+"."+m]; ok {
+	if id, ok := r.declared(t+"."+m, args); ok {
 		return id, t + "." + m
 	}
 	for _, s := range r.supers[t] {
 		if !s.external {
-			if id, q := r.inherited(s.q, m, seen); id != 0 {
+			if id, q := r.inherited(s.q, m, args, seen); id != 0 {
 				return id, q
 			}
 		}
@@ -212,15 +233,32 @@ func (r resolver) inherited(t, m string, seen map[string]bool) (int64, string) {
 	return 0, ""
 }
 
+// method finds method m on type t like inherited, preferring an overload
+// that takes args arguments: Java overloads of one name can be declared in
+// different classes (putBytes(byte[]) in a superclass, putBytes(byte[],
+// int, int) in the class). Only if none fits is any overload taken.
+func (r resolver) method(t, m string, args int) (int64, string) {
+	if id, q := r.inherited(t, m, args, map[string]bool{}); id != 0 || args < 0 {
+		return id, q
+	}
+	return r.inherited(t, m, -1, map[string]bool{})
+}
+
 // inheritedOrEnclosing resolves a call of m without a receiver in type
 // owner: owner's own or inherited method, else, for a nested class, the
-// method of the nearest enclosing class that has one (also inherited).
-func (r resolver) inheritedOrEnclosing(owner, m string) (int64, string) {
-	for t := owner; r.isType(t); t = t[:max(strings.LastIndex(t, "."), 0)] {
-		if id, q := r.inherited(t, m, map[string]bool{}); id != 0 {
-			return id, q
+// method of the nearest enclosing class that has one (also inherited),
+// preferring an overload that takes args arguments.
+func (r resolver) inheritedOrEnclosing(owner, m string, args int) (int64, string) {
+	for _, n := range []int{args, -1} {
+		for t := owner; r.isType(t); t = t[:max(strings.LastIndex(t, "."), 0)] {
+			if id, q := r.inherited(t, m, n, map[string]bool{}); id != 0 {
+				return id, q
+			}
+			if !strings.Contains(t, ".") {
+				break
+			}
 		}
-		if !strings.Contains(t, ".") {
+		if args < 0 {
 			break
 		}
 	}
@@ -391,6 +429,9 @@ func (r resolver) typeRef(ref string) (q string, external bool) {
 // callIn resolves a call site found in the file at path.
 func (r resolver) callIn(c store.RawCall, path string) (int64, string, string) {
 	if c.Form == store.CallExpr {
+		if strings.HasSuffix(path, ".java") {
+			return r.javaExprCall(c)
+		}
 		return r.exprCall(c, path)
 	}
 	return r.call(c)
@@ -399,15 +440,23 @@ func (r resolver) callIn(c store.RawCall, path string) (int64, string, string) {
 func (r resolver) call(c store.RawCall) (int64, string, string) {
 	switch c.Form {
 	case store.CallQualified:
+		if c.B != "" && c.Args >= 0 && r.isType(strings.TrimSuffix(c.A, "."+c.B)) {
+			// A method called without a receiver in a class: its own,
+			// inherited from a supertype, or an enclosing class's (Java
+			// nested classes), by arity first.
+			if id, q := r.inheritedOrEnclosing(strings.TrimSuffix(c.A, "."+c.B), c.B, c.Args); id != 0 {
+				return id, q, "exact"
+			}
+		}
 		if id, q, conf := r.exact(c.A); id != 0 {
 			return id, q, conf
 		}
 		if c.B != "" {
-			// A method called without a receiver that its class does not
-			// declare: inherited from a supertype, or a method of an
-			// enclosing class (Java nested classes).
-			if id, q := r.inheritedOrEnclosing(strings.TrimSuffix(c.A, "."+c.B), c.B); id != 0 {
+			if id, q := r.inheritedOrEnclosing(strings.TrimSuffix(c.A, "."+c.B), c.B, -1); id != 0 {
 				return id, q, "exact"
+			}
+			if _, ok := objectMethods[c.B]; ok && r.isType(strings.TrimSuffix(c.A, "."+c.B)) {
+				return 0, "java.lang.Object." + c.B, "external" // getClass() in any class
 			}
 			return r.byMethodName(c.B)
 		}
@@ -427,14 +476,24 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 		if t == "" {
 			return 0, "", ""
 		}
+		if external && c.C == "anonymous" {
+			// new Runnable() { ... }: whether an outside type is an
+			// interface (nothing called) or a class is not known.
+			return 0, "", ""
+		}
 		if external {
 			return 0, t + "." + c.B, "external"
 		}
 		if id, q, conf := r.exact(t + "." + c.B); id != 0 {
 			return id, q, conf
 		}
-		// `new Order(...)` on a type without an explicit constructor.
+		// `new Order(...)` on a type without an explicit constructor. An
+		// interface has none to call: new Runnable() { ... } creates an
+		// anonymous class, which is not a call into the interface.
 		if c.B == t[strings.LastIndex(t, ".")+1:] {
+			if id, ok := r.in.Symbols[t]; ok && (r.in.Kinds[id] == "interface" || r.in.Kinds[id] == "annotation") {
+				return 0, "", ""
+			}
 			return r.exact(t)
 		}
 		return r.byMethodName(c.B)
@@ -470,4 +529,114 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 		return r.byMethodName(c.B)
 	}
 	return 0, "", ""
+}
+
+// javaType works out the type of a Java expression encoded by the parser
+// (java.go javaExpr): the qualified type, whether it is declared outside
+// the repository, and whether it could be found at all.
+func (r resolver) javaType(node any, depth int) (q string, external, known bool) {
+	n, ok := node.([]any)
+	if !ok || len(n) < 2 || depth > 12 {
+		return "", false, false
+	}
+	str := func(i int) string {
+		if i < len(n) {
+			s, _ := n[i].(string)
+			return s
+		}
+		return ""
+	}
+	fromRef := func(ref string) (string, bool, bool) {
+		q, ext := r.typeRef(ref)
+		return q, ext, q != ""
+	}
+	switch str(0) {
+	case "t":
+		return fromRef(str(1))
+	case "f":
+		owner, ext, ok := r.javaType(n[1], depth+1)
+		if ext {
+			return "", true, true // a field of an outside type: an outside value
+		}
+		if !ok {
+			return "", false, false
+		}
+		if ref := r.javaField(owner, str(2), map[string]bool{}); ref != "" {
+			return fromRef(ref)
+		}
+	case "c":
+		owner, ext, ok := r.javaType(n[1], depth+1)
+		if ext {
+			return "", true, true // a method of an outside type: an outside value
+		}
+		if !ok {
+			return "", false, false
+		}
+		if id, _ := r.method(owner, str(2), -1); id != 0 {
+			return fromRef(r.in.Results[id])
+		}
+	case "C":
+		if id, _ := r.inheritedOrEnclosing(str(1), str(2), -1); id != 0 {
+			return fromRef(r.in.Results[id])
+		}
+		if ref, ok := objectMethods[str(2)]; ok && ref != "" { // getClass(), toString()
+			return fromRef(ref)
+		}
+	}
+	return "", false, false
+}
+
+// javaField returns the type reference of field name of type t, declared
+// on t or inherited from a supertype.
+func (r resolver) javaField(t, name string, seen map[string]bool) string {
+	if seen[t] {
+		return ""
+	}
+	seen[t] = true
+	if ref, ok := r.in.Fields[[2]string{t, name}]; ok {
+		return ref
+	}
+	for _, s := range r.supers[t] {
+		if !s.external {
+			if ref := r.javaField(s.q, name, seen); ref != "" {
+				return ref
+			}
+		}
+	}
+	return ""
+}
+
+// javaExprCall resolves a Java method call on a receiver the parser
+// encoded. A receiver of a type outside the repository gives an external
+// reference; one of unknown type falls back to the unique method name.
+func (r resolver) javaExprCall(c store.RawCall) (int64, string, string) {
+	var node any
+	if json.Unmarshal([]byte(c.A), &node) != nil {
+		return r.byMethodName(c.B)
+	}
+	t, external, known := r.javaType(node, 0)
+	switch {
+	case !known:
+		return r.byMethodName(c.B)
+	case external && t == "":
+		// A value that came from a type outside the repository (the result
+		// of list.get(0), map.values()): its type is outside too, though
+		// not known exactly. No guess by method name.
+		return 0, "", ""
+	case external:
+		return 0, t + "." + c.B, "external"
+	}
+	if id, q := r.method(t, c.B, c.Args); id != 0 {
+		return id, q, "exact"
+	}
+	// Declared on a supertype outside the repository, or on Object.
+	for _, s := range r.supers[t] {
+		if s.external {
+			return 0, s.q + "." + c.B, "external"
+		}
+	}
+	if _, ok := objectMethods[c.B]; ok {
+		return 0, "java.lang.Object." + c.B, "external"
+	}
+	return r.byMethodName(c.B)
 }
