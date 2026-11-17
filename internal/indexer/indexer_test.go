@@ -230,3 +230,101 @@ func TestCallersAndGraph(t *testing.T) {
 		t.Errorf("ExternalCallers(sync) = %+v, %v", ext, err)
 	}
 }
+
+// copyTree copies the fixture repo so a test can modify it.
+func copyTree(t *testing.T, src string) string {
+	t.Helper()
+	dst := t.TempDir()
+	err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+func TestReindexIncremental(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No changes: nothing is re-parsed and the graph is identical.
+	res, err := indexer.Reindex(repo, st, indexer.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 0 || res.Unchanged != 3 || res.Removed != 0 {
+		t.Fatalf("no-op reindex: %+v", res)
+	}
+
+	// Change one file (rename a method), delete one, add one.
+	svc := filepath.Join(repo, "payments", "service.go")
+	data, _ := os.ReadFile(svc)
+	data = []byte(strings.ReplaceAll(string(data), "ProcessPayment", "Pay"))
+	if err := os.WriteFile(svc, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "ratelimit", "limiter.go")); err != nil {
+		t.Fatal(err)
+	}
+	extra := "package payments\n\n// Refund reverses a charge.\nfunc (s *PaymentService) Refund(id string) error { return s.gw.Refund(id) }\n"
+	if err := os.WriteFile(filepath.Join(repo, "payments", "refund.go"), []byte(extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = indexer.Reindex(repo, st, indexer.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Files != 2 || res.Unchanged != 1 || res.Removed != 1 {
+		t.Fatalf("reindex after changes: %+v", res)
+	}
+	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
+		t.Error("symbols of a deleted file are still indexed")
+	}
+	if hits, _ := st.Search("ProcessPayment", store.SearchOptions{}); len(hits) != 0 {
+		t.Errorf("renamed method still searchable: %v", hits[0].Qualified)
+	}
+	pay, err := st.Lookup("payments.PaymentService.Pay")
+	if err != nil || len(pay) != 1 {
+		t.Fatalf("lookup Pay: %v %v", pay, err)
+	}
+	// The whole graph is rebuilt from stored call sites, so edges stay
+	// consistent: Gateway.Charge is now called from Pay, and checkout.go
+	// (unchanged, still calling the old name) no longer links to anything.
+	charge, _ := st.Lookup("payments.Gateway.Charge")
+	callers, err := st.Callers(charge[0].ID)
+	if err != nil || len(callers) != 1 || callers[0].Qualified != "payments.PaymentService.Pay" {
+		t.Errorf("callers of Gateway.Charge = %+v, %v", callers, err)
+	}
+	if callers, _ := st.Callers(pay[0].ID); len(callers) != 0 {
+		t.Errorf("stale call site resolved to renamed method: %+v", callers)
+	}
+	refund, err := st.Lookup("payments.PaymentService.Refund")
+	if err != nil || len(refund) != 1 {
+		t.Fatalf("new file not indexed: %v %v", refund, err)
+	}
+	callees, err := st.Callees(refund[0].ID, false)
+	if err != nil || len(callees) != 1 || callees[0].Qualified != "payments.Gateway.Refund" {
+		t.Errorf("Refund callees = %+v, %v", callees, err)
+	}
+}

@@ -90,6 +90,13 @@ func Index(root string, st *store.Store, opts Options) (Result, error) {
 	return run(root, st, opts, false)
 }
 
+// Reindex updates an existing index: only files whose content hash changed
+// are re-parsed, deleted files are removed, and the call graph is rebuilt
+// from the stored call sites, so edges into changed files stay correct.
+func Reindex(root string, st *store.Store, opts Options) (Result, error) {
+	return run(root, st, opts, true)
+}
+
 func run(root string, st *store.Store, opts Options, incremental bool) (Result, error) {
 	var res Result
 	root, err := filepath.Abs(root)

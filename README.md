@@ -8,7 +8,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 - **Local:** one binary and one SQLite file. No cloud service, no API keys, no embeddings.
 - **Agent-native:** exposed as MCP tools, so any MCP client can use it.
 
-> Status: v0.3. Go repositories are supported today; see the [roadmap](#roadmap).
+> Status: v0.4. Go repositories are supported today; see the [roadmap](#roadmap).
 
 ## MCP tools
 
@@ -17,6 +17,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 | `search_code` | Ranked keyword search over symbol names, signatures and doc comments. Splits `camelCase` and `snake_case`, stems words and matches prefixes, so `payment` finds `ProcessPayment`. Optional `kind` filter. |
 | `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). |
 | `get_dependency_graph` | What a symbol calls, or what calls it, several levels deep. Given an external package such as `database/sql`, lists every place that calls into it. |
+| `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
 
 ## Quick start
 
@@ -49,7 +50,9 @@ Then ask something like: *"Using codewiki, where is the retry logic for outgoing
 codewiki index  [--db FILE] [--include-tests] [--exclude dir1,dir2] PATH
 codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
 codewiki symbol [--db FILE] [--json] NAME
+codewiki reindex [--db FILE] [PATH]
 codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+codewiki file   [--db FILE] [--json] PATH
 codewiki serve  [--db FILE]
 ```
 
@@ -86,6 +89,10 @@ Resolution is syntactic, so it works on any checkout, even one that does not bui
 
 Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so the graph can be rebuilt without re-parsing files.
 
+### Incremental re-index
+
+`codewiki reindex` hashes every file, re-parses only those whose content changed, removes deleted ones, and then rebuilds the call graph from the stored call sites. Edges *into* a changed file stay correct even though the files calling it were not re-parsed.
+
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
 
 ## Design decisions
@@ -107,6 +114,8 @@ Measured on a 2-vCPU Linux cloud VM:
 | MCP Go SDK v1.1.0 | 60 | 949 (669 call edges) | 0.11 s | < 10 ms |
 | Go standard library `src/` (Go 1.24) | 3,260 | 41,150 (77,286 call edges) | 4.3 s | 6–7 ms |
 
+Re-indexing the standard library after changing one file takes 1.6 s (one file parsed, the call graph rebuilt).
+
 ## Development
 
 ```bash
@@ -122,7 +131,7 @@ make vet
 - [x] **v0.1:** Go indexer, SQLite + FTS5 store, `index` / `query` / `symbol` CLI
 - [x] **v0.2:** MCP server over stdio with `search_code` and `get_symbol`
 - [x] **v0.3:** call graph: `get_dependency_graph`, callers and callees in `get_symbol`
-- [ ] **v0.4:** `get_file_summary`, incremental re-index using file hashes
+- [x] **v0.4:** `get_file_summary`, incremental re-index using file hashes
 - [ ] **v0.5:** Java and Python via tree-sitter
 - [ ] Later: watch mode, architecture overview, REST endpoint listing, multi-repo indexes
 

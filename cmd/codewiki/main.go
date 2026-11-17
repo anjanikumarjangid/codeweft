@@ -26,7 +26,9 @@ Usage:
   codewiki index  [--db FILE] [--include-tests] [--exclude dir1,dir2] PATH
   codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
   codewiki symbol [--db FILE] [--json] NAME
+  codewiki reindex [--db FILE] [--include-tests] [--exclude dir1,dir2] [PATH]
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+  codewiki file   [--db FILE] [--json] PATH
   codewiki serve  [--db FILE]
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
@@ -48,6 +50,10 @@ func main() {
 		err = runSymbol(os.Args[2:])
 	case "deps":
 		err = runDeps(os.Args[2:])
+	case "reindex":
+		err = runReindex(os.Args[2:])
+	case "file":
+		err = runFile(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "version", "--version":
@@ -168,6 +174,86 @@ func runSymbol(args []string) error {
 			fmt.Printf("\n%s\n", s.Doc)
 		}
 		fmt.Printf("\n%s\n", s.Body)
+	}
+	return nil
+}
+
+// runReindex re-parses only changed files. PATH defaults to the root
+// recorded in the index.
+func runReindex(args []string) error {
+	fs := flag.NewFlagSet("reindex", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	tests := fs.Bool("include-tests", false, "also index test files")
+	exclude := fs.String("exclude", "", "comma-separated directory names to skip")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	root := fs.Arg(0)
+	if root == "" {
+		if root, err = st.Meta("root"); err != nil || root == "" {
+			return errors.New("no PATH given and none recorded in the index")
+		}
+	}
+	opts := indexer.Options{IncludeTests: *tests}
+	if *exclude != "" {
+		opts.Exclude = strings.Split(*exclude, ",")
+	}
+	start := time.Now()
+	res, err := indexer.Reindex(root, st, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "re-indexed %d changed file(s), %d unchanged, %d removed; %d call edges; %s\n",
+		res.Files, res.Unchanged, res.Removed, res.Edges, time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
+func runFile(args []string) error {
+	fs := flag.NewFlagSet("file", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	if fs.NArg() != 1 {
+		return errors.New("file needs exactly one PATH")
+	}
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	paths, err := st.FindFiles(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if len(paths) != 1 {
+		if len(paths) == 0 {
+			return fmt.Errorf("no indexed file matches %q", fs.Arg(0))
+		}
+		return fmt.Errorf("%q matches several files: %s", fs.Arg(0), strings.Join(paths, ", "))
+	}
+	sum, err := st.FileSummary(paths[0])
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(sum)
+	}
+	fmt.Printf("%s (%s, package %s)\n", sum.Path, sum.Lang, sum.Package)
+	if sum.Doc != "" {
+		fmt.Printf("\n%s\n", sum.Doc)
+	}
+	fmt.Printf("\nimports: %s\n\n", strings.Join(sum.Imports, ", "))
+	for _, d := range sum.Symbols {
+		fmt.Printf("%5d  %s\n", d.Line, firstLine(d.Signature))
+	}
+	for _, l := range sum.DependsOn {
+		fmt.Printf("calls into   %s (%d)\n", l.Path, l.Calls)
+	}
+	for _, l := range sum.UsedBy {
+		fmt.Printf("called from  %s (%d)\n", l.Path, l.Calls)
 	}
 	return nil
 }

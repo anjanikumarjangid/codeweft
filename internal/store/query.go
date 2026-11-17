@@ -298,3 +298,125 @@ func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
 }
+
+// FileSummary describes one file: what it declares, imports, and how it is
+// connected to the rest of the repository.
+type FileSummary struct {
+	Path      string     `json:"path"`
+	Lang      string     `json:"lang"`
+	Package   string     `json:"package"`
+	Doc       string     `json:"doc,omitempty"`
+	Imports   []string   `json:"imports"`
+	Symbols   []FileDecl `json:"symbols"`
+	DependsOn []FileLink `json:"depends_on"` // other files this file calls into
+	UsedBy    []FileLink `json:"used_by"`    // other files that call into this file
+}
+
+// FileDecl is a declaration listed in a file summary.
+type FileDecl struct {
+	Qualified string `json:"qualified"`
+	Kind      string `json:"kind"`
+	Signature string `json:"signature"`
+	Doc       string `json:"doc,omitempty"`
+	Line      int    `json:"line"`
+	Exported  bool   `json:"exported"`
+}
+
+// FileLink is a file related through calls, with the number of call sites.
+type FileLink struct {
+	Path  string `json:"path"`
+	Calls int    `json:"calls"`
+}
+
+// FindFiles returns indexed paths equal to p, or ending in "/"+p.
+func (s *Store) FindFiles(p string) ([]string, error) {
+	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
+	rows, err := s.db.Query(`SELECT path FROM files WHERE path = ? OR path LIKE ? ESCAPE '\' ORDER BY path LIMIT 20`,
+		p, "%/"+escapeLike(p))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		if path == p {
+			return []string{p}, nil
+		}
+		out = append(out, path)
+	}
+	return out, rows.Err()
+}
+
+// FileSummary builds the summary of an indexed file by exact path.
+func (s *Store) FileSummary(path string) (*FileSummary, error) {
+	fs := &FileSummary{Path: path, Imports: []string{}, Symbols: []FileDecl{}, DependsOn: []FileLink{}, UsedBy: []FileLink{}}
+	var id int64
+	err := s.db.QueryRow(`SELECT id, lang, package, doc FROM files WHERE path = ?`, path).Scan(&id, &fs.Lang, &fs.Package, &fs.Doc)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(`SELECT path FROM imports WHERE file_id = ? ORDER BY path`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		fs.Imports = append(fs.Imports, p)
+	}
+	rows.Close()
+
+	rows, err = s.db.Query(`SELECT qualified, kind, signature, doc, start_line, exported
+		FROM symbols WHERE file_id = ? ORDER BY start_line`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var d FileDecl
+		if err := rows.Scan(&d.Qualified, &d.Kind, &d.Signature, &d.Doc, &d.Line, &d.Exported); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if i := strings.IndexByte(d.Doc, '\n'); i >= 0 {
+			d.Doc = d.Doc[:i]
+		}
+		fs.Symbols = append(fs.Symbols, d)
+	}
+	rows.Close()
+
+	links := func(q string) ([]FileLink, error) {
+		rows, err := s.db.Query(q, id, id)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := []FileLink{}
+		for rows.Next() {
+			var l FileLink
+			if err := rows.Scan(&l.Path, &l.Calls); err != nil {
+				return nil, err
+			}
+			out = append(out, l)
+		}
+		return out, rows.Err()
+	}
+	if fs.DependsOn, err = links(`SELECT tf.path, COUNT(*) FROM edges e
+		JOIN symbols fr ON fr.id = e.from_id JOIN symbols t ON t.id = e.to_id JOIN files tf ON tf.id = t.file_id
+		WHERE fr.file_id = ? AND t.file_id != ? GROUP BY tf.path ORDER BY COUNT(*) DESC, tf.path`); err != nil {
+		return nil, err
+	}
+	if fs.UsedBy, err = links(`SELECT ff.path, COUNT(*) FROM edges e
+		JOIN symbols t ON t.id = e.to_id JOIN symbols fr ON fr.id = e.from_id JOIN files ff ON ff.id = fr.file_id
+		WHERE t.file_id = ? AND fr.file_id != ? GROUP BY ff.path ORDER BY COUNT(*) DESC, ff.path`); err != nil {
+		return nil, err
+	}
+	return fs, nil
+}

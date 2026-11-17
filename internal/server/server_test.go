@@ -75,7 +75,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s is missing a description or input schema", tool.Name)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -128,5 +128,25 @@ func TestDependencyGraph(t *testing.T) {
 	ext := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "sync"})
 	if !strings.Contains(ext, "ratelimit.TokenBucket.Allow calls sync.Mutex.Lock") {
 		t.Errorf("external usage listing wrong:\n%s", ext)
+	}
+}
+
+func TestFileSummary(t *testing.T) {
+	cs := connect(t)
+	out := callText(t, cs, "get_file_summary", map[string]any{"path": "service.go"})
+	for _, want := range []string{
+		"payments/service.go (go, package payments)",
+		"Package payments processes customer payments.",
+		"Imports: errors",
+		"func (s *PaymentService) ProcessPayment(customerID string, cents int64) (string, error)",
+		"Called from:\n- checkout/checkout.go (2 call site(s))",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("file summary missing %q:\n%s", want, out)
+		}
+	}
+	miss := callText(t, cs, "get_file_summary", map[string]any{"path": "nope.go"})
+	if !strings.Contains(miss, "No indexed file matches") {
+		t.Errorf("unexpected output for unknown file:\n%s", miss)
 	}
 }

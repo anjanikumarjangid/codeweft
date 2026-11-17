@@ -12,7 +12,7 @@ import (
 )
 
 // Version is reported to MCP clients and by `codewiki version`.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 const maxRefs = 15 // callers/callees listed inline by get_symbol
 
@@ -22,7 +22,8 @@ func New(st *store.Store) *mcp.Server {
 		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
 			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
 			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
-			"or what depends on it. Prefer these tools over grepping or reading whole files.",
+			"or what depends on it, and get_file_summary for an overview of a file before reading it. " +
+			"Prefer these tools over grepping or reading whole files.",
 	})
 	h := handlers{st}
 	mcp.AddTool(s, &mcp.Tool{
@@ -43,7 +44,74 @@ func New(st *store.Store) *mcp.Server {
 			"several levels deep. Pass an external package path such as 'database/sql' instead of a symbol " +
 			"to list every place in the codebase that calls into it.",
 	}, h.dependencyGraph)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "get_file_summary",
+		Description: "Overview of one source file without reading it: package, doc comment, imports, every " +
+			"declaration with its signature, and which other files it calls into or is called from. " +
+			"Accepts a repository-relative path or a unique suffix such as 'store/query.go'.",
+	}, h.fileSummary)
 	return s
+}
+
+// FileInput is the input of get_file_summary.
+type FileInput struct {
+	Path string `json:"path" jsonschema:"repository-relative file path, or a unique suffix of one"`
+}
+
+// FileOutput is the structured result of get_file_summary.
+type FileOutput struct {
+	Summary    *store.FileSummary `json:"summary,omitempty"`
+	Candidates []string           `json:"candidates,omitempty"`
+}
+
+func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, FileOutput, error) {
+	paths, err := h.st.FindFiles(in.Path)
+	if err != nil {
+		return nil, FileOutput{}, err
+	}
+	switch len(paths) {
+	case 0:
+		return text(fmt.Sprintf("No indexed file matches %q. Use search_code to find where something lives.", in.Path)), FileOutput{}, nil
+	case 1:
+	default:
+		return text(fmt.Sprintf("%q matches %d files; call again with one of:\n- %s", in.Path, len(paths), strings.Join(paths, "\n- "))),
+			FileOutput{Candidates: paths}, nil
+	}
+	fs, err := h.st.FileSummary(paths[0])
+	if err != nil {
+		return nil, FileOutput{}, err
+	}
+	return text(formatFile(fs)), FileOutput{Summary: fs}, nil
+}
+
+func formatFile(fs *store.FileSummary) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (%s, package %s)\n", fs.Path, fs.Lang, fs.Package)
+	if fs.Doc != "" {
+		fmt.Fprintf(&b, "\n%s\n", fs.Doc)
+	}
+	if len(fs.Imports) > 0 {
+		fmt.Fprintf(&b, "\nImports: %s\n", strings.Join(fs.Imports, ", "))
+	}
+	fmt.Fprintf(&b, "\nDeclarations (%d):\n", len(fs.Symbols))
+	for _, d := range fs.Symbols {
+		fmt.Fprintf(&b, "- line %d: %s\n", d.Line, firstLine(d.Signature))
+		if d.Doc != "" {
+			fmt.Fprintf(&b, "    %s\n", d.Doc)
+		}
+	}
+	link := func(title string, ls []store.FileLink) {
+		if len(ls) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n%s:\n", title)
+		for _, l := range ls {
+			fmt.Fprintf(&b, "- %s (%d call site(s))\n", l.Path, l.Calls)
+		}
+	}
+	link("Calls into", fs.DependsOn)
+	link("Called from", fs.UsedBy)
+	return b.String()
 }
 
 type handlers struct{ st *store.Store }
