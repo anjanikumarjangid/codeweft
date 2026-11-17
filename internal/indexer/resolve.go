@@ -30,7 +30,12 @@ func resolve(tx *store.Tx, module string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	r := resolver{in}
+	types, err := tx.LoadTypeInput()
+	if err != nil {
+		return 0, err
+	}
+	r := resolver{in: in}
+	r.supers = r.declaredSupers(types.Supertypes)
 	var edges []store.Edge
 	var testEdges []store.TestEdge
 	resolved := 0
@@ -63,10 +68,86 @@ func resolve(tx *store.Tx, module string) (int, error) {
 	if err := tx.ReplaceTestEdges(testEdges); err != nil {
 		return 0, err
 	}
-	return resolved, resolveTypes(tx, r)
+	return resolved, resolveTypes(tx, r, types)
 }
 
-type resolver struct{ in *store.ResolveInput }
+type resolver struct {
+	in *store.ResolveInput
+	// supers lists each type's declared supertypes (extends and implements,
+	// not Go embedding), in declaration order: for a Java class its
+	// superclass first, for a Python class its bases left to right.
+	supers map[string][]superType
+}
+
+type superType struct {
+	q        string // qualified name
+	kind     string // store.SuperExtends or store.SuperImplements
+	external bool   // declared outside the repository
+}
+
+func (r resolver) declaredSupers(sts []store.Supertype) map[string][]superType {
+	out := map[string][]superType{}
+	for _, st := range sts {
+		if st.Kind != store.SuperExtends && st.Kind != store.SuperImplements {
+			continue
+		}
+		if q, external := r.typeRef(st.TypeRef); q != "" {
+			out[st.Owner] = append(out[st.Owner], superType{q: q, kind: st.Kind, external: external})
+		}
+	}
+	return out
+}
+
+// superCall resolves super.m() (or super().m() in Python) made in type
+// owner: the first supertype, searched depth-first in declaration order,
+// that declares m. The search starts from what owner extends: in Java
+// super.m() names the superclass (with everything it inherits, interfaces
+// included), never an interface of owner itself, which takes
+// Interface.super.m(); in Python every base class counts as extended, and
+// the order is the method resolution order except in diamond-shaped
+// hierarchies. With m == "", super(...) in a Java constructor: the
+// constructor of the superclass. A method found on no indexed supertype
+// is attributed to the first supertype outside the repository, if any.
+func (r resolver) superCall(owner, m string) (int64, string, string) {
+	seen := map[string]bool{owner: true}
+	firstExternal := ""
+	var search func(t string) (int64, string)
+	search = func(t string) (int64, string) {
+		for _, s := range r.supers[t] {
+			if seen[s.q] || (t == owner && s.kind != store.SuperExtends) {
+				continue
+			}
+			seen[s.q] = true
+			if s.external {
+				if firstExternal == "" {
+					firstExternal = s.q
+				}
+				continue
+			}
+			if m == "" { // constructor: only the superclass, named after it
+				short := s.q[strings.LastIndex(s.q, ".")+1:]
+				if id, ok := r.in.Symbols[s.q+"."+short]; ok {
+					return id, s.q + "." + short
+				}
+				return r.in.Symbols[s.q], s.q // implicit default constructor
+			}
+			if id, ok := r.in.Symbols[s.q+"."+m]; ok {
+				return id, s.q + "." + m
+			}
+			if id, q := search(s.q); id != 0 {
+				return id, q
+			}
+		}
+		return 0, ""
+	}
+	if id, q := search(owner); id != 0 {
+		return id, q, "exact"
+	}
+	if firstExternal != "" && m != "" {
+		return 0, firstExternal + "." + m, "external"
+	}
+	return 0, "", ""
+}
 
 // testCallee resolves a call made in a test to another function declared
 // in a test file, such as a setup helper. Only exact names are used: the
@@ -234,6 +315,9 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 			}
 		}
 		return r.byMethodName(c.B)
+
+	case store.CallSuper:
+		return r.superCall(c.A, c.B)
 
 	case store.CallMethod:
 		return r.byMethodName(c.B)

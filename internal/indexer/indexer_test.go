@@ -847,3 +847,108 @@ func TestBuildOutputDirs(t *testing.T) {
 		t.Error("--exclude build should skip go/build too")
 	}
 }
+
+// TestSuperAndModulePathCalls covers calls the resolver used to drop or
+// guess: super calls in Java and Python, and Python calls through a
+// dotted module path.
+func TestSuperAndModulePathCalls(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("j/Base.java", `package j;
+class Base {
+    Base(int x) {}
+    void close() {}
+}
+interface Named {
+    default String name() { return "n"; }
+}
+class Middle extends Base {
+    Middle() { super(1); }
+}
+class Leaf extends Middle implements Named {
+    Leaf() { this(2); }
+    Leaf(int y) { super(); }
+    void close() { super.close(); }
+    public String name() { return Named.super.name(); }
+    public String toString() { return super.toString(); }
+}
+class Repo extends org.springframework.data.Repository {
+    void save() { super.save(); }
+}
+class Outer {
+    static class Inner {
+        void open() {}
+    }
+}
+class Sub extends Outer.Inner {
+    void open() { super.open(); }
+}
+`)
+	write("p/base.py", "class Base:\n    def get(self):\n        return 1\n\n\nclass Child(Base):\n    def get(self):\n        return super(Child, self).get()\n")
+	write("pkg/__init__.py", "from .api import get\n")
+	write("pkg/api.py", "def get():\n    return None\n")
+	write("pkg/models.py", "class Response:\n    pass\n")
+	write("app.py", "import os\nimport pkg\nimport pkg.models\n\n\nclass Paths:\n    def join(self):\n        pass\n\n\ndef main():\n    pkg.models.Response()\n    os.path.join('a', 'b')\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		var out []string
+		for _, s := range syms { // overloaded constructors share a name
+			refs, err := st.Callees(s.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range refs {
+				out = append(out, r.Qualified+"["+r.Confidence+"]")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// super.close() on Leaf finds Base.close two levels up.
+		{"j.Leaf.close", "j.Base.close[exact]"},
+		// Named.super.name() calls the interface's default method.
+		{"j.Leaf.name", "j.Named.name[exact]"},
+		// super.toString() looks in the superclass chain only, never in
+		// the class's own interfaces (Named has no toString anyway), and
+		// that chain ends at Object, which is not indexed: no edge.
+		{"j.Leaf.toString", ""},
+		// super(1) calls Base's constructor; Leaf's constructors call
+		// this(2), and super() into Middle's constructor.
+		{"j.Middle.Middle", "j.Base.Base[exact]"},
+		{"j.Leaf.Leaf", "j.Leaf.Leaf[exact] j.Middle.Middle[exact]"},
+		// A nested superclass written as Outer.Inner.
+		{"j.Sub.open", "j.Outer.Inner.open[exact]"},
+		// A supertype outside the repository: an external reference.
+		{"j.Repo.save", "org.springframework.data.Repository.save[external]"},
+		// Python's super(Cls, self) form.
+		{"p.base.Child.get", "p.base.Base.get[exact]"},
+		// A module path rooted at an import resolves, and os.path.join is
+		// external instead of matching the repository's only join method.
+		{"app.main", "pkg.models.Response[exact] os.path.join[external]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}

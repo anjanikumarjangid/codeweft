@@ -108,10 +108,14 @@ Resolution is syntactic, so it works on any checkout, even one that does not bui
 | Field of the receiver with a declared type | `s.gw.Charge(...)` with `gw Gateway` | exact edge to `Gateway.Charge` |
 | Value whose type is stated in the code | parameter `d time.Duration`, `var c Client`, `x := &Cache{}` | exact or external edge |
 | Python name re-exported by a package | `requests.get(...)` with `from .api import get` in `requests/__init__.py` | exact edge to `requests.api.get` |
+| Python module path rooted at an import | `pkg.models.Response()`, `os.path.join(...)` | exact edge to `pkg.models.Response`; external reference `os.path.join` |
+| Call on the supertype | `super.save(o)`, `super(...)`, `Named.super.name()`; Python `super().get(sku)` | exact edge to the first supertype declaring it |
 | Package outside the repository | `sql.Open(...)` | external reference `database/sql.Open` |
 | Method on a value of unknown type | `svc.ProcessPayment(...)` | edge only if exactly one method has that name, marked *matched by method name* |
 
-Java and Python follow the same rules with their own syntax: `this.field` and `self.attr` with a known type, typed parameters and locals (`Order order = ...`, `repo: ItemRepository`), imports and static imports, relative Python imports, and constructor calls (`new Order(...)`, `Item(...)`). Java overloads share one node in the graph.
+Java and Python follow the same rules with their own syntax: `this.field` and `self.attr` with a known type, typed parameters and locals (`Order order = ...`, `repo: ItemRepository`), imports and static imports, relative Python imports, nested types written as `Outer.Inner`, and constructor calls (`new Order(...)`, `Item(...)`, `this(...)`). Java overloads share one node in the graph.
+
+A `super` call is looked up through the declared class hierarchy, depth first in declaration order. Java's `super.m()` starts from the superclass (and what it inherits, interfaces included), never from the class's own interfaces, which take `Interface.super.m()`; `super(...)` calls the superclass constructor. Python's `super().m()` and `super(Cls, self).m()` search the base classes left to right, which is Python's method resolution order except in diamond-shaped hierarchies. A method found only on a supertype outside the repository becomes an external reference to it.
 
 Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so the graph can be rebuilt without re-parsing files.
 
@@ -207,9 +211,9 @@ Measured on a Linux cloud VM with 4 vCPUs (Intel Xeon @ 2.10 GHz) and 15 GB of R
 |---|---|---|---|---|---|---|
 | [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.1.0 | 60 | 42 | 949 | 669 | 0.10 s | 6 ms |
 | Go standard library `src/` (Go 1.24.7) | 3,286 | 1,519 | 41,524 | 130,267 | 4.65 s | 8 ms |
-| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 37,839 | 5.97 s | 11 ms |
-| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 282 | 0.11 s | 6 ms |
-| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 91 | 0.05 s | 7 ms |
+| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 42,427 | 5.75 s | 11 ms |
+| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 280 | 0.10 s | 6 ms |
+| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 91 | 0.04 s | 6 ms |
 
 Re-indexing the standard library after changing one file takes 2.1 s: one file is parsed, then the call graph, the type hierarchy and the test edges are rebuilt from stored data.
 

@@ -232,6 +232,7 @@ const (
 	CallTypeName  = "typename"  // A short type name, B method (static calls)
 	CallMethod    = "method"    // B method name on a value of unknown type
 	CallTyped     = "typed"     // A type ref of the value, B method
+	CallSuper     = "super"     // A calling type, B method on a supertype ("" for its constructor)
 )
 
 // RawCall is a call site as the parser saw it, before resolution.

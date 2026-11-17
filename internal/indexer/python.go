@@ -380,6 +380,29 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	})
 }
 
+// modulePath returns the full module path of a dotted attribute chain
+// whose root is an imported name, such as "pkg.models" for pkg.models
+// after `import pkg`, or "" if the chain is anything else (an attribute
+// of a local value, a call result, an index).
+func (pf *pyFile) modulePath(n *sitter.Node) string {
+	var parts []string
+	for n.Type() == "attribute" {
+		parts = append([]string{text(field(n, "attribute"), pf.src)}, parts...)
+		n = field(n, "object")
+		if n == nil {
+			return ""
+		}
+	}
+	if n.Type() != "identifier" {
+		return ""
+	}
+	root, ok := pf.imports[text(n, pf.src)]
+	if !ok {
+		return ""
+	}
+	return root + "." + strings.Join(parts, ".")
+}
+
 func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]string) {
 	fn := field(n, "function")
 	if fn == nil {
@@ -411,6 +434,12 @@ func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]s
 			rc.Form, rc.A, rc.B = store.CallImport, pf.imports[objText], attr
 		case obj.Type() == "attribute" && class != "" && text(field(obj, "object"), pf.src) == "self":
 			rc.Form, rc.A, rc.B, rc.C = store.CallField, class, text(field(obj, "attribute"), pf.src), attr
+		case obj.Type() == "call" && class != "" && text(field(obj, "function"), pf.src) == "super":
+			// super().m() and super(Cls, self).m(): m on a base class.
+			rc.Form, rc.A, rc.B = store.CallSuper, class, attr
+		case obj.Type() == "attribute" && pf.modulePath(obj) != "":
+			// pkg.models.Response(): a module path rooted at an import.
+			rc.Form, rc.A, rc.B = store.CallImport, pf.modulePath(obj), attr
 		default:
 			rc.Form, rc.B = store.CallMethod, attr
 		}

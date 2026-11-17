@@ -22,6 +22,7 @@ com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRe
 com.shop.orders.InMemoryOrderRepository.save -> com.shop.orders.Order.id [exact] line 15
 com.shop.orders.InMemoryOrderRepository.save -> java.util.Map.put [external] line 15
 com.shop.orders.InMemoryOrderRepository.findById -> java.util.Map.get [external] line 19
+com.shop.orders.CountingOrderRepository.save -> com.shop.orders.InMemoryOrderRepository.save [exact] line 30
 com.shop.orders.OrderService.place -> com.shop.orders.Order.create [exact] line 20
 com.shop.orders.OrderService.place -> com.shop.billing.Billing.charge [exact] line 21
 com.shop.orders.OrderService.place -> com.shop.orders.Order.total [exact] line 21
@@ -34,6 +35,7 @@ py.inventory.api.reserve -> py.inventory.stock.StockService.reserve [exact] line
 py.inventory.api.__main__ -> fastapi.FastAPI [external] line 24
 py.inventory.api.__main__ -> fastapi.FastAPI.include_router [external] line 25
 py.inventory.models.ItemRepository.get -> py.inventory.models.Item [exact] line 17
+py.inventory.models.CachedItemRepository.get -> py.inventory.models.ItemRepository.get [exact] line 29
 py.inventory.stock.StockService.reserve -> py.inventory.models.ItemRepository.get [exact] line 15
 py.inventory.stock.StockService.reserve -> py.inventory.stock._enough [exact] line 16
 py.inventory.stock.StockService.reserve -> py.inventory.stock.StockService._log [exact] line 18

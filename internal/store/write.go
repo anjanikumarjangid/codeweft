@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 )
 
 // Tx is a write batch used while indexing. Indexing a whole repository in one
@@ -214,7 +215,11 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		case "method", "interface method", "constructor":
 			in.Methods[name] = append(in.Methods[name], id)
 		case "struct", "interface", "type", "class", "enum", "record":
-			in.Types[name] = append(in.Types[name], q)
+			// The same type can be declared twice under one name (Guava
+			// keeps android/ and guava/ copies); that is not ambiguity.
+			if !slices.Contains(in.Types[name], q) {
+				in.Types[name] = append(in.Types[name], q)
+			}
 		}
 	}
 	rows.Close()

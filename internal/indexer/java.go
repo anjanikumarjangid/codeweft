@@ -155,7 +155,17 @@ func (jf *javaFile) typeRef(n *sitter.Node) string {
 		}
 		return ""
 	case "scoped_type_identifier":
-		return "@" + text(n, jf.src)
+		// Outer.Inner is a nested type, found like Outer itself; anything
+		// else (java.util.List) is a full name.
+		t := text(n, jf.src)
+		first, rest, _ := strings.Cut(t, ".")
+		if full, ok := jf.imports[first]; ok {
+			return "@" + full + "." + rest
+		}
+		if isCapitalized(first) {
+			return "~" + jf.pkg + "." + t
+		}
+		return "@" + t
 	case "type_identifier", "identifier":
 		return jf.nameRef(text(n, jf.src))
 	}
@@ -333,6 +343,22 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				short := ref[strings.LastIndexAny(ref, ".@~?")+1:]
 				jf.res.Calls = append(jf.res.Calls, store.RawCall{Caller: caller, Form: store.CallTyped, A: ref, B: short, Line: line(n)})
 			}
+		case "explicit_constructor_invocation":
+			// super(...) calls the superclass constructor; this(...) another
+			// constructor of the same class.
+			rc := store.RawCall{Caller: caller, Line: line(n)}
+			switch c := field(n, "constructor"); {
+			case c == nil:
+				return true
+			case c.Type() == "super":
+				rc.Form, rc.A = store.CallSuper, owner
+			case c.Type() == "this":
+				short := owner[strings.LastIndex(owner, ".")+1:]
+				rc.Form, rc.A, rc.B = store.CallQualified, owner+"."+short, short
+			default:
+				return true
+			}
+			jf.res.Calls = append(jf.res.Calls, rc)
 		case "method_invocation":
 			name := text(field(n, "name"), jf.src)
 			rc := store.RawCall{Caller: caller, Line: line(n)}
@@ -342,6 +368,11 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				rc.Form, rc.A, rc.B = store.CallImport, jf.statics[name], name
 			case obj == nil || obj.Type() == "this":
 				rc.Form, rc.A, rc.B = store.CallQualified, owner+"."+name, name
+			case obj.Type() == "super":
+				rc.Form, rc.A, rc.B = store.CallSuper, owner, name
+			case obj.Type() == "identifier" && hasChild(n, "super"):
+				// Interface.super.m(): the interface's default method.
+				rc.Form, rc.A, rc.B = store.CallTyped, jf.nameRef(text(obj, jf.src)), name
 			case obj.Type() == "identifier":
 				x := text(obj, jf.src)
 				switch {
@@ -366,4 +397,14 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 		}
 		return true
 	})
+}
+
+// hasChild reports whether n has a direct child of type typ, named or not.
+func hasChild(n *sitter.Node, typ string) bool {
+	for i := 0; i < int(n.ChildCount()); i++ {
+		if n.Child(i).Type() == typ {
+			return true
+		}
+	}
+	return false
 }

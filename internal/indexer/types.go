@@ -27,11 +27,7 @@ import (
 // An interface that embeds an interface from outside the repository has a
 // method set the index cannot see in full, so no type is said to implement
 // it: the relation would be a guess.
-func resolveTypes(tx *store.Tx, r resolver) error {
-	in, err := tx.LoadTypeInput()
-	if err != nil {
-		return err
-	}
+func resolveTypes(tx *store.Tx, r resolver, in *store.TypeInput) error {
 	var edges []store.TypeEdge
 	embeds := map[string][]string{} // Go type -> resolved embedded types ("" when unknown)
 	for _, st := range in.Supertypes {
