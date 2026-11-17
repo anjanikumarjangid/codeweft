@@ -1,9 +1,10 @@
 // Package indexer walks a repository, parses source files into symbols,
 // imports, fields and call sites, and resolves call sites into a call graph.
 //
-// Go is parsed with the standard library (go/ast), which is exact for Go.
-// Every language produces the same FileResult, so storage, search and the
-// call graph are language-independent.
+// Go is parsed with the standard library (go/ast), which is exact for Go;
+// Java and Python are parsed with tree-sitter. Every language produces the
+// same FileResult, so storage, search and the call graph are
+// language-independent.
 package indexer
 
 import (
@@ -47,6 +48,20 @@ var languages = []language{
 		isTest:    func(rel string) bool { return strings.HasSuffix(rel, "_test.go") },
 		generated: isGeneratedGo,
 		parse:     ParseGo,
+	},
+	{
+		name:      "java",
+		exts:      []string{".java"},
+		isTest:    isJavaTest,
+		generated: isGeneratedHeader,
+		parse:     ParseJava,
+	},
+	{
+		name:      "python",
+		exts:      []string{".py"},
+		isTest:    isPythonTest,
+		generated: isGeneratedHeader,
+		parse:     ParsePython,
 	},
 }
 

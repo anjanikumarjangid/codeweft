@@ -1,0 +1,340 @@
+package indexer
+
+import (
+	"path"
+	"strings"
+
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/python"
+
+	"github.com/anjanikumarjangid/codewiki/internal/store"
+)
+
+func isPythonTest(rel string) bool {
+	base := path.Base(rel)
+	return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") ||
+		base == "conftest.py" || strings.Contains("/"+rel, "/tests/")
+}
+
+// pythonModule maps a file path to its dotted module name:
+// "src/inventory/stock.py" -> "inventory.stock", "pkg/__init__.py" -> "pkg".
+func pythonModule(rel string) string {
+	m := strings.TrimSuffix(rel, ".py")
+	m = strings.TrimSuffix(m, "/__init__")
+	m = strings.TrimPrefix(m, "src/")
+	return strings.ReplaceAll(m, "/", ".")
+}
+
+type pyFile struct {
+	src     []byte
+	rel     string
+	module  string
+	pkg     string            // package the module lives in, for relative imports
+	imports map[string]string // local name -> dotted target
+	res     *FileResult
+}
+
+// ParsePython extracts classes, methods and functions, imports, attribute
+// types assigned in methods, and call sites.
+func ParsePython(rel string, src []byte) (*FileResult, error) {
+	root, done, err := parseTree(python.GetLanguage(), src)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	mod := pythonModule(rel)
+	pf := &pyFile{src: src, rel: rel, module: mod, imports: map[string]string{}}
+	pf.pkg = mod
+	if path.Base(rel) != "__init__.py" {
+		if i := strings.LastIndex(mod, "."); i >= 0 {
+			pf.pkg = mod[:i]
+		} else {
+			pf.pkg = ""
+		}
+	}
+	pf.res = &FileResult{File: store.File{
+		Path: rel, Dir: path.Dir(rel), Lang: "python", Package: mod, Qual: mod,
+		Doc: pyDocstring(root, src),
+	}}
+
+	for _, n := range namedChildren(root) {
+		switch n.Type() {
+		case "import_statement":
+			pf.importStmt(n)
+		case "import_from_statement":
+			pf.importFrom(n)
+		}
+	}
+	for _, n := range namedChildren(root) {
+		def := unwrapDecorated(n)
+		switch def.Type() {
+		case "class_definition":
+			pf.class(def, n, mod)
+		case "function_definition":
+			pf.function(def, n, mod, "")
+		}
+	}
+	return pf.res, nil
+}
+
+func unwrapDecorated(n *sitter.Node) *sitter.Node {
+	if n.Type() == "decorated_definition" {
+		if d := field(n, "definition"); d != nil {
+			return d
+		}
+	}
+	return n
+}
+
+// pyDocstring returns the docstring of a module, class or function body.
+func pyDocstring(body *sitter.Node, src []byte) string {
+	kids := namedChildren(body)
+	if len(kids) == 0 || kids[0].Type() != "expression_statement" {
+		return ""
+	}
+	s := kids[0].NamedChild(0)
+	if s == nil || s.Type() != "string" {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range namedChildren(s) {
+		if c.Type() == "string_content" {
+			b.WriteString(text(c, src))
+		}
+	}
+	return dedent(b.String())
+}
+
+func (pf *pyFile) importStmt(n *sitter.Node) {
+	for _, c := range namedChildren(n) {
+		switch c.Type() {
+		case "dotted_name":
+			full := text(c, pf.src)
+			first := strings.SplitN(full, ".", 2)[0] // `import a.b` binds `a`
+			pf.imports[first] = first
+			pf.res.Imports = append(pf.res.Imports, store.Import{Path: full, Alias: first})
+		case "aliased_import":
+			full, alias := text(field(c, "name"), pf.src), text(field(c, "alias"), pf.src)
+			pf.imports[alias] = full
+			pf.res.Imports = append(pf.res.Imports, store.Import{Path: full, Alias: alias})
+		}
+	}
+}
+
+func (pf *pyFile) importFrom(n *sitter.Node) {
+	modNode := field(n, "module_name")
+	module := text(modNode, pf.src)
+	if modNode != nil && modNode.Type() == "relative_import" {
+		dots := len(module) - len(strings.TrimLeft(module, "."))
+		rest := strings.TrimLeft(module, ".")
+		base := strings.Split(pf.pkg, ".")
+		if pf.pkg == "" {
+			base = nil
+		}
+		if up := dots - 1; up > 0 && up <= len(base) {
+			base = base[:len(base)-up]
+		}
+		if rest != "" {
+			base = append(base, rest)
+		}
+		module = strings.Join(base, ".")
+	}
+	for _, c := range namedChildren(n) {
+		if c == modNode {
+			continue
+		}
+		var name, alias string
+		switch c.Type() {
+		case "dotted_name":
+			name = text(c, pf.src)
+			alias = name
+		case "aliased_import":
+			name, alias = text(field(c, "name"), pf.src), text(field(c, "alias"), pf.src)
+		default:
+			continue
+		}
+		full := name
+		if module != "" {
+			full = module + "." + name
+		}
+		pf.imports[alias] = full
+		pf.res.Imports = append(pf.res.Imports, store.Import{Path: full, Alias: alias})
+	}
+}
+
+// nameRef turns a type or class name used in this module into a reference.
+func (pf *pyFile) nameRef(name string) string {
+	switch name {
+	case "", "str", "int", "float", "bool", "bytes", "dict", "list", "set", "tuple", "None", "object", "Any":
+		return ""
+	}
+	if full, ok := pf.imports[name]; ok {
+		return "@" + full
+	}
+	if i := strings.IndexByte(name, '.'); i > 0 {
+		if full, ok := pf.imports[name[:i]]; ok {
+			return "@" + full + name[i:]
+		}
+	}
+	return "~" + pf.module + "." + name
+}
+
+// annotationRef reads a type annotation, unwrapping Optional[T] and "T".
+func (pf *pyFile) annotationRef(n *sitter.Node) string {
+	if n == nil {
+		return ""
+	}
+	t := strings.Trim(text(n, pf.src), `"' `)
+	if i := strings.IndexByte(t, '['); i > 0 {
+		inner := strings.TrimSuffix(t[i+1:], "]")
+		switch t[:i] {
+		case "Optional", "typing.Optional":
+			t = inner
+		default:
+			t = t[:i]
+		}
+	}
+	t = strings.TrimSpace(strings.Split(t, "|")[0])
+	return pf.nameRef(t)
+}
+
+func (pf *pyFile) add(n *sitter.Node, name, qualified, kind, sig, doc string) {
+	pf.res.Symbols = append(pf.res.Symbols, store.Symbol{
+		File: pf.rel, Lang: "python", Package: pf.module, Name: name, Qualified: qualified, Kind: kind,
+		Signature: sig, Doc: doc, StartLine: line(n), EndLine: endLine(n),
+		Exported: !strings.HasPrefix(name, "_"), Body: text(n, pf.src),
+	})
+}
+
+func (pf *pyFile) class(def, outer *sitter.Node, prefix string) {
+	name := text(field(def, "name"), pf.src)
+	qual := prefix + "." + name
+	body := field(def, "body")
+	pf.add(outer, name, qual, "class", strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
+	for _, m := range namedChildren(body) {
+		d := unwrapDecorated(m)
+		switch d.Type() {
+		case "function_definition":
+			pf.function(d, m, qual, qual)
+		case "class_definition":
+			pf.class(d, m, qual)
+		}
+	}
+}
+
+func (pf *pyFile) function(def, outer *sitter.Node, prefix, class string) {
+	name := text(field(def, "name"), pf.src)
+	qual := prefix + "." + name
+	kind := "func"
+	if class != "" {
+		kind = "method"
+	}
+	body := field(def, "body")
+	pf.add(outer, name, qual, kind, strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
+	pf.calls(def, body, qual, class)
+}
+
+func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
+	locals := map[string]string{}
+	for _, p := range namedChildren(field(def, "parameters")) {
+		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
+			var pname string
+			if nn := field(p, "name"); nn != nil {
+				pname = text(nn, pf.src)
+			} else if first := p.NamedChild(0); first != nil {
+				pname = text(first, pf.src)
+			}
+			if ref := pf.annotationRef(field(p, "type")); ref != "" && pname != "" {
+				locals[pname] = ref
+			}
+		}
+	}
+	// classRef is the reference for a constructor call like Item(...).
+	classRef := func(call *sitter.Node) string {
+		if call == nil || call.Type() != "call" {
+			return ""
+		}
+		fn := field(call, "function")
+		if fn == nil || (fn.Type() != "identifier" && fn.Type() != "attribute") {
+			return ""
+		}
+		name := text(fn, pf.src)
+		if !isCapitalized(name[strings.LastIndex(name, ".")+1:]) {
+			return ""
+		}
+		return pf.nameRef(name)
+	}
+
+	walk(body, func(n *sitter.Node) bool {
+		switch n.Type() {
+		case "function_definition", "class_definition":
+			return n == body // nested definitions are not indexed separately
+		case "assignment":
+			left, right := field(n, "left"), field(n, "right")
+			ref := pf.annotationRef(field(n, "type"))
+			if ref == "" {
+				ref = classRef(right)
+			}
+			if ref == "" && right != nil && right.Type() == "identifier" {
+				ref = locals[text(right, pf.src)] // self.repo = repo (typed param)
+			}
+			if ref == "" || left == nil {
+				return true
+			}
+			switch left.Type() {
+			case "identifier":
+				locals[text(left, pf.src)] = ref
+			case "attribute":
+				if obj := field(left, "object"); class != "" && obj != nil && text(obj, pf.src) == "self" {
+					pf.res.Fields = append(pf.res.Fields, store.Field{
+						Owner: class, Name: text(field(left, "attribute"), pf.src), TypeRef: ref,
+					})
+				}
+			}
+		case "call":
+			pf.call(n, caller, class, locals)
+		}
+		return true
+	})
+}
+
+func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]string) {
+	fn := field(n, "function")
+	if fn == nil {
+		return
+	}
+	rc := store.RawCall{Caller: caller, Line: line(n)}
+	switch fn.Type() {
+	case "identifier":
+		name := text(fn, pf.src)
+		if full, ok := pf.imports[name]; ok {
+			i := strings.LastIndex(full, ".")
+			if i < 0 {
+				return
+			}
+			rc.Form, rc.A, rc.B = store.CallImport, full[:i], full[i+1:]
+		} else {
+			rc.Form, rc.A = store.CallQualified, pf.module+"."+name
+		}
+	case "attribute":
+		attr := text(field(fn, "attribute"), pf.src)
+		obj := field(fn, "object")
+		objText := text(obj, pf.src)
+		switch {
+		case obj.Type() == "identifier" && (objText == "self" || objText == "cls") && class != "":
+			rc.Form, rc.A, rc.B = store.CallQualified, class+"."+attr, attr
+		case obj.Type() == "identifier" && locals[objText] != "":
+			rc.Form, rc.A, rc.B = store.CallTyped, locals[objText], attr
+		case obj.Type() == "identifier" && pf.imports[objText] != "":
+			rc.Form, rc.A, rc.B = store.CallImport, pf.imports[objText], attr
+		case obj.Type() == "attribute" && class != "" && text(field(obj, "object"), pf.src) == "self":
+			rc.Form, rc.A, rc.B, rc.C = store.CallField, class, text(field(obj, "attribute"), pf.src), attr
+		default:
+			rc.Form, rc.B = store.CallMethod, attr
+		}
+	default:
+		return
+	}
+	pf.res.Calls = append(pf.res.Calls, rc)
+}

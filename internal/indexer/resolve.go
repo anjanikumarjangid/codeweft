@@ -60,12 +60,19 @@ func (r resolver) exact(q string) (int64, string, string) {
 }
 
 // byMethodName links to the only method with this name, if there is one.
+// Overloads (several methods sharing one qualified name) count as one.
 func (r resolver) byMethodName(name string) (int64, string, string) {
 	ids := r.in.Methods[name]
-	if len(ids) != 1 {
+	if len(ids) == 0 {
 		return 0, "", ""
 	}
-	return ids[0], r.in.Qualified[ids[0]], "name"
+	q := r.in.Qualified[ids[0]]
+	for _, id := range ids[1:] {
+		if r.in.Qualified[id] != q {
+			return 0, "", ""
+		}
+	}
+	return r.in.Symbols[q], q, "name"
 }
 
 // internalQual maps a Go import path inside the module to its qualifier.
@@ -87,21 +94,43 @@ func (r resolver) internalQual(importPath string) (string, bool) {
 	return q, ok
 }
 
-// typeRef resolves a field type reference to a qualified type name, or an
-// external reference when the type lives outside the repository.
+// typeRef resolves a type reference to a qualified type name, reporting
+// whether the type lives outside the repository. Reference forms:
+//
+//	"pkg.Type"     Go same-package type: always internal
+//	"@path.Type"   explicit: a Go import path, or a Java/Python full name
+//	"~mod.Type"    guess for Java/Python: same package or module first,
+//	               then the short name
+//	"?Type"        short name: internal only if exactly one type has it
 func (r resolver) typeRef(ref string) (q string, external bool) {
-	if !strings.HasPrefix(ref, "@") {
-		return ref, false
-	}
-	ref = ref[1:]
-	i := strings.LastIndex(ref, ".")
-	if i < 0 {
+	switch {
+	case ref == "":
 		return "", false
+	case strings.HasPrefix(ref, "@"):
+		ref = ref[1:]
+		if _, ok := r.in.Symbols[ref]; ok {
+			return ref, false
+		}
+		if i := strings.LastIndex(ref, "."); i > 0 {
+			if qual, ok := r.internalQual(ref[:i]); ok {
+				return qual + "." + ref[i+1:], false
+			}
+		}
+		return ref, true
+	case strings.HasPrefix(ref, "~"):
+		ref = ref[1:]
+		if _, ok := r.in.Symbols[ref]; ok {
+			return ref, false
+		}
+		return r.typeRef("?" + ref[strings.LastIndex(ref, ".")+1:])
+	case strings.HasPrefix(ref, "?"):
+		name := ref[1:]
+		if qs := r.in.Types[name]; len(qs) == 1 {
+			return qs[0], false
+		}
+		return name, true
 	}
-	if qual, ok := r.internalQual(ref[:i]); ok {
-		return qual + "." + ref[i+1:], false
-	}
-	return ref, true
+	return ref, false
 }
 
 func (r resolver) call(c store.RawCall) (int64, string, string) {
@@ -118,7 +147,10 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 		return 0, "", ""
 
 	case store.CallImport:
-		if qual, ok := r.internalQual(c.A); ok {
+		if id, q, conf := r.exact(c.A + "." + c.B); id != 0 { // Java/Python modules
+			return id, q, conf
+		}
+		if qual, ok := r.internalQual(c.A); ok { // Go packages inside the module
 			return r.exact(qual + "." + c.B)
 		}
 		return 0, c.A + "." + c.B, "external"
@@ -133,6 +165,10 @@ func (r resolver) call(c store.RawCall) (int64, string, string) {
 		}
 		if id, q, conf := r.exact(t + "." + c.B); id != 0 {
 			return id, q, conf
+		}
+		// `new Order(...)` on a type without an explicit constructor.
+		if c.B == t[strings.LastIndex(t, ".")+1:] {
+			return r.exact(t)
 		}
 		return r.byMethodName(c.B)
 

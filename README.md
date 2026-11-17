@@ -8,13 +8,13 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 - **Local:** one binary and one SQLite file. No cloud service, no API keys, no embeddings.
 - **Agent-native:** exposed as MCP tools, so any MCP client can use it.
 
-> Status: v0.4. Go repositories are supported today; see the [roadmap](#roadmap).
+> Status: v0.5. Supports **Go, Java and Python**; see the [roadmap](#roadmap).
 
 ## MCP tools
 
 | Tool | What it answers |
 |---|---|
-| `search_code` | Ranked keyword search over symbol names, signatures and doc comments. Splits `camelCase` and `snake_case`, stems words and matches prefixes, so `payment` finds `ProcessPayment`. Optional `kind` filter. |
+| `search_code` | Ranked keyword search over symbol names, signatures and doc comments. Splits `camelCase` and `snake_case`, stems words and matches prefixes, so `payment` finds `ProcessPayment`. Optional `kind`, `lang` and `path` filters. |
 | `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). |
 | `get_dependency_graph` | What a symbol calls, or what calls it, several levels deep. Given an external package such as `database/sql`, lists every place that calls into it. |
 | `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
@@ -27,7 +27,7 @@ Requires Go 1.24+ and a C compiler (the SQLite driver uses cgo).
 git clone https://github.com/anjanikumarjangid/codewiki && cd codewiki
 make build
 
-# index a Go repository (writes PATH/.codewiki/index.db)
+# index a repository (writes PATH/.codewiki/index.db)
 ./bin/codewiki index /path/to/repo
 
 # try it from the terminal
@@ -59,7 +59,9 @@ codewiki serve  [--db FILE]
 ## How it works
 
 ```
-Go source ──▶ go/ast parser ──▶ symbols, imports, struct fields, raw call sites
+Go ──▶ go/ast ─────┐
+Java ─▶ tree-sitter ┼─▶ symbols, imports, fields, raw call sites
+Python ▶ tree-sitter┘
                                         │
                                         ▼
                     SQLite: symbols + FTS5 index + raw calls
@@ -69,7 +71,7 @@ Go source ──▶ go/ast parser ──▶ symbols, imports, struct fields, raw
 Claude Code ◀── MCP over stdio ◀── codewiki serve
 ```
 
-1. **Index:** walks the repo, skips `vendor/`, `testdata/`, hidden directories, generated files (`// Code generated ... DO NOT EDIT.`) and tests by default, and parses files in parallel with the standard library `go/ast`.
+1. **Index:** walks the repo, skips `vendor/`, `testdata/`, hidden directories, generated files (`// Code generated ... DO NOT EDIT.`) and tests by default, and parses files in parallel: Go with the standard library `go/ast`, Java and Python with [tree-sitter](https://tree-sitter.github.io/). Every language produces the same model, so search and the call graph work identically across them.
 2. **Store:** writes everything to SQLite in one transaction. A contentless FTS5 table indexes names, split name words, signatures and docs, ranked with BM25 and weighted towards names.
 3. **Resolve:** turns raw call sites into a call graph (see below).
 4. **Serve:** exposes the index through the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) over stdio.
@@ -87,6 +89,8 @@ Resolution is syntactic, so it works on any checkout, even one that does not bui
 | Package outside the repository | `sql.Open(...)` | external reference `database/sql.Open` |
 | Method on a value of unknown type | `svc.ProcessPayment(...)` | edge only if exactly one method has that name, marked *matched by method name* |
 
+Java and Python follow the same rules with their own syntax: `this.field` and `self.attr` with a known type, typed parameters and locals (`Order order = ...`, `repo: ItemRepository`), imports and static imports, relative Python imports, and constructor calls (`new Order(...)`, `Item(...)`). Java overloads share one node in the graph.
+
 Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so the graph can be rebuilt without re-parsing files.
 
 ### Incremental re-index
@@ -99,7 +103,7 @@ Search input is always tokenised and quoted before it reaches FTS5, so user text
 
 | Decision | Choice | Why |
 |---|---|---|
-| Parser | `go/ast` | Exact for Go, no external grammar. Other languages will use tree-sitter behind the same symbol model. |
+| Parser | `go/ast` for Go, tree-sitter for Java and Python | Exact for Go; one robust, error-tolerant parser for the rest, all behind the same symbol model. |
 | Storage | SQLite + FTS5 | Zero config, a single portable file, fast ranked search. |
 | Search | Keyword + BM25, no embeddings | Deterministic, explainable results with no model or network dependency. |
 | Call graph | Syntactic resolution, no type checker | Works on any checkout without building it; precision is marked per edge. |
@@ -113,6 +117,8 @@ Measured on a 2-vCPU Linux cloud VM:
 |---|---|---|---|---|
 | MCP Go SDK v1.1.0 | 60 | 949 (669 call edges) | 0.11 s | < 10 ms |
 | Go standard library `src/` (Go 1.24) | 3,260 | 41,150 (77,286 call edges) | 4.3 s | 6–7 ms |
+| [Guava](https://github.com/google/guava) (Java, ~477k lines) | 2,156 | 36,632 (37,839 call edges) | 5.3 s | < 10 ms |
+| [requests](https://github.com/psf/requests) (Python) | 22 | 304 (279 call edges) | 0.08 s | < 10 ms |
 
 Re-indexing the standard library after changing one file takes 1.6 s (one file parsed, the call graph rebuilt).
 
@@ -132,7 +138,7 @@ make vet
 - [x] **v0.2:** MCP server over stdio with `search_code` and `get_symbol`
 - [x] **v0.3:** call graph: `get_dependency_graph`, callers and callees in `get_symbol`
 - [x] **v0.4:** `get_file_summary`, incremental re-index using file hashes
-- [ ] **v0.5:** Java and Python via tree-sitter
+- [x] **v0.5:** Java and Python via tree-sitter
 - [ ] Later: watch mode, architecture overview, REST endpoint listing, multi-repo indexes
 
 ## License

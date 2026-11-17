@@ -277,6 +277,9 @@ func runDeps(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(syms) > 1 && store.SameName(syms) {
+		syms = syms[:1] // overloads share one node in the graph
+	}
 	if len(syms) != 1 {
 		if len(syms) == 0 {
 			return fmt.Errorf("no symbol named %q", fs.Arg(0))

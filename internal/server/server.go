@@ -12,7 +12,7 @@ import (
 )
 
 // Version is reported to MCP clients and by `codewiki version`.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 const maxRefs = 15 // callers/callees listed inline by get_symbol
 
@@ -119,7 +119,8 @@ type handlers struct{ st *store.Store }
 // SearchInput is the input of search_code.
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"words to search for in symbol names, signatures and doc comments, e.g. 'rate limiter' or 'ParseConfig'"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type, class, record, enum, constructor"`
+	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java or python"`
 	Path  string `json:"path,omitempty" jsonschema:"optional: only files under this directory, e.g. 'internal/store'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum results, default 10, max 50"`
 }
@@ -143,7 +144,7 @@ func (h handlers) searchCode(ctx context.Context, req *mcp.CallToolRequest, in S
 	if limit == 0 {
 		limit = 10
 	}
-	syms, err := h.st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind, Path: in.Path})
+	syms, err := h.st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind, Lang: in.Lang, Path: in.Path})
 	if err != nil {
 		return nil, SearchOutput{}, err
 	}
@@ -286,6 +287,13 @@ func (h handlers) dependencyGraph(ctx context.Context, req *mcp.CallToolRequest,
 		}
 		out := GraphOutput{Edges: []GraphEdge{}, External: ext}
 		return text(formatExternal(name, ext)), out, nil
+	}
+	if len(syms) > 1 && store.SameName(syms) {
+		// Overloads: edges point at the first declaration of the name.
+		r, err := h.st.Lookup(syms[0].Qualified)
+		if err == nil && len(r) > 0 {
+			syms = r[:1]
+		}
 	}
 	if len(syms) > 1 {
 		var b strings.Builder

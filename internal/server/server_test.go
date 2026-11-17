@@ -150,3 +150,32 @@ func TestFileSummary(t *testing.T) {
 		t.Errorf("unexpected output for unknown file:\n%s", miss)
 	}
 }
+
+func TestJavaAndPython(t *testing.T) {
+	cs := connect(t)
+	out := callText(t, cs, "search_code", map[string]any{"query": "charge customer", "lang": "java"})
+	if !strings.Contains(out, "1. com.shop.billing.Billing.charge (method)") {
+		t.Errorf("java search:\n%s", out)
+	}
+	sym := callText(t, cs, "get_symbol", map[string]any{"name": "StockService.reserve"})
+	for _, want := range []string{
+		"def reserve(self, sku: str, qty: int) -> bool",
+		"Reserve qty units of sku, if enough are in stock.",
+		"- py.inventory.models.ItemRepository.get",
+		"External calls", // _log is internal; reserve itself has none
+	} {
+		if want == "External calls" {
+			if strings.Contains(sym, want) {
+				t.Errorf("reserve should have no external calls:\n%s", sym)
+			}
+			continue
+		}
+		if !strings.Contains(sym, want) {
+			t.Errorf("python get_symbol missing %q:\n%s", want, sym)
+		}
+	}
+	up := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "Billing.charge", "direction": "callers"})
+	if !strings.Contains(up, "- com.shop.orders.OrderService.place") {
+		t.Errorf("java callers:\n%s", up)
+	}
+}

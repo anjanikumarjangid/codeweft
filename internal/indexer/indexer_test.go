@@ -26,9 +26,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 3 source files; the generated file is skipped, the _test.go file ignored.
-	if res.Files != 3 || res.Skipped != 1 {
-		t.Fatalf("got %d files, %d skipped; want 3 and 1", res.Files, res.Skipped)
+	// 3 Go, 4 Java and 3 Python files; the generated Go file is skipped and
+	// the _test.go file ignored.
+	if res.Files != 10 || res.Skipped != 1 {
+		t.Fatalf("got %d files, %d skipped; want 10 and 1", res.Files, res.Skipped)
 	}
 	return st
 }
@@ -72,8 +73,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 3 || syms != 14 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 3 and 14", files, syms)
+	if files != 10 || syms != 40 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 10 and 40", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -272,7 +273,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 3 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 10 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -295,7 +296,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 1 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 8 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {

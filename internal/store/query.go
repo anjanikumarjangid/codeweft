@@ -89,7 +89,7 @@ func (s *Store) Lookup(name string) ([]Symbol, error) {
 		{`s.qualified LIKE ? ESCAPE '\'`, "%." + escapeLike(name)},
 	}
 	for _, q := range queries {
-		rows, err := s.db.Query(selectSymbol+` WHERE `+q.where+` ORDER BY s.qualified LIMIT 20`, q.arg)
+		rows, err := s.db.Query(selectSymbol+` WHERE `+q.where+` ORDER BY s.qualified, s.id LIMIT 20`, q.arg)
 		if err != nil {
 			return nil, err
 		}
@@ -102,6 +102,17 @@ func (s *Store) Lookup(name string) ([]Symbol, error) {
 		}
 	}
 	return nil, nil
+}
+
+// SameName reports whether all symbols share one qualified name, as Java
+// overloads do. Callers can then treat them as a single symbol.
+func SameName(syms []Symbol) bool {
+	for _, s := range syms[1:] {
+		if s.Qualified != syms[0].Qualified {
+			return false
+		}
+	}
+	return len(syms) > 0
 }
 
 // All returns every symbol ordered by file and line. Used by tests and export.

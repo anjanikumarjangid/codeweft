@@ -160,7 +160,7 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		DirQual:   map[string]string{},
 		Fields:    map[[2]string]string{},
 	}
-	rows, err := t.tx.Query(`SELECT id, name, qualified, kind FROM symbols`)
+	rows, err := t.tx.Query(`SELECT id, name, qualified, kind FROM symbols ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
