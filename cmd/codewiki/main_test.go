@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
@@ -80,4 +83,113 @@ func TestReindexKeepsIndexOptions(t *testing.T) {
 	if indexed(t, db, "helperForTests") || indexed(t, db, "gen.G") {
 		t.Error("overridden options were not remembered by the next reindex")
 	}
+}
+
+func newRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/m\n\ngo 1.24\n")
+	writeFile(t, filepath.Join(repo, "a.go"), "package m\n\nfunc A() {}\n")
+	writeFile(t, filepath.Join(repo, "sub", "deep", "b.go"), "package deep\n\nfunc B() {}\n")
+	return repo
+}
+
+func TestResolveServeFindsRepositoryRoot(t *testing.T) {
+	repo := newRepo(t)
+	cfg, err := resolveServe("", filepath.Join(repo, "sub", "deep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An explicit --root is used as given, not walked up from.
+	if cfg.root != filepath.Join(repo, "sub", "deep") {
+		t.Errorf("explicit --root: got %s", cfg.root)
+	}
+
+	t.Chdir(filepath.Join(repo, "sub", "deep"))
+	cfg, err = resolveServe("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.root != repo || cfg.db != filepath.Join(repo, ".codewiki", "index.db") || cfg.exists {
+		t.Errorf("from a subdirectory: got %+v; want root %s with no index yet", cfg, repo)
+	}
+
+	// --db without an index needs to know what to build.
+	if _, err := resolveServe(filepath.Join(t.TempDir(), "x.db"), ""); err == nil {
+		t.Error("--db pointing at no index and no --root: want an error")
+	}
+}
+
+// waitFor polls cond for up to five seconds.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestServeBuildsIndexOnFirstStart(t *testing.T) {
+	repo := newRepo(t)
+	cfg, err := resolveServe("", repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := startIndexing(ctx, st, cfg, false, func(string) {})
+	if err := ready(); err == nil || !strings.Contains(err.Error(), "building the index") {
+		t.Errorf("right after start: ready() = %v; want a 'building the index' error", err)
+	}
+	waitFor(t, "the first index", func() bool { return ready() == nil })
+	if !indexed(t, cfg.db, "sub/deep.B") {
+		t.Error("first build did not index the repository")
+	}
+	data, err := os.ReadFile(filepath.Join(repo, ".codewiki", ".gitignore"))
+	if err != nil || !strings.Contains(string(data), "*") {
+		t.Errorf(".codewiki/.gitignore = %q, %v; want it to ignore everything", data, err)
+	}
+}
+
+func TestServeCatchesUpAndWatches(t *testing.T) {
+	repo := newRepo(t)
+	db := filepath.Join(repo, defaultDB)
+	if err := runIndex([]string{repo}); err != nil {
+		t.Fatal(err)
+	}
+	// Edited while no server was running.
+	writeFile(t, filepath.Join(repo, "c.go"), "package m\n\nfunc C() {}\n")
+
+	cfg, err := resolveServe("", repo)
+	if err != nil || !cfg.exists {
+		t.Fatalf("resolveServe: %+v, %v", cfg, err)
+	}
+	st, err := store.Open(cfg.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := startIndexing(ctx, st, cfg, true, func(string) {})
+	if err := ready(); err != nil {
+		t.Errorf("existing index: ready() = %v; want it served right away", err)
+	}
+	waitFor(t, "the catch-up re-index", func() bool { return indexed(t, db, "m.C") })
+
+	// And edits after start are picked up by the watcher.
+	writeFile(t, filepath.Join(repo, "d.go"), "package m\n\nfunc D() {}\n")
+	waitFor(t, "the watcher", func() bool { return indexed(t, db, "m.D") })
 }
