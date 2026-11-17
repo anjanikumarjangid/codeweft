@@ -1,0 +1,5 @@
+bin/
+.codewiki/
+*.db
+*.db-wal
+*.db-shm
