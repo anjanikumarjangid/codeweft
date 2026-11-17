@@ -80,6 +80,13 @@ func (s *Store) search(match string, opts SearchOptions) ([]Symbol, error) {
 // Lookup finds symbols by exact qualified name (pkg.Name or pkg.Type.Method),
 // falling back to an exact short name, then a qualified-name suffix.
 func (s *Store) Lookup(name string) ([]Symbol, error) {
+	syms, _, err := s.LookupAll(name, 20)
+	return syms, err
+}
+
+// LookupAll is Lookup with an explicit limit. It also returns how many
+// symbols matched in total, so callers can say when a list was cut short.
+func (s *Store) LookupAll(name string, limit int) ([]Symbol, int, error) {
 	queries := []struct {
 		where string
 		arg   string
@@ -89,19 +96,21 @@ func (s *Store) Lookup(name string) ([]Symbol, error) {
 		{`s.qualified LIKE ? ESCAPE '\'`, "%." + escapeLike(name)},
 	}
 	for _, q := range queries {
-		rows, err := s.db.Query(selectSymbol+` WHERE `+q.where+` ORDER BY s.qualified, s.id LIMIT 20`, q.arg)
+		var total int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM symbols s WHERE `+q.where, q.arg).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		if total == 0 {
+			continue
+		}
+		rows, err := s.db.Query(selectSymbol+` WHERE `+q.where+` ORDER BY s.qualified, s.id LIMIT ?`, q.arg, limit)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		syms, err := scanSymbols(rows)
-		if err != nil {
-			return nil, err
-		}
-		if len(syms) > 0 {
-			return syms, nil
-		}
+		return syms, total, err
 	}
-	return nil, nil
+	return nil, 0, nil
 }
 
 // SameName reports whether all symbols share one qualified name, as Java

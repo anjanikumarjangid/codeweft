@@ -14,7 +14,15 @@ import (
 // Version is reported to MCP clients and by `codewiki version`.
 const Version = "0.6.0"
 
-const maxRefs = 15 // callers/callees listed inline by get_symbol
+// Output limits. Every tool result lands in the agent's context window, so
+// lists and source are capped, and the agent is told what was left out and
+// how to get it.
+var (
+	maxRefs       = 15  // callers/callees listed inline by get_symbol
+	maxCandidates = 30  // symbols listed when a name is ambiguous
+	maxBodyLines  = 200 // source lines shown by get_symbol
+	maxFileLinks  = 20  // related files listed by get_file_summary
+)
 
 // Options configures New. The zero value serves st as it is.
 type Options struct {
@@ -25,8 +33,12 @@ type Options struct {
 	Ready func() error
 }
 
-// addTool registers a tool whose handler first checks ready.
+// addTool registers a tool whose handler first checks ready. Every codewiki
+// tool only reads the local index, and says so, so clients can treat them
+// as safe to call.
 func addTool[In, Out any](s *mcp.Server, ready func() error, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	closedWorld := false
+	t.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}
 	if ready != nil {
 		inner := h
 		h = func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
@@ -60,8 +72,9 @@ func New(st *store.Store, opts Options) *mcp.Server {
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_symbol",
 		Description: "Full details of a function, method or type: signature, doc comment, file and line range, " +
-			"source code, and its direct callers and callees. Accepts a qualified name from search_code, " +
-			"or a short name (which may return several matches).",
+			"source code (first 200 lines), and its direct callers and callees. Accepts a qualified name from " +
+			"search_code, or a short name; a short name that matches several symbols returns the list of " +
+			"candidates to choose from.",
 	}, h.getSymbol)
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_dependency_graph",
@@ -205,10 +218,14 @@ type FileInput struct {
 	Path string `json:"path" jsonschema:"repository-relative file path, or a unique suffix of one"`
 }
 
-// FileOutput is the structured result of get_file_summary.
+// FileOutput is the structured result of get_file_summary. Related files
+// are listed most-connected first; MoreDependsOn and MoreUsedBy count the
+// ones left out.
 type FileOutput struct {
-	Summary    *store.FileSummary `json:"summary,omitempty"`
-	Candidates []string           `json:"candidates,omitempty"`
+	Summary       *store.FileSummary `json:"summary,omitempty"`
+	MoreDependsOn int                `json:"more_depends_on,omitempty"`
+	MoreUsedBy    int                `json:"more_used_by,omitempty"`
+	Candidates    []string           `json:"candidates,omitempty"`
 }
 
 func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, FileOutput, error) {
@@ -228,10 +245,18 @@ func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, FileOutput{}, err
 	}
-	return text(formatFile(fs)), FileOutput{Summary: fs}, nil
+	out := FileOutput{Summary: fs}
+	if n := len(fs.DependsOn); n > maxFileLinks {
+		fs.DependsOn, out.MoreDependsOn = fs.DependsOn[:maxFileLinks], n-maxFileLinks
+	}
+	if n := len(fs.UsedBy); n > maxFileLinks {
+		fs.UsedBy, out.MoreUsedBy = fs.UsedBy[:maxFileLinks], n-maxFileLinks
+	}
+	return text(formatFile(out)), out, nil
 }
 
-func formatFile(fs *store.FileSummary) string {
+func formatFile(out FileOutput) string {
+	fs := out.Summary
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s, package %s)\n", fs.Path, fs.Lang, fs.Package)
 	if fs.Doc != "" {
@@ -247,7 +272,7 @@ func formatFile(fs *store.FileSummary) string {
 			fmt.Fprintf(&b, "    %s\n", d.Doc)
 		}
 	}
-	link := func(title string, ls []store.FileLink) {
+	link := func(title string, ls []store.FileLink, more int) {
 		if len(ls) == 0 {
 			return
 		}
@@ -255,9 +280,12 @@ func formatFile(fs *store.FileSummary) string {
 		for _, l := range ls {
 			fmt.Fprintf(&b, "- %s (%d call site(s))\n", l.Path, l.Calls)
 		}
+		if more > 0 {
+			fmt.Fprintf(&b, "- ... and %d more file(s) with fewer call sites\n", more)
+		}
 	}
-	link("Calls into", fs.DependsOn)
-	link("Called from", fs.UsedBy)
+	link("Calls into", fs.DependsOn, out.MoreDependsOn)
+	link("Called from", fs.UsedBy, out.MoreUsedBy)
 	return b.String()
 }
 
@@ -297,13 +325,7 @@ func (h handlers) searchCode(ctx context.Context, req *mcp.CallToolRequest, in S
 	}
 	out := SearchOutput{Results: make([]SymbolSummary, 0, len(syms))}
 	for _, sym := range syms {
-		out.Results = append(out.Results, SymbolSummary{
-			Qualified: sym.Qualified,
-			Kind:      sym.Kind,
-			Signature: sym.Signature,
-			Doc:       firstLine(sym.Doc),
-			Location:  fmt.Sprintf("%s:%d", sym.File, sym.StartLine),
-		})
+		out.Results = append(out.Results, summarize(sym))
 	}
 	return text(formatSearch(in.Query, out)), out, nil
 }
@@ -316,26 +338,64 @@ type SymbolInput struct {
 // SymbolDetail is a symbol with its direct neighbours in the call graph.
 type SymbolDetail struct {
 	store.Symbol
-	Callers      []store.Ref `json:"callers"`
-	Callees      []store.Ref `json:"callees"`
-	MoreCallers  int         `json:"more_callers,omitempty"`
-	MoreCallees  int         `json:"more_callees,omitempty"`
-	ExternalUses []string    `json:"external_calls,omitempty"`
+	BodyOmittedLines int         `json:"body_omitted_lines,omitempty"`
+	Callers          []store.Ref `json:"callers"`
+	Callees          []store.Ref `json:"callees"`
+	MoreCallers      int         `json:"more_callers,omitempty"`
+	MoreCallees      int         `json:"more_callees,omitempty"`
+	ExternalUses     []string    `json:"external_calls,omitempty"`
 }
 
-// SymbolOutput is the structured result of get_symbol.
+// SymbolOutput is the structured result of get_symbol. A name that matches
+// one symbol (or one overloaded Java method) fills Matches; an ambiguous
+// name fills Candidates instead, without source, and Total says how many
+// symbols matched.
 type SymbolOutput struct {
-	Matches []SymbolDetail `json:"matches"`
+	Matches    []SymbolDetail  `json:"matches"`
+	Candidates []SymbolSummary `json:"candidates,omitempty"`
+	Total      int             `json:"total,omitempty"`
+}
+
+func summarize(sym store.Symbol) SymbolSummary {
+	return SymbolSummary{
+		Qualified: sym.Qualified,
+		Kind:      sym.Kind,
+		Signature: sym.Signature,
+		Doc:       firstLine(sym.Doc),
+		Location:  fmt.Sprintf("%s:%d", sym.File, sym.StartLine),
+	}
+}
+
+// truncateLines keeps the first n lines of s and reports how many it dropped.
+func truncateLines(s string, n int) (string, int) {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) <= n {
+		return s, 0
+	}
+	return strings.Join(lines[:n], "\n"), len(lines) - n
 }
 
 func (h handlers) getSymbol(ctx context.Context, req *mcp.CallToolRequest, in SymbolInput) (*mcp.CallToolResult, SymbolOutput, error) {
-	syms, err := h.st.Lookup(strings.TrimSpace(in.Name))
+	name := strings.TrimSpace(in.Name)
+	syms, total, err := h.st.LookupAll(name, maxCandidates)
 	if err != nil {
 		return nil, SymbolOutput{}, err
 	}
 	out := SymbolOutput{Matches: []SymbolDetail{}}
+	// Decide on the total, not on the rows fetched: with more matches than
+	// the limit, the fetched rows alone could look unambiguous.
+	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
+		// Ambiguous: list the candidates rather than sending the source of
+		// every one. The agent picks one and asks again.
+		out.Total = total
+		for _, s := range syms {
+			out.Candidates = append(out.Candidates, summarize(s))
+		}
+		return text(formatCandidates(name, out)), out, nil
+	}
 	for _, s := range syms {
 		d := SymbolDetail{Symbol: s, Callers: []store.Ref{}, Callees: []store.Ref{}}
+		d.Body, d.BodyOmittedLines = truncateLines(s.Body, maxBodyLines)
 		callers, err := h.st.Callers(s.ID)
 		if err != nil {
 			return nil, out, err
@@ -516,11 +576,27 @@ func formatSymbols(name string, syms []SymbolDetail) string {
 			fmt.Fprintf(&b, "\n%s\n", s.Doc)
 		}
 		fmt.Fprintf(&b, "\n```%s\n%s\n```\n", s.Lang, s.Body)
+		if s.BodyOmittedLines > 0 {
+			fmt.Fprintf(&b, "(%d more line(s) not shown: read %s lines %d-%d)\n",
+				s.BodyOmittedLines, s.File, s.EndLine-s.BodyOmittedLines+1, s.EndLine)
+		}
 		formatRefs(&b, "Called by", s.Callers, s.MoreCallers)
 		formatRefs(&b, "Calls", s.Callees, s.MoreCallees)
 		if len(s.ExternalUses) > 0 {
 			fmt.Fprintf(&b, "\nExternal calls: %s\n", strings.Join(s.ExternalUses, ", "))
 		}
+	}
+	return b.String()
+}
+
+func formatCandidates(name string, out SymbolOutput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q matches %d symbols; call get_symbol again with one of these qualified names:\n", name, out.Total)
+	for _, c := range out.Candidates {
+		fmt.Fprintf(&b, "- %s (%s) at %s\n    %s\n", c.Qualified, c.Kind, c.Location, firstLine(c.Signature))
+	}
+	if more := out.Total - len(out.Candidates); more > 0 {
+		fmt.Fprintf(&b, "- ... and %d more; use search_code with kind or path filters to narrow it down\n", more)
 	}
 	return b.String()
 }

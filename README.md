@@ -15,7 +15,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 | Tool | What it answers |
 |---|---|
 | `search_code` | Ranked keyword search over symbol names, signatures and doc comments. Splits `camelCase` and `snake_case`, stems words and matches prefixes, so `payment` finds `ProcessPayment`. Optional `kind`, `lang` and `path` filters. |
-| `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). |
+| `get_symbol` | Signature, doc comment, `file:line` range, source, direct callers and callees of a function, method or type, by qualified name (`internal/store.Store.Search`) or short name (`Search`). A short name that matches several symbols returns the candidates instead of the source of each. |
 | `get_dependency_graph` | What a symbol calls, or what calls it, several levels deep. Given an external package such as `database/sql`, lists every place that calls into it. |
 | `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
 | `get_architecture_overview` | The repository at a glance: languages, packages and what they are for, entry points, HTTP frameworks, package-to-package dependencies, most-called functions and most-used external libraries. |
@@ -111,6 +111,12 @@ Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so
 `codewiki watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
 
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
+
+### Output size
+
+Every tool result lands in the agent's context window, so results are capped and always say what was left out and how to get it: `get_symbol` shows the first 200 lines of source and the file range of the rest, and at most 15 callers and callees; an ambiguous name lists up to 30 candidates with the total count; `get_file_summary` lists the 20 most-connected related files in each direction. Every tool is annotated as read-only.
+
+On the Go standard library, `get_symbol String` went from 12.1 KB of text (the full source of 20 of its matches) to 4.1 KB (a list of candidates), and the longest function (`cmd/internal/obj/arm64.ctxt7.asmout`, 2,457 lines) from 60 KB to 6.5 KB.
 
 ## Design decisions
 
