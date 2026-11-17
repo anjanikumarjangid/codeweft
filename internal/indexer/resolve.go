@@ -79,6 +79,7 @@ func resolve(tx *store.Tx, module string) (int, error) {
 
 type resolver struct {
 	in    *store.ResolveInput
+	lang  string // of the call being resolved: go, java or python
 	typer *goTyper
 	// supers lists each type's declared supertypes (extends and implements,
 	// not Go embedding), in declaration order: for a Java class its
@@ -349,6 +350,11 @@ func (r resolver) exact(q string) (int64, string, string) {
 // byMethodName links to the only method with this name, if there is one.
 // Overloads (several methods sharing one qualified name) count as one.
 func (r resolver) byMethodName(name string) (int64, string, string) {
+	if builtinMethods[r.lang][name] {
+		// The value is more likely a built-in (a dict, a List) than the
+		// repository's only method of that name: no guess.
+		return 0, "", ""
+	}
 	ids := r.in.Methods[name]
 	if len(ids) == 0 {
 		return 0, "", ""
@@ -426,8 +432,46 @@ func (r resolver) typeRef(ref string) (q string, external bool) {
 	return ref, false
 }
 
+// builtinMethods are method names of each language's built-in and
+// standard-library types (Python dict, list, str, set, files; Java Object,
+// String, collections, streams, exceptions). A call of one of them on a
+// value of unknown type is not matched by name. Go's built-in types have
+// no methods.
+var builtinMethods = map[string]map[string]bool{
+	"python": wordSet(`append extend insert pop remove clear copy count index reverse sort update get items keys
+		values setdefault popitem fromkeys add discard union intersection difference issubset issuperset
+		split rsplit join strip lstrip rstrip replace format lower upper startswith endswith encode decode find
+		rfind partition rpartition splitlines title capitalize zfill read readline readlines write writelines close
+		flush seek tell fileno isoformat strftime total_seconds group groups match search sub`),
+	"java": wordSet(`get put set add addAll remove removeAll contains containsKey containsValue size isEmpty clear
+		iterator next hasNext stream forEach map filter collect of equals hashCode toString compareTo length charAt
+		substring indexOf trim split format getMessage getCause close read write flush append keySet values entrySet
+		getKey getValue toArray sort valueOf intValue longValue booleanValue name ordinal clone getClass apply accept
+		test run call join start orElse isPresent`),
+}
+
+func wordSet(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(s) {
+		m[w] = true
+	}
+	return m
+}
+
+// langOf names the language of a source file by its extension.
+func langOf(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".java"):
+		return "java"
+	case strings.HasSuffix(path, ".py"):
+		return "python"
+	}
+	return "go"
+}
+
 // callIn resolves a call site found in the file at path.
 func (r resolver) callIn(c store.RawCall, path string) (int64, string, string) {
+	r.lang = langOf(path)
 	if c.Form == store.CallExpr {
 		if strings.HasSuffix(path, ".java") {
 			return r.javaExprCall(c)
