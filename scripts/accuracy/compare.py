@@ -39,6 +39,13 @@ def calls(db, truthdir):
             ours[a + " " + b] = conf
     scored = {k: v for k, v in ours.items() if k.split()[0] in callers and k.split()[1] in callees}
     correct = {k for k in scored if k in truth}
+    # vendor/ is a dependency, not indexed: a call into it is found when it
+    # is an external reference to the vendored package's own path.
+    external = {f"{a} {r}" for a, r in db.execute("""SELECT s.qualified, e.to_ref FROM edges e
+        JOIN symbols s ON s.id = e.from_id WHERE e.to_id IS NULL""")}
+    vendored = {e for e in truth if e.split()[1].startswith("vendor/")}
+    vendored_found = {e for e in vendored if e.split()[0] + " " + e.split()[1][len("vendor/"):] in external}
+    found = correct | vendored_found  # for recall; precision scores internal edges
     wrong = [k for k in scored if k not in truth]
     wrong_os = [k for k in wrong if k.split()[0] in per_os]
     indexed = {e for e in truth if e.split()[0] in symbols and e.split()[1] in symbols}
@@ -49,11 +56,12 @@ def calls(db, truthdir):
         print(f"  {conf} edges:", pct(len(s & correct), len(s)))
     print(f"  wrong edges made by another OS's version of the caller: {len(wrong_os)} of {len(wrong)}")
     print("  precision without those:", pct(len(correct), len(scored) - len(wrong_os)))
-    print("recall:", pct(len(correct), len(truth)))
+    print("recall:", pct(len(found), len(truth)))
+    print(f"  of which calls into vendor/ found as external references: {len(vendored_found)} of {len(vendored)}")
     print("  where caller and callee are indexed:", pct(len(correct & indexed), len(indexed)))
     kinds = dict(db.execute("SELECT qualified, kind FROM symbols"))
     missed = collections.Counter()
-    for e in truth - correct:
+    for e in truth - found:
         a, b = e.split()
         if a not in symbols or b not in symbols:
             missed["caller or callee not indexed (generated file)"] += 1

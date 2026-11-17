@@ -992,3 +992,61 @@ func TestGeneratedCode(t *testing.T) {
 		t.Error("generated symbol indexed with SkipGenerated")
 	}
 }
+
+// TestPlatform checks that Go files are indexed for one build
+// configuration, so declarations of the same name for different platforms
+// are not merged.
+func TestPlatform(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, rel), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("conn.go", "package m\n\n// Conn is a connection.\ntype Conn interface{ Close() error }\n\nfunc use(c Conn) { c.Close() }\n")
+	write("conn_linux.go", "package m\n\nfunc open() string { return linuxName() }\n\nfunc linuxName() string { return \"l\" }\n")
+	write("conn_windows.go", "package m\n\nfunc open() string { return windowsName() }\n\nfunc windowsName() string { return \"w\" }\n")
+	write("stub.go", "//go:build nethttpomit\n\npackage m\n\n// Conn is a stub with the interface's name.\ntype Conn struct{}\n")
+	callees := func(platform string) string {
+		t.Helper()
+		st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if _, err := indexer.Index(repo, st, indexer.Options{Platform: platform}); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, name := range []string{"m.open", "m.use"} {
+			syms, _ := st.Lookup(name)
+			for _, s := range syms {
+				refs, _ := st.Callees(s.ID, false)
+				for _, r := range refs {
+					out = append(out, s.Qualified+"->"+r.Qualified)
+				}
+			}
+		}
+		conn, _ := st.Lookup("m.Conn")
+		for _, c := range conn {
+			out = append(out, "Conn:"+c.Kind)
+		}
+		return strings.Join(out, " ")
+	}
+	// The stub's build tag is never set, so Conn stays an interface.
+	if got := callees("linux/amd64"); got != "m.open->m.linuxName m.use->m.Conn.Close Conn:interface" {
+		t.Errorf("linux/amd64: %s", got)
+	}
+	if got := callees("windows/amd64"); got != "m.open->m.windowsName m.use->m.Conn.Close Conn:interface" {
+		t.Errorf("windows/amd64: %s", got)
+	}
+	// "all" merges both platforms' open, and the stub.
+	if got := callees("all"); !strings.Contains(got, "m.open->m.linuxName") || !strings.Contains(got, "m.open->m.windowsName") || !strings.Contains(got, "Conn:struct") {
+		t.Errorf("all: %s", got)
+	}
+	if _, err := indexer.Index(repo, nil, indexer.Options{Platform: "linux"}); err == nil || !strings.Contains(err.Error(), "GOOS/GOARCH") {
+		t.Errorf("invalid platform: %v", err)
+	}
+}

@@ -94,6 +94,11 @@ type Options struct {
 	// SkipGenerated leaves out files marked as generated ("Code generated
 	// ... DO NOT EDIT."). By default they are indexed and ranked last.
 	SkipGenerated bool `json:"skip_generated,omitempty"`
+	// Platform selects the Go files of one build configuration, as the go
+	// command and gopls do: "linux/amd64" keeps the files whose build
+	// constraints (//go:build lines, _GOOS_GOARCH file names) match it,
+	// "all" keeps every file, and "" means the platform codewiki runs on.
+	Platform string `json:"platform,omitempty"`
 }
 
 const optionsKey = "options"
@@ -122,6 +127,9 @@ type Result struct {
 	Edges     int // resolved call edges in the whole index
 	Generated int // generated files among Files
 	Skipped   int // oversized or unparsable files, and generated ones with SkipGenerated
+	// OtherPlatform counts Go files left out because their build
+	// constraints do not match the selected platform.
+	OtherPlatform int
 }
 
 var defaultSkipDirs = map[string]bool{
@@ -190,6 +198,13 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 	if err != nil {
 		return res, err
 	}
+	// The platform is recorded resolved ("linux/amd64", not "the running
+	// one"), so later incremental runs keep the same set of files.
+	platform, err := newPlatform(opts.Platform)
+	if err != nil {
+		return res, err
+	}
+	opts.Platform = platform.String()
 	saved, err := json.Marshal(opts) // as given, before defaults are filled in
 	if err != nil {
 		return res, err
@@ -245,6 +260,10 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 		}
 		if info.Size() > opts.MaxFileBytes {
 			res.Skipped++
+			return nil
+		}
+		if lang.name == "go" && !platform.match(p) {
+			res.OtherPlatform++
 			return nil
 		}
 		jobs = append(jobs, job{abs: p, rel: rel, lang: lang, testOnly: !opts.IncludeTests && lang.isTest(rel)})
