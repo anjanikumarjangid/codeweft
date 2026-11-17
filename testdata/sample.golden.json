@@ -1,0 +1,89 @@
+[
+  {
+    "file": "payments/service.go",
+    "package": "payments",
+    "name": "Gateway",
+    "qualified": "payments.Gateway",
+    "kind": "interface",
+    "signature": "type Gateway interface {\n\tCharge(customerID string, cents int64) (string, error)\n\tRefund(chargeID string) error\n}",
+    "doc": "Gateway talks to an external payment provider.",
+    "start_line": 10,
+    "end_line": 13
+  },
+  {
+    "file": "payments/service.go",
+    "package": "payments",
+    "name": "PaymentService",
+    "qualified": "payments.PaymentService",
+    "kind": "struct",
+    "signature": "type PaymentService struct",
+    "doc": "PaymentService coordinates charges and refunds.",
+    "start_line": 16,
+    "end_line": 18
+  },
+  {
+    "file": "payments/service.go",
+    "package": "payments",
+    "name": "NewPaymentService",
+    "qualified": "payments.NewPaymentService",
+    "kind": "func",
+    "signature": "func NewPaymentService(gw Gateway) *PaymentService",
+    "doc": "NewPaymentService wires a service to a gateway.",
+    "start_line": 21,
+    "end_line": 23
+  },
+  {
+    "file": "payments/service.go",
+    "package": "payments",
+    "name": "ProcessPayment",
+    "qualified": "payments.PaymentService.ProcessPayment",
+    "kind": "method",
+    "signature": "func (s *PaymentService) ProcessPayment(customerID string, cents int64) (string, error)",
+    "doc": "ProcessPayment charges a customer and returns the provider's charge id.",
+    "start_line": 26,
+    "end_line": 31
+  },
+  {
+    "file": "ratelimit/limiter.go",
+    "package": "ratelimit",
+    "name": "TokenBucket",
+    "qualified": "ratelimit.TokenBucket",
+    "kind": "struct",
+    "signature": "type TokenBucket[K comparable] struct",
+    "doc": "TokenBucket is a thread-safe token bucket rate limiter.",
+    "start_line": 9,
+    "end_line": 15
+  },
+  {
+    "file": "ratelimit/limiter.go",
+    "package": "ratelimit",
+    "name": "Clock",
+    "qualified": "ratelimit.Clock",
+    "kind": "type",
+    "signature": "type Clock = func() time.Time",
+    "doc": "Clock lets tests control time.",
+    "start_line": 18,
+    "end_line": 18
+  },
+  {
+    "file": "ratelimit/limiter.go",
+    "package": "ratelimit",
+    "name": "Allow",
+    "qualified": "ratelimit.TokenBucket.Allow",
+    "kind": "method",
+    "signature": "func (b *TokenBucket[K]) Allow(key K) bool",
+    "doc": "Allow reports whether key may proceed, consuming one token.",
+    "start_line": 21,
+    "end_line": 25
+  },
+  {
+    "file": "ratelimit/limiter.go",
+    "package": "ratelimit",
+    "name": "refill",
+    "qualified": "ratelimit.refill",
+    "kind": "func",
+    "signature": "func refill(current, rate float64, elapsed time.Duration) float64",
+    "start_line": 27,
+    "end_line": 29
+  }
+]
