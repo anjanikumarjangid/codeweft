@@ -2,16 +2,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
+	"github.com/anjanikumarjangid/codewiki/internal/server"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
@@ -21,6 +26,7 @@ Usage:
   codewiki index  [--db FILE] [--include-tests] [--exclude dir1,dir2] PATH
   codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
   codewiki symbol [--db FILE] [--json] NAME
+  codewiki serve  [--db FILE]
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
 look for .codewiki/index.db in the current directory.
@@ -39,8 +45,10 @@ func main() {
 		err = runQuery(os.Args[2:])
 	case "symbol":
 		err = runSymbol(os.Args[2:])
+	case "serve":
+		err = runServe(os.Args[2:])
 	case "version", "--version":
-		fmt.Println("codewiki", version)
+		fmt.Println("codewiki", server.Version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -52,10 +60,7 @@ func main() {
 	}
 }
 
-const (
-	defaultDB = ".codewiki/index.db"
-	version   = "0.1.0"
-)
+const defaultDB = ".codewiki/index.db"
 
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
@@ -162,6 +167,21 @@ func runSymbol(args []string) error {
 		fmt.Printf("\n%s\n", s.Body)
 	}
 	return nil
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	// stdout carries the MCP protocol; anything else must go to stderr.
+	return server.New(st).Run(ctx, &mcp.StdioTransport{})
 }
 
 // interspersed lets flags appear after positional arguments, so both
