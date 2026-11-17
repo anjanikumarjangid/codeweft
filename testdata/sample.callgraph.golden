@@ -1,0 +1,12 @@
+checkout.Checkout -> payments.NewPaymentService [exact] line 18
+checkout.Checkout -> payments.PaymentService.ProcessPayment [name] line 19
+checkout.Checkout -> checkout.newOrder [exact] line 23
+checkout.Checkout -> fmt.Errorf [external] line 21
+payments.PaymentService.ProcessPayment -> payments.Gateway.Charge [exact] line 30
+payments.PaymentService.ProcessPayment -> errors.New [external] line 28
+ratelimit.TokenBucket.Allow -> ratelimit.TokenBucket.refillLocked [exact] line 24
+ratelimit.TokenBucket.Allow -> sync.Mutex.Lock [external] line 22
+ratelimit.TokenBucket.Allow -> sync.Mutex.Unlock [external] line 23
+ratelimit.TokenBucket.refillLocked -> ratelimit.refill [exact] line 30
+ratelimit.TokenBucket.refillLocked -> time.Now [external] line 29
+ratelimit.refill -> time.Duration.Seconds [external] line 35

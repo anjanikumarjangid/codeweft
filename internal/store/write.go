@@ -1,0 +1,266 @@
+package store
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+// Tx is a write batch used while indexing. Indexing a whole repository in one
+// transaction is much faster than committing per file, and readers never see
+// a half-built index.
+type Tx struct {
+	tx    *sql.Tx
+	stmts map[string]*sql.Stmt
+}
+
+// exec runs a statement through a cached prepared statement, which matters
+// when indexing hundreds of thousands of rows.
+func (t *Tx) exec(query string, args ...any) (sql.Result, error) {
+	st, ok := t.stmts[query]
+	if !ok {
+		var err error
+		if st, err = t.tx.Prepare(query); err != nil {
+			return nil, err
+		}
+		t.stmts[query] = st
+	}
+	return st.Exec(args...)
+}
+
+// Begin starts a write batch.
+func (s *Store) Begin() (*Tx, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return &Tx{tx: tx, stmts: map[string]*sql.Stmt{}}, nil
+}
+
+// Commit commits the batch.
+func (t *Tx) Commit() error { return t.tx.Commit() }
+
+// Rollback abandons the batch.
+func (t *Tx) Rollback() error { return t.tx.Rollback() }
+
+// Reset removes all indexed data, keeping the schema.
+func (t *Tx) Reset() error {
+	for _, q := range []string{
+		`DELETE FROM edges`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
+		`DELETE FROM symbols_fts`,
+	} {
+		if _, err := t.tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FileHashes returns path -> content hash for every indexed file.
+func (t *Tx) FileHashes() (map[string]string, error) {
+	rows, err := t.tx.Query(`SELECT path, hash FROM files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var p, h string
+		if err := rows.Scan(&p, &h); err != nil {
+			return nil, err
+		}
+		out[p] = h
+	}
+	return out, rows.Err()
+}
+
+// DeleteFile removes a file and everything derived from it. Edges pointing
+// at its symbols are removed by the cascade; edges are rebuilt afterwards.
+func (t *Tx) DeleteFile(path string) error {
+	if _, err := t.tx.Exec(`DELETE FROM symbols_fts WHERE rowid IN
+		(SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?)`, path); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(`DELETE FROM files WHERE path = ?`, path)
+	return err
+}
+
+// AddFile inserts a file and returns its id.
+func (t *Tx) AddFile(f File) (int64, error) {
+	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// AddSymbol inserts a symbol and its full-text search row.
+func (t *Tx) AddSymbol(fileID int64, sym Symbol) error {
+	res, err := t.exec(`INSERT INTO symbols
+		(file_id, package, name, qualified, kind, signature, doc, start_line, end_line, exported, body)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		fileID, sym.Package, sym.Name, sym.Qualified, sym.Kind, sym.Signature, sym.Doc,
+		sym.StartLine, sym.EndLine, sym.Exported, sym.Body)
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	_, err = t.exec(`INSERT INTO symbols_fts(rowid, name, qualified, terms, signature, doc)
+		VALUES (?, ?, ?, ?, ?, ?)`, id, sym.Name, sym.Qualified, SplitWords(sym.Qualified), sym.Signature, sym.Doc)
+	return err
+}
+
+// AddImport records an import statement of a file.
+func (t *Tx) AddImport(fileID int64, imp Import) error {
+	_, err := t.exec(`INSERT INTO imports(file_id, path, alias) VALUES(?, ?, ?)`, fileID, imp.Path, imp.Alias)
+	return err
+}
+
+// AddField records a struct or class field with its type.
+func (t *Tx) AddField(fileID int64, f Field) error {
+	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref) VALUES(?, ?, ?, ?)`,
+		fileID, f.Owner, f.Name, f.TypeRef)
+	return err
+}
+
+// AddRawCall records an unresolved call site.
+func (t *Tx) AddRawCall(fileID int64, c RawCall) error {
+	_, err := t.exec(`INSERT INTO raw_calls(file_id, caller, form, a, b, c, line) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		fileID, c.Caller, c.Form, c.A, c.B, c.C, c.Line)
+	return err
+}
+
+// ResolveInput is everything the resolver needs, loaded in bulk.
+type ResolveInput struct {
+	Module    string               // Go module path, "" if none
+	Symbols   map[string]int64     // qualified name -> id
+	Qualified map[int64]string     // id -> qualified name
+	Kinds     map[int64]string     // id -> kind
+	Methods   map[string][]int64   // short method name -> ids
+	Types     map[string][]string  // short type name -> qualified names
+	DirQual   map[string]string    // directory -> qualifier (Go packages)
+	Fields    map[[2]string]string // (owner, field) -> type ref
+	Calls     []RawCall
+	CallFiles []string // file path per call, parallel to Calls
+}
+
+// LoadResolveInput reads symbols, fields and raw calls for resolution.
+func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
+	in := &ResolveInput{
+		Module:    module,
+		Symbols:   map[string]int64{},
+		Kinds:     map[int64]string{},
+		Qualified: map[int64]string{},
+		Methods:   map[string][]int64{},
+		Types:     map[string][]string{},
+		DirQual:   map[string]string{},
+		Fields:    map[[2]string]string{},
+	}
+	rows, err := t.tx.Query(`SELECT id, name, qualified, kind FROM symbols`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		var name, q, kind string
+		if err := rows.Scan(&id, &name, &q, &kind); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if _, dup := in.Symbols[q]; !dup {
+			in.Symbols[q] = id
+		}
+		in.Kinds[id] = kind
+		in.Qualified[id] = q
+		switch kind {
+		case "method", "interface method", "constructor":
+			in.Methods[name] = append(in.Methods[name], id)
+		case "struct", "interface", "type", "class", "enum", "record":
+			in.Types[name] = append(in.Types[name], q)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = t.tx.Query(`SELECT DISTINCT dir, qual FROM files WHERE lang = 'go'`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var d, q string
+		if err := rows.Scan(&d, &q); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		in.DirQual[d] = q
+	}
+	rows.Close()
+
+	rows, err = t.tx.Query(`SELECT owner, name, type_ref FROM fields`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var o, n, tr string
+		if err := rows.Scan(&o, &n, &tr); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		in.Fields[[2]string{o, n}] = tr
+	}
+	rows.Close()
+
+	rows, err = t.tx.Query(`SELECT f.path, r.caller, r.form, r.a, r.b, r.c, r.line
+		FROM raw_calls r JOIN files f ON f.id = r.file_id ORDER BY r.rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c RawCall
+		var p string
+		if err := rows.Scan(&p, &c.Caller, &c.Form, &c.A, &c.B, &c.C, &c.Line); err != nil {
+			return nil, err
+		}
+		in.Calls = append(in.Calls, c)
+		in.CallFiles = append(in.CallFiles, p)
+	}
+	return in, rows.Err()
+}
+
+// Edge is a resolved (or external) call.
+type Edge struct {
+	FromID     int64
+	ToID       int64 // 0 when the callee is outside the index
+	ToRef      string
+	Line       int
+	Confidence string // "exact" or "name"
+}
+
+// ReplaceEdges deletes all edges and writes the given ones.
+func (t *Tx) ReplaceEdges(edges []Edge) error {
+	if _, err := t.tx.Exec(`DELETE FROM edges`); err != nil {
+		return err
+	}
+	stmt, err := t.tx.Prepare(`INSERT INTO edges(from_id, to_id, to_ref, line, confidence) VALUES(?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range edges {
+		var to any
+		if e.ToID != 0 {
+			to = e.ToID
+		}
+		if _, err := stmt.Exec(e.FromID, to, e.ToRef, e.Line, e.Confidence); err != nil {
+			return fmt.Errorf("edge %d -> %s: %w", e.FromID, e.ToRef, err)
+		}
+	}
+	return nil
+}

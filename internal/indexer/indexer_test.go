@@ -3,8 +3,10 @@ package indexer_test
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
@@ -24,9 +26,9 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 2 source files; the generated file is skipped, the _test.go file ignored.
-	if res.Files != 2 || res.Skipped != 1 {
-		t.Fatalf("got %d files, %d skipped; want 2 and 1", res.Files, res.Skipped)
+	// 3 source files; the generated file is skipped, the _test.go file ignored.
+	if res.Files != 3 || res.Skipped != 1 {
+		t.Fatalf("got %d files, %d skipped; want 3 and 1", res.Files, res.Skipped)
 	}
 	return st
 }
@@ -66,12 +68,12 @@ func TestReindexReplacesData(t *testing.T) {
 	if _, err := indexer.Index("../../testdata/sample", st, indexer.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	files, syms, err := st.Stats()
+	files, syms, _, err := st.Stats()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 2 || syms != 8 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 2 and 8", files, syms)
+	if files != 3 || syms != 14 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 3 and 14", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -97,7 +99,7 @@ func TestSearch(t *testing.T) {
 		{"payment", "", "payments.PaymentService"},
 		{"process payment", "", "payments.PaymentService.ProcessPayment"},
 		// prefix matching
-		{"refun", "", "payments.Gateway"},
+		{"refun", "", "payments.Gateway.Refund"},
 		// doc comments are searchable
 		{"rate limiter", "", "ratelimit.TokenBucket"},
 		// kind filter
@@ -146,5 +148,85 @@ func TestLookup(t *testing.T) {
 	}
 	if syms, _ := st.Lookup("DoesNotExist"); len(syms) != 0 {
 		t.Errorf("unknown name matched %d symbols", len(syms))
+	}
+}
+
+// TestCallGraphGolden checks every resolved and external edge in the sample
+// repo against a hand-reviewed expectation.
+func TestCallGraphGolden(t *testing.T) {
+	st := indexSample(t)
+	syms, err := st.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, s := range syms {
+		callees, err := st.Callees(s.ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range callees {
+			lines = append(lines, fmt.Sprintf("%s -> %s [%s] line %d", s.Qualified, c.Qualified, c.Confidence, c.CallLine))
+		}
+	}
+	got := strings.Join(lines, "\n") + "\n"
+	golden := "../../testdata/sample.callgraph.golden"
+	if *update {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("%v (run with -update to create it)", err)
+	}
+	if got != string(want) {
+		t.Errorf("call graph differs from %s:\n%s", golden, got)
+	}
+}
+
+func TestCallersAndGraph(t *testing.T) {
+	st := indexSample(t)
+	target, err := st.Lookup("payments.PaymentService.ProcessPayment")
+	if err != nil || len(target) != 1 {
+		t.Fatalf("lookup: %v %v", target, err)
+	}
+	callers, err := st.Callers(target[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers) != 1 || callers[0].Qualified != "checkout.Checkout" {
+		t.Fatalf("callers of ProcessPayment = %+v, want checkout.Checkout", callers)
+	}
+
+	// Checkout -> ProcessPayment -> Gateway.Charge, two levels deep.
+	root, err := st.Lookup("checkout.Checkout")
+	if err != nil || len(root) != 1 {
+		t.Fatal(err)
+	}
+	g, n, err := st.Graph(root[0], "callees", 2, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("empty graph")
+	}
+	found := false
+	for _, c := range g.Children {
+		if c.Qualified == "payments.PaymentService.ProcessPayment" {
+			for _, cc := range c.Children {
+				if cc.Qualified == "payments.Gateway.Charge" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("depth-2 graph missing Checkout -> ProcessPayment -> Gateway.Charge")
+	}
+
+	ext, err := st.ExternalCallers("sync", 10)
+	if err != nil || len(ext) == 0 || ext[0].Qualified != "ratelimit.TokenBucket.Allow" {
+		t.Errorf("ExternalCallers(sync) = %+v, %v", ext, err)
 	}
 }

@@ -1,6 +1,45 @@
 [
   {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "Order",
+    "qualified": "checkout.Order",
+    "kind": "struct",
+    "signature": "type Order struct",
+    "doc": "Order is a paid cart.",
+    "start_line": 11,
+    "end_line": 14,
+    "exported": true
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "Checkout",
+    "qualified": "checkout.Checkout",
+    "kind": "func",
+    "signature": "func Checkout(gw payments.Gateway, customerID string, cents int64) (*Order, error)",
+    "doc": "Checkout charges the customer for the cart total and creates an order.",
+    "start_line": 17,
+    "end_line": 24,
+    "exported": true
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "newOrder",
+    "qualified": "checkout.newOrder",
+    "kind": "func",
+    "signature": "func newOrder(chargeID string) *Order",
+    "start_line": 26,
+    "end_line": 28,
+    "exported": false
+  },
+  {
     "file": "payments/service.go",
+    "lang": "go",
     "package": "payments",
     "name": "Gateway",
     "qualified": "payments.Gateway",
@@ -8,10 +47,36 @@
     "signature": "type Gateway interface {\n\tCharge(customerID string, cents int64) (string, error)\n\tRefund(chargeID string) error\n}",
     "doc": "Gateway talks to an external payment provider.",
     "start_line": 10,
-    "end_line": 13
+    "end_line": 13,
+    "exported": true
   },
   {
     "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "Charge",
+    "qualified": "payments.Gateway.Charge",
+    "kind": "interface method",
+    "signature": "Charge(customerID string, cents int64) (string, error)",
+    "start_line": 11,
+    "end_line": 11,
+    "exported": true
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "Refund",
+    "qualified": "payments.Gateway.Refund",
+    "kind": "interface method",
+    "signature": "Refund(chargeID string) error",
+    "start_line": 12,
+    "end_line": 12,
+    "exported": true
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
     "package": "payments",
     "name": "PaymentService",
     "qualified": "payments.PaymentService",
@@ -19,10 +84,12 @@
     "signature": "type PaymentService struct",
     "doc": "PaymentService coordinates charges and refunds.",
     "start_line": 16,
-    "end_line": 18
+    "end_line": 18,
+    "exported": true
   },
   {
     "file": "payments/service.go",
+    "lang": "go",
     "package": "payments",
     "name": "NewPaymentService",
     "qualified": "payments.NewPaymentService",
@@ -30,10 +97,12 @@
     "signature": "func NewPaymentService(gw Gateway) *PaymentService",
     "doc": "NewPaymentService wires a service to a gateway.",
     "start_line": 21,
-    "end_line": 23
+    "end_line": 23,
+    "exported": true
   },
   {
     "file": "payments/service.go",
+    "lang": "go",
     "package": "payments",
     "name": "ProcessPayment",
     "qualified": "payments.PaymentService.ProcessPayment",
@@ -41,10 +110,12 @@
     "signature": "func (s *PaymentService) ProcessPayment(customerID string, cents int64) (string, error)",
     "doc": "ProcessPayment charges a customer and returns the provider's charge id.",
     "start_line": 26,
-    "end_line": 31
+    "end_line": 31,
+    "exported": true
   },
   {
     "file": "ratelimit/limiter.go",
+    "lang": "go",
     "package": "ratelimit",
     "name": "TokenBucket",
     "qualified": "ratelimit.TokenBucket",
@@ -52,10 +123,12 @@
     "signature": "type TokenBucket[K comparable] struct",
     "doc": "TokenBucket is a thread-safe token bucket rate limiter.",
     "start_line": 9,
-    "end_line": 15
+    "end_line": 15,
+    "exported": true
   },
   {
     "file": "ratelimit/limiter.go",
+    "lang": "go",
     "package": "ratelimit",
     "name": "Clock",
     "qualified": "ratelimit.Clock",
@@ -63,10 +136,12 @@
     "signature": "type Clock = func() time.Time",
     "doc": "Clock lets tests control time.",
     "start_line": 18,
-    "end_line": 18
+    "end_line": 18,
+    "exported": true
   },
   {
     "file": "ratelimit/limiter.go",
+    "lang": "go",
     "package": "ratelimit",
     "name": "Allow",
     "qualified": "ratelimit.TokenBucket.Allow",
@@ -74,16 +149,31 @@
     "signature": "func (b *TokenBucket[K]) Allow(key K) bool",
     "doc": "Allow reports whether key may proceed, consuming one token.",
     "start_line": 21,
-    "end_line": 25
+    "end_line": 26,
+    "exported": true
   },
   {
     "file": "ratelimit/limiter.go",
+    "lang": "go",
+    "package": "ratelimit",
+    "name": "refillLocked",
+    "qualified": "ratelimit.TokenBucket.refillLocked",
+    "kind": "method",
+    "signature": "func (b *TokenBucket[K]) refillLocked(key K)",
+    "start_line": 28,
+    "end_line": 32,
+    "exported": false
+  },
+  {
+    "file": "ratelimit/limiter.go",
+    "lang": "go",
     "package": "ratelimit",
     "name": "refill",
     "qualified": "ratelimit.refill",
     "kind": "func",
     "signature": "func refill(current, rate float64, elapsed time.Duration) float64",
-    "start_line": 27,
-    "end_line": 29
+    "start_line": 34,
+    "end_line": 36,
+    "exported": false
   }
 ]

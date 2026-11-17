@@ -21,7 +21,14 @@ type Clock = func() time.Time
 func (b *TokenBucket[K]) Allow(key K) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.refillLocked(key)
 	return b.tokens[key] >= 1
+}
+
+func (b *TokenBucket[K]) refillLocked(key K) {
+	now := time.Now()
+	b.tokens[key] = min(float64(b.capacity), refill(b.tokens[key], b.rate, now.Sub(b.last[key])))
+	b.last[key] = now
 }
 
 func refill(current, rate float64, elapsed time.Duration) float64 {

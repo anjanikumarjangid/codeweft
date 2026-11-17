@@ -75,7 +75,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s is missing a description or input schema", tool.Name)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -99,9 +99,34 @@ func TestSearchCode(t *testing.T) {
 func TestGetSymbol(t *testing.T) {
 	cs := connect(t)
 	out := callText(t, cs, "get_symbol", map[string]any{"name": "TokenBucket.Allow"})
-	for _, want := range []string{"ratelimit.TokenBucket.Allow", "ratelimit/limiter.go:21-25", "b.mu.Lock()"} {
+	for _, want := range []string{
+		"ratelimit.TokenBucket.Allow", "ratelimit/limiter.go:21-26", "b.mu.Lock()",
+		"Calls:\n- ratelimit.TokenBucket.refillLocked", "External calls: sync.Mutex.Lock, sync.Mutex.Unlock",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("get_symbol output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestDependencyGraph(t *testing.T) {
+	cs := connect(t)
+	out := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "checkout.Checkout", "depth": 2})
+	for _, want := range []string{
+		"- payments.PaymentService.ProcessPayment",
+		"    - payments.Gateway.Charge",
+		"(matched by method name)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("callees graph missing %q:\n%s", want, out)
+		}
+	}
+	up := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "Gateway.Charge", "direction": "callers", "depth": 3})
+	if !strings.Contains(up, "    - checkout.Checkout") {
+		t.Errorf("callers graph should reach checkout.Checkout two levels up:\n%s", up)
+	}
+	ext := callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "sync"})
+	if !strings.Contains(ext, "ratelimit.TokenBucket.Allow calls sync.Mutex.Lock") {
+		t.Errorf("external usage listing wrong:\n%s", ext)
 	}
 }

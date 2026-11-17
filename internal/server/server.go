@@ -11,13 +11,48 @@ import (
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
-// Version is reported to MCP clients.
-const Version = "0.2.0"
+// Version is reported to MCP clients and by `codewiki version`.
+const Version = "0.3.0"
 
-// SearchInput is the input of the search_code tool.
+const maxRefs = 15 // callers/callees listed inline by get_symbol
+
+// New builds an MCP server backed by st.
+func New(st *store.Store) *mcp.Server {
+	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{
+		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
+			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
+			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
+			"or what depends on it. Prefer these tools over grepping or reading whole files.",
+	})
+	h := handlers{st}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "search_code",
+		Description: "Ranked keyword search over the indexed codebase's functions, methods and types. " +
+			"Matches names (including camelCase and snake_case parts), signatures and doc comments. " +
+			"Returns qualified names and file:line locations.",
+	}, h.searchCode)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "get_symbol",
+		Description: "Full details of a function, method or type: signature, doc comment, file and line range, " +
+			"source code, and its direct callers and callees. Accepts a qualified name from search_code, " +
+			"or a short name (which may return several matches).",
+	}, h.getSymbol)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "get_dependency_graph",
+		Description: "Call graph around a symbol: what it calls (callees) or what calls it (callers), " +
+			"several levels deep. Pass an external package path such as 'database/sql' instead of a symbol " +
+			"to list every place in the codebase that calls into it.",
+	}, h.dependencyGraph)
+	return s
+}
+
+type handlers struct{ st *store.Store }
+
+// SearchInput is the input of search_code.
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"words to search for in symbol names, signatures and doc comments, e.g. 'rate limiter' or 'ParseConfig'"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface or type"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type"`
+	Path  string `json:"path,omitempty" jsonschema:"optional: only files under this directory, e.g. 'internal/store'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum results, default 10, max 50"`
 }
 
@@ -35,71 +70,169 @@ type SearchOutput struct {
 	Results []SymbolSummary `json:"results"`
 }
 
-// SymbolInput is the input of the get_symbol tool.
+func (h handlers) searchCode(ctx context.Context, req *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
+	limit := min(max(in.Limit, 0), 50)
+	if limit == 0 {
+		limit = 10
+	}
+	syms, err := h.st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind, Path: in.Path})
+	if err != nil {
+		return nil, SearchOutput{}, err
+	}
+	out := SearchOutput{Results: make([]SymbolSummary, 0, len(syms))}
+	for _, sym := range syms {
+		out.Results = append(out.Results, SymbolSummary{
+			Qualified: sym.Qualified,
+			Kind:      sym.Kind,
+			Signature: sym.Signature,
+			Doc:       firstLine(sym.Doc),
+			Location:  fmt.Sprintf("%s:%d", sym.File, sym.StartLine),
+		})
+	}
+	return text(formatSearch(in.Query, out)), out, nil
+}
+
+// SymbolInput is the input of get_symbol.
 type SymbolInput struct {
 	Name string `json:"name" jsonschema:"qualified name like 'internal/store.Store.Search', or a short name like 'Search'"`
 }
 
-// SymbolOutput is the structured result of get_symbol.
-type SymbolOutput struct {
-	Matches []store.Symbol `json:"matches"`
+// SymbolDetail is a symbol with its direct neighbours in the call graph.
+type SymbolDetail struct {
+	store.Symbol
+	Callers      []store.Ref `json:"callers"`
+	Callees      []store.Ref `json:"callees"`
+	MoreCallers  int         `json:"more_callers,omitempty"`
+	MoreCallees  int         `json:"more_callees,omitempty"`
+	ExternalUses []string    `json:"external_calls,omitempty"`
 }
 
-// New builds an MCP server backed by st.
-func New(st *store.Store) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{
-		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
-			"Use search_code to find where something is implemented, then get_symbol to read its exact signature, doc and source. " +
-			"Prefer these tools over grepping or reading whole files.",
-	})
+// SymbolOutput is the structured result of get_symbol.
+type SymbolOutput struct {
+	Matches []SymbolDetail `json:"matches"`
+}
 
-	mcp.AddTool(s, &mcp.Tool{
-		Name: "search_code",
-		Description: "Ranked keyword search over the indexed codebase's functions, methods and types. " +
-			"Matches names (including camelCase and snake_case parts), signatures and doc comments. " +
-			"Returns qualified names and file:line locations.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
-		limit := in.Limit
-		if limit <= 0 {
-			limit = 10
-		}
-		if limit > 50 {
-			limit = 50
-		}
-		syms, err := st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind})
+func (h handlers) getSymbol(ctx context.Context, req *mcp.CallToolRequest, in SymbolInput) (*mcp.CallToolResult, SymbolOutput, error) {
+	syms, err := h.st.Lookup(strings.TrimSpace(in.Name))
+	if err != nil {
+		return nil, SymbolOutput{}, err
+	}
+	out := SymbolOutput{Matches: []SymbolDetail{}}
+	for _, s := range syms {
+		d := SymbolDetail{Symbol: s, Callers: []store.Ref{}, Callees: []store.Ref{}}
+		callers, err := h.st.Callers(s.ID)
 		if err != nil {
-			return nil, SearchOutput{}, err
+			return nil, out, err
 		}
-		out := SearchOutput{Results: make([]SymbolSummary, 0, len(syms))}
-		for _, sym := range syms {
-			out.Results = append(out.Results, SymbolSummary{
-				Qualified: sym.Qualified,
-				Kind:      sym.Kind,
-				Signature: sym.Signature,
-				Doc:       firstLine(sym.Doc),
-				Location:  fmt.Sprintf("%s:%d", sym.File, sym.StartLine),
-			})
-		}
-		return text(formatSearch(in.Query, out)), out, nil
-	})
-
-	mcp.AddTool(s, &mcp.Tool{
-		Name: "get_symbol",
-		Description: "Full details of a function, method or type: signature, doc comment, file and line range, and source code. " +
-			"Accepts a qualified name from search_code, or a short name (which may return several matches).",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in SymbolInput) (*mcp.CallToolResult, SymbolOutput, error) {
-		syms, err := st.Lookup(strings.TrimSpace(in.Name))
+		callees, err := h.st.Callees(s.ID, true)
 		if err != nil {
-			return nil, SymbolOutput{}, err
+			return nil, out, err
 		}
-		if syms == nil {
-			syms = []store.Symbol{}
+		for _, c := range callees {
+			if c.External {
+				d.ExternalUses = append(d.ExternalUses, c.Qualified)
+			} else {
+				d.Callees = append(d.Callees, c)
+			}
 		}
-		out := SymbolOutput{Matches: syms}
-		return text(formatSymbols(in.Name, syms)), out, nil
-	})
+		if callers != nil {
+			d.Callers = callers
+		}
+		if len(d.Callers) > maxRefs {
+			d.MoreCallers, d.Callers = len(d.Callers)-maxRefs, d.Callers[:maxRefs]
+		}
+		if len(d.Callees) > maxRefs {
+			d.MoreCallees, d.Callees = len(d.Callees)-maxRefs, d.Callees[:maxRefs]
+		}
+		out.Matches = append(out.Matches, d)
+	}
+	return text(formatSymbols(in.Name, out.Matches)), out, nil
+}
 
-	return s
+// GraphInput is the input of get_dependency_graph.
+type GraphInput struct {
+	Symbol          string `json:"symbol" jsonschema:"qualified or short symbol name, or an external package path like 'database/sql'"`
+	Direction       string `json:"direction,omitempty" jsonschema:"'callees' (what it depends on, default) or 'callers' (what depends on it)"`
+	Depth           int    `json:"depth,omitempty" jsonschema:"levels to expand, default 2, max 5"`
+	IncludeExternal bool   `json:"include_external,omitempty" jsonschema:"also list calls into packages outside the repository"`
+}
+
+// GraphEdge is one edge of the dependency graph, flattened breadth-first.
+// (MCP output schemas cannot describe recursive types, so the tree is sent
+// as a list; the text content shows it indented.)
+type GraphEdge struct {
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Depth      int    `json:"depth"`
+	Location   string `json:"location,omitempty"`
+	External   bool   `json:"external,omitempty"`
+	Repeated   bool   `json:"repeated,omitempty"`
+	Confidence string `json:"confidence"`
+}
+
+// GraphOutput is the structured result of get_dependency_graph.
+type GraphOutput struct {
+	Root      string      `json:"root,omitempty"`
+	Direction string      `json:"direction,omitempty"`
+	Edges     []GraphEdge `json:"edges"`
+	External  []store.Ref `json:"external_callers,omitempty"`
+}
+
+func flatten(root *store.GraphNode, dir string) []GraphEdge {
+	edges := []GraphEdge{}
+	var walk func(n *store.GraphNode, depth int)
+	walk = func(n *store.GraphNode, depth int) {
+		for _, c := range n.Children {
+			e := GraphEdge{From: n.Qualified, To: c.Qualified, Depth: depth, Location: c.Location,
+				External: c.External, Repeated: c.Repeated, Confidence: c.Confidence}
+			if dir == "callers" {
+				e.From, e.To = c.Qualified, n.Qualified
+			}
+			edges = append(edges, e)
+			walk(c, depth+1)
+		}
+	}
+	walk(root, 1)
+	return edges
+}
+
+func (h handlers) dependencyGraph(ctx context.Context, req *mcp.CallToolRequest, in GraphInput) (*mcp.CallToolResult, GraphOutput, error) {
+	name := strings.TrimSpace(in.Symbol)
+	dir := in.Direction
+	if dir != "callers" {
+		dir = "callees"
+	}
+	depth := min(max(in.Depth, 0), 5)
+	if depth == 0 {
+		depth = 2
+	}
+	syms, err := h.st.Lookup(name)
+	if err != nil {
+		return nil, GraphOutput{}, err
+	}
+	if len(syms) == 0 {
+		// Not a symbol in the repo: treat it as an external package or member.
+		ext, err := h.st.ExternalCallers(name, 100)
+		if err != nil {
+			return nil, GraphOutput{}, err
+		}
+		out := GraphOutput{Edges: []GraphEdge{}, External: ext}
+		return text(formatExternal(name, ext)), out, nil
+	}
+	if len(syms) > 1 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%q matches %d symbols; call again with one of these qualified names:\n", name, len(syms))
+		for _, s := range syms {
+			fmt.Fprintf(&b, "- %s (%s) at %s:%d\n", s.Qualified, s.Kind, s.File, s.StartLine)
+		}
+		return text(b.String()), GraphOutput{Edges: []GraphEdge{}}, nil
+	}
+	root, n, err := h.st.Graph(syms[0], dir, depth, in.IncludeExternal, 300)
+	if err != nil {
+		return nil, GraphOutput{}, err
+	}
+	out := GraphOutput{Root: root.Qualified, Direction: dir, Edges: flatten(root, dir)}
+	return text(formatGraph(root, dir, depth, n)), out, nil
 }
 
 func text(s string) *mcp.CallToolResult {
@@ -120,7 +253,7 @@ func formatSearch(query string, out SearchOutput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d result(s) for %q:\n", len(out.Results), query)
 	for i, r := range out.Results {
-		fmt.Fprintf(&b, "\n%d. %s (%s) at %s\n   %s\n", i+1, r.Qualified, r.Kind, r.Location, r.Signature)
+		fmt.Fprintf(&b, "\n%d. %s (%s) at %s\n   %s\n", i+1, r.Qualified, r.Kind, r.Location, firstLine(r.Signature))
 		if r.Doc != "" {
 			fmt.Fprintf(&b, "   %s\n", r.Doc)
 		}
@@ -128,7 +261,25 @@ func formatSearch(query string, out SearchOutput) string {
 	return b.String()
 }
 
-func formatSymbols(name string, syms []store.Symbol) string {
+func formatRefs(b *strings.Builder, title string, refs []store.Ref, more int) {
+	if len(refs) == 0 {
+		fmt.Fprintf(b, "\n%s: none found\n", title)
+		return
+	}
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, r := range refs {
+		note := ""
+		if r.Confidence == "name" {
+			note = " (matched by method name)"
+		}
+		fmt.Fprintf(b, "- %s at %s, called at %s:%d%s\n", r.Qualified, r.Location, r.CallFile, r.CallLine, note)
+	}
+	if more > 0 {
+		fmt.Fprintf(b, "- ... and %d more (use get_dependency_graph)\n", more)
+	}
+}
+
+func formatSymbols(name string, syms []SymbolDetail) string {
 	if len(syms) == 0 {
 		return fmt.Sprintf("No symbol named %q. Use search_code to find the qualified name.", name)
 	}
@@ -141,7 +292,56 @@ func formatSymbols(name string, syms []store.Symbol) string {
 		if s.Doc != "" {
 			fmt.Fprintf(&b, "\n%s\n", s.Doc)
 		}
-		fmt.Fprintf(&b, "\n```go\n%s\n```\n", s.Body)
+		fmt.Fprintf(&b, "\n```%s\n%s\n```\n", s.Lang, s.Body)
+		formatRefs(&b, "Called by", s.Callers, s.MoreCallers)
+		formatRefs(&b, "Calls", s.Callees, s.MoreCallees)
+		if len(s.ExternalUses) > 0 {
+			fmt.Fprintf(&b, "\nExternal calls: %s\n", strings.Join(s.ExternalUses, ", "))
+		}
+	}
+	return b.String()
+}
+
+func formatGraph(root *store.GraphNode, dir string, depth, n int) string {
+	var b strings.Builder
+	verb := "calls"
+	if dir == "callers" {
+		verb = "is called by"
+	}
+	fmt.Fprintf(&b, "%s %s (%d node(s), depth %d):\n\n%s (%s) at %s\n", root.Qualified, verb, n, depth, root.Qualified, root.Kind, root.Location)
+	var walk func(nodes []*store.GraphNode, indent string)
+	walk = func(nodes []*store.GraphNode, indent string) {
+		for _, c := range nodes {
+			loc := c.Location
+			if c.External {
+				loc = "external"
+			}
+			suffix := ""
+			if c.Repeated {
+				suffix = " (already shown)"
+			}
+			if c.Confidence == "name" {
+				suffix += " (matched by method name)"
+			}
+			fmt.Fprintf(&b, "%s- %s [%s]%s\n", indent, c.Qualified, loc, suffix)
+			walk(c.Children, indent+"  ")
+		}
+	}
+	walk(root.Children, "  ")
+	if n == 0 {
+		b.WriteString("  (no edges found)\n")
+	}
+	return b.String()
+}
+
+func formatExternal(name string, refs []store.Ref) string {
+	if len(refs) == 0 {
+		return fmt.Sprintf("No symbol named %q, and no calls into an external package with that path. Use search_code to find the name.", name)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d call site(s) into %s:\n", len(refs), name)
+	for _, r := range refs {
+		fmt.Fprintf(&b, "- %s %s at %s:%d\n", r.Qualified, r.Confidence, r.CallFile, r.CallLine)
 	}
 	return b.String()
 }
