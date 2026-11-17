@@ -61,10 +61,10 @@ For a client that does not start servers inside the project, pass `--root /abs/p
 ### CLI
 
 ```
-codewiki index  [--db FILE] [--include-tests] [--exclude dir1,dir2] PATH
+codewiki index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
 codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
 codewiki symbol [--db FILE] [--json] NAME
-codewiki reindex [--db FILE] [PATH]
+codewiki reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
 codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
 codewiki impl   [--db FILE] [--up] [--depth N] [--json] NAME
 codewiki tests  [--db FILE] [--depth N] [--json] NAME
@@ -75,7 +75,7 @@ codewiki watch  [--db FILE] [--interval 2s] [PATH]
 codewiki serve  [--db FILE] [--root PATH] [--watch=false]
 ```
 
-`reindex`, `watch` and `serve` reuse the `--include-tests` and `--exclude` settings the index was built with; flags passed to `reindex` override them.
+`reindex`, `watch` and `serve` reuse the `--include-tests`, `--skip-generated`, `--platform` and `--exclude` settings the index was built with; flags passed to `reindex` override them.
 
 ## How it works
 
@@ -92,32 +92,38 @@ Python ▶ tree-sitter┘
 Claude Code ◀── MCP over stdio ◀── codewiki serve
 ```
 
-1. **Index:** walks the repo, skips `vendor/`, `testdata/`, hidden directories and generated files (`// Code generated ... DO NOT EDIT.`), and parses files in parallel: Go with the standard library `go/ast`, Java and Python with [tree-sitter](https://tree-sitter.github.io/). Every language produces the same model, so search and the call graph work identically across them.
+1. **Index:** walks the repo, skips `vendor/`, `testdata/` and hidden directories, and parses files in parallel: Go with the standard library `go/ast`, Java and Python with [tree-sitter](https://tree-sitter.github.io/). Every language produces the same model, so search and the call graph work identically across them. Generated files (`// Code generated ... DO NOT EDIT.`) are indexed and flagged: search ranks them after hand-written code, and tools label them; `--skip-generated` leaves them out. Go files are selected for one build configuration, as the `go` command and gopls do (see below).
 2. **Store:** writes everything to SQLite in one transaction. A contentless FTS5 table indexes names, split name words, signatures and docs, ranked with BM25 and weighted towards names.
 3. **Resolve:** turns raw call sites into a call graph (see below).
 4. **Serve:** exposes the index through the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) over stdio.
 
 ### Call resolution
 
-Resolution is syntactic, so it works on any checkout, even one that does not build or whose dependencies are not downloaded. Each call site is resolved by the first rule that applies:
+Resolution is syntactic: nothing is built or type-checked, so it works on any checkout, even one that does not build or whose dependencies are not downloaded. The type of a call's receiver is still worked out from declarations: the parser records how it can be found (a stated type, how a local was assigned, a package-level variable, a function's or method's declared result, a field, an element of a slice or map), and the resolver follows that once every file is indexed. Each call site is resolved by the first rule that applies:
 
 | Rule | Example | Result |
 |---|---|---|
-| Same package or method receiver | `newOrder(id)`, `s.validate()` | exact edge |
+| Same package, or a method without a receiver in a class | `newOrder(id)`; Java `size()` inherited from a superclass, `check()` of an enclosing class | exact edge |
 | Package import (inside the module, via `go.mod`) | `payments.NewPaymentService(gw)` | exact edge |
-| Field of the receiver with a declared type | `s.gw.Charge(...)` with `gw Gateway` | exact edge to `Gateway.Charge` |
-| Value whose type is stated in the code | parameter `d time.Duration`, `var c Client`, `x := &Cache{}` | exact or external edge |
+| Receiver whose type is stated or can be worked out | `s.gw.Charge(...)` with `gw Gateway`; `svc := payments.NewPaymentService(gw); svc.ProcessPayment(...)`; `base().size()`; `for _, x := range items` | exact edge to the method, also promoted from an embedded type or inherited |
+| Type parameter | `p.Add(q).Bytes()` with `P Point[P]` | exact edge to the constraint's method |
 | Python name re-exported by a package | `requests.get(...)` with `from .api import get` in `requests/__init__.py` | exact edge to `requests.api.get` |
 | Python module path rooted at an import | `pkg.models.Response()`, `os.path.join(...)` | exact edge to `pkg.models.Response`; external reference `os.path.join` |
 | Call on the supertype | `super.save(o)`, `super(...)`, `Named.super.name()`; Python `super().get(sku)` | exact edge to the first supertype declaring it |
-| Package outside the repository | `sql.Open(...)` | external reference `database/sql.Open` |
-| Method on a value of unknown type | `svc.ProcessPayment(...)` | edge only if exactly one method has that name, marked *matched by method name* |
+| Receiver of a type outside the repository | `sql.Open(...)`, `db.Query(...)` with `db *sql.DB` | external reference `database/sql.DB.Query` |
+| Method on a value of unknown type | `servicelocator.Get("x").ProcessPayment(...)` | edge only if exactly one method has that name, marked *matched by method name*; never for names of built-in types' methods (`update`, `get`, `size`, ...) |
 
-Java and Python follow the same rules with their own syntax: `this.field` and `self.attr` with a known type, typed parameters and locals (`Order order = ...`, `repo: ItemRepository`), imports and static imports, relative Python imports, nested types written as `Outer.Inner`, and constructor calls (`new Order(...)`, `Item(...)`, `this(...)`). Java overloads share one node in the graph.
+Go: scopes follow definition order (in `x := f(x)` the right-hand `x` is the earlier one), type switches give each case its type, anonymous struct and interface types and generics (constraints, instantiation arguments) are followed, and an interface with an unexported method only matches methods of its own package.
 
-A `super` call is looked up through the declared class hierarchy, depth first in declaration order. Java's `super.m()` starts from the superclass (and what it inherits, interfaces included), never from the class's own interfaces, which take `Interface.super.m()`; `super(...)` calls the superclass constructor. Python's `super().m()` and `super(Cls, self).m()` search the base classes left to right, which is Python's method resolution order except in diamond-shaped hierarchies. A method found only on a supertype outside the repository becomes an external reference to it.
+Java: names resolve as javac does: a simple type name is a member type of the class, its enclosing classes or their supertypes before a type of the package or `java.lang`; type variables resolve to their bound; overloads declared in different classes are told apart by the number of arguments; a constructor without `this(...)` or `super(...)` calls its superclass's; methods of `Object` are always there. Java overloads share one node in the graph.
 
-Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so the graph can be rebuilt without re-parsing files.
+A `super` call is looked up through the declared class hierarchy, depth first in declaration order. Java's `super.m()` starts from the superclass (and what it inherits, interfaces included), never from the class's own interfaces, which take `Interface.super.m()`. Python's `super().m()` and `super(Cls, self).m()` search the base classes left to right, which is Python's method resolution order except in diamond-shaped hierarchies. A method found only on a supertype outside the repository becomes an external reference to it.
+
+Anything ambiguous is dropped rather than guessed: a receiver of a known type that has no such method, a value that came from an outside type (`list.get(0).size()`), `new Runnable() { ... }` of an interface. Raw call sites are stored, so the graph can be rebuilt without re-parsing files. How well this matches a type checker is measured under [Accuracy](#accuracy).
+
+### Build configurations (Go)
+
+Go code often declares a name once per platform or build tag (`conn_linux.go`, `conn_windows.go`, a stub behind `//go:build omitfeature`). Indexing all of them at once would merge declarations that never coexist, so Go files are selected for one build configuration with `go/build`'s own matching: by default the GOOS/GOARCH codewiki runs on; `--platform windows/amd64` picks another; `--platform all` indexes every file. The choice is stored with the index, so re-indexing and watching keep it.
 
 ### Type hierarchy
 
@@ -127,15 +133,10 @@ Java `extends`/`implements` and Python base classes are recorded as declared. Go
 - type names in signatures are resolved through each file's package and imports, so `payments.Card` and `Card` inside package `payments` match while `fs.File` and `http.File` do not; `byte`/`uint8`, `rune`/`int32` and `interface{}`/`any` are treated as the same type, and type aliases declared in the repository are followed;
 - an interface that embeds an interface from outside the repository has a method set the index cannot see in full, so nothing is said to implement it.
 
-Measured against the Go type checker (`go/types`) on the Go 1.24 standard library, for the 263 non-generic interfaces and 2,921 non-generic concrete types it type-checks (see [Accuracy](#accuracy)):
+- an unexported method name only matches a method declared in the interface's own package (a type elsewhere can still get it by embedding);
+- interfaces may overlap (`interface{ Gateway; VoidingGateway }`): their method set is the union.
 
-| | |
-|---|---|
-| Precision | 99.97% (3,392 of 3,393 reported implementations are real) |
-| Recall, where both types are indexed | 96.7% (3,392 of 3,509) |
-| Recall, overall | 85.4% (3,392 of 3,970) |
-
-The one false positive is a type declared differently per operating system: files are indexed regardless of build tags, so their methods are merged. Most missed implementations are methods in generated files (for example `stringer` output and the bundled HTTP/2 code), which are skipped by design. Generic types are not matched.
+Measured against the Go type checker (`go/types`) on the Go 1.24.7 standard library (linux/amd64), for the 263 non-generic interfaces and 2,921 non-generic concrete types it type-checks: precision 100% (all 3,969 reported implementations are real), recall 99.97% (3,969 of 3,970). Generic types are not matched. See [Accuracy](#accuracy).
 
 ### Tests
 
@@ -143,18 +144,7 @@ Test files (`*_test.go`; `*Test.java`, `*Tests.java`, `*IT.java` and `src/test/`
 
 `--include-tests` additionally indexes test code as ordinary code, so it shows up in search and the call graph.
 
-Parsing tests costs index time. Best of three runs, measured side by side on the machine described under [Benchmarks](#benchmarks):
-
-| Repository | Test files | Tests | Index without tests | With tests |
-|---|---|---|---|---|
-| Go standard library `src/` (Go 1.24) | 1,519 | 10,419 | 3.44 s | 5.17 s |
-| Guava | 1,111 | 15,503 | 3.36 s | 6.00 s |
-| requests | 15 | 347 | 0.06 s | 0.11 s |
-| Spring PetClinic | 20 | 81 | 0.02 s | 0.05 s |
-
-("Without tests" is the version before test files were parsed, which also skipped the standard library's 25 `go/build` and `cmd/dist` files.)
-
-`find_tests` for the most-called functions answers in 0.07 s (`fmt.Sprintf`, 3,449 tests) and 0.13 s (Guava's `Preconditions.checkNotNull`, 4,570 tests).
+Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. `find_tests` for the most-called functions answers in 0.24 s (`fmt.Sprintf`, reached by 8,313 tests) and 0.14 s (Guava's `Preconditions.checkNotNull`, 5,308 tests).
 
 ### Incremental re-index
 
@@ -177,23 +167,25 @@ On the Go standard library, `get_symbol String` went from 12.1 KB of text (the f
 | Parser | `go/ast` for Go, tree-sitter for Java and Python | Exact for Go; one robust, error-tolerant parser for the rest, all behind the same symbol model. |
 | Storage | SQLite + FTS5 | Zero config, a single portable file, fast ranked search. |
 | Search | Keyword + BM25, no embeddings | Deterministic, explainable results with no model or network dependency. |
-| Call graph | Syntactic resolution, no type checker | Works on any checkout without building it; precision is marked per edge. |
+| Call graph | Syntactic resolution with types worked out from declarations, no type checker | Works on any checkout without building it; measured against each language's type checker; precision is marked per edge. |
 | Transport | stdio | What local MCP clients like Claude Code use. |
 
 ## Accuracy
 
-The call graph and the Go type hierarchy are checked against the Go type checker on the Go 1.24.7 standard library: `scripts/accuracy` type-checks every package and compares the result with an index of `$(go env GOROOT)/src`.
+The call graph is checked against a compiler or a static analyser for each language. The tools are in `scripts/accuracy`.
 
-| | Precision | Recall | Recall where both ends are indexed |
+| Language | Reference | Precision | Recall |
 |---|---|---|---|
-| Call graph (distinct caller → callee pairs) | 97.3% (33,667 of 34,595) | 75.4% (33,667 of 44,654) | 84.6% (33,667 of 39,787) |
-| Go implementations | 99.97% (3,392 of 3,393) | 85.4% (3,392 of 3,970) | 96.7% (3,392 of 3,509) |
+| Go: Go 1.24.7 standard library, linux/amd64 | `go/types` (the type checker) | 99.92% (44,074 of 44,110 edges) | 99.37% (44,373 of 44,654 calls); 99.56% where caller and callee are indexed |
+| Go: implementations, same tree | `go/types` | 100% (3,969 of 3,969) | 99.97% (3,969 of 3,970) |
+| Java: Guava `guava/src` (`fce80fd`) | `javac` | 99.45% (14,140 of 14,218 edges) | 97.30% (14,140 of 14,533 calls inside Guava) |
+| Python: requests `src` (`3c7baaa`) | jedi 0.19.2 | 99.16% (237 of 239 edges) agree with jedi | 98.34% (237 of 241) of jedi's edges found |
 
-- The type checker sees one platform's files (linux/amd64); codewiki indexes every platform's, and a function declared once per operating system is one symbol. 891 of the 928 call edges counted as wrong are calls made by another platform's version of the caller, so they exist in the code; without them, call graph precision is 99.89%.
-- Edges matched only by a unique method name (*matched by method name*) are as precise as the rest: 97.5% (1,795 of 1,841).
-- Most missed edges are code in generated files, which is not indexed (4,867), and method calls on values whose type the syntax does not state, such as package-level variables, results of other calls and deeper field chains (4,827 calls to methods, 1,181 to interface methods).
+- Precision counts edges between two symbols of the repository; recall counts the distinct caller-to-callee pairs the reference finds. Edges matched only by method name are part of both: in Go they are 81 of 44,110 (85% right), in Java 61 of 14,218 (66% right).
+- Calls that leave the repository are external references: in Guava 82% of the calls into the JDK and other libraries are found as such (`java.util.List.get`). In the standard library, 299 of the 375 calls into `vendor/` (dependencies, not indexed) are.
+- What remains in Go: calls through values the syntax cannot follow (function values, a variable narrowed by an earlier `if`), and code in the 2 files over the size limit. In Java: receivers that come out of generic library types (`map.get(k).foo()`), lambda parameters without stated types, and overloads with the same number of arguments in different classes. Python has no type checker that decides every call, so jedi is a reference to compare with, not ground truth; the six disagreements on requests are listed by `compare.py python`.
 
-To reproduce:
+To reproduce (Go):
 
 ```bash
 make build && ./bin/codewiki index --db /tmp/std.db "$(go env GOROOT)/src"
@@ -203,19 +195,32 @@ python3 compare.py calls /tmp/std.db /tmp/truth
 python3 compare.py implements /tmp/std.db /tmp/truth
 ```
 
+Java (needs a JDK) and Python (needs jedi):
+
+```bash
+./bin/codewiki index --db /tmp/guava.db guava/guava/src
+javac -d /tmp/ct scripts/accuracy/java/CallTruth.java && java -cp /tmp/ct CallTruth guava/guava/src > /tmp/java.txt
+python3 scripts/accuracy/compare.py java /tmp/guava.db /tmp/java.txt
+
+./bin/codewiki index --db /tmp/requests.db requests
+python3 -m venv /tmp/jedi && /tmp/jedi/bin/pip install jedi==0.19.2
+/tmp/jedi/bin/python scripts/accuracy/python/truth.py requests > /tmp/py.txt
+python3 scripts/accuracy/compare.py python /tmp/requests.db /tmp/py.txt
+```
+
 ## Benchmarks
 
-Measured on a Linux cloud VM with 4 vCPUs (Intel Xeon @ 2.10 GHz) and 15 GB of RAM, Go 1.24.7. Times are the best of three runs; runs vary by about 10%. "Query" is a whole `codewiki query` process, start to exit.
+Measured on a Linux cloud VM with 4 vCPUs (Intel Xeon @ 2.10 GHz) and 15 GB of RAM, Go 1.24.7. Times are the best of three runs; runs vary by about 10%. "Query" is a whole `codewiki query` process, start to exit. Test files are parsed and kept apart (see [Tests](#tests)); Go files are those of linux/amd64.
 
 | Repository | Files | Test files | Symbols | Call edges | Full index | Query |
 |---|---|---|---|---|---|---|
-| [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.1.0 | 60 | 42 | 949 | 669 | 0.10 s | 6 ms |
-| Go standard library `src/` (Go 1.24.7) | 3,286 | 1,519 | 41,524 | 130,267 | 4.65 s | 8 ms |
-| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 42,427 | 5.75 s | 11 ms |
-| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 280 | 0.10 s | 6 ms |
-| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 91 | 0.04 s | 6 ms |
+| [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.1.0 | 54 | 34 | 923 | 722 | 0.11 s | 8 ms |
+| Go standard library `src/` (Go 1.24.7; 196 generated files) | 2,503 | 1,402 | 38,642 | 210,690 | 6.24 s | 7 ms |
+| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 54,573 | 6.04 s | 10 ms |
+| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 271 | 0.10 s | 5 ms |
+| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 92 | 0.05 s | 6 ms |
 
-Re-indexing the standard library after changing one file takes 2.1 s: one file is parsed, then the call graph, the type hierarchy and the test edges are rebuilt from stored data.
+Re-indexing the standard library after changing one file takes 3.1 s: one file is parsed, then the call graph, the type hierarchy and the test edges are rebuilt from stored data.
 
 ## Development
 
