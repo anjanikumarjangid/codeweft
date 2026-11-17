@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"example.com/sample/payments"
+	"example.com/servicelocator"
 )
 
 // Order is a paid cart.
@@ -27,11 +28,12 @@ func newOrder(chargeID string) *Order {
 	return &Order{ID: "ord_" + chargeID, ChargeID: chargeID}
 }
 
-// audit charges through a service it gets from a function value. Its type
-// is not stated anywhere the index can see, so the call is linked by the
-// method's unique name.
-func audit(lookup func() *payments.PaymentService) {
-	lookup().ProcessPayment("audit", 1)
+// audit charges through a service found by a package outside the
+// repository. The service's type is not stated anywhere the index can see,
+// so the call is linked by the method's unique name.
+func audit() {
+	svc := servicelocator.Get("payments")
+	svc.ProcessPayment("audit", 1)
 }
 
 // localSettler has a settle method, but cannot implement payments.settler:

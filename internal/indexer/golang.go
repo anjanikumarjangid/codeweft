@@ -165,7 +165,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		case *ast.GenDecl:
 			if d.Tok == token.VAR {
 				// Package-level variables: how their type can be found.
-				enc := &goEncoder{fset: fset, src: src, aliases: aliases, locals: map[string]goLocal{}, visiting: map[string]bool{}}
+				enc := &goEncoder{fset: fset, src: src, aliases: aliases, locals: map[string][]goLocal{}, visiting: map[string]bool{}}
 				for _, spec := range d.Specs {
 					vs := spec.(*ast.ValueSpec)
 					for i, n := range vs.Names {
@@ -303,7 +303,7 @@ func goCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual string, alia
 			rc.Form, rc.A = store.CallQualified, qual+"."+t.Name
 		case *ast.SelectorExpr:
 			name := t.Sel.Name
-			if id, ok := t.X.(*ast.Ident); ok && enc.isPackage(id.Name) {
+			if id, ok := t.X.(*ast.Ident); ok && enc.isPackage(id.Name, id.Pos()) {
 				rc.Form, rc.A, rc.B = store.CallImport, aliases[id.Name], name
 			} else if x := enc.encodeJSON(t.X); x != "" {
 				// A method on a value: its type is worked out by the resolver.

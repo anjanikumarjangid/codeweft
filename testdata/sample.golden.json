@@ -8,8 +8,8 @@
     "kind": "struct",
     "signature": "type Order struct",
     "doc": "Order is a paid cart.",
-    "start_line": 11,
-    "end_line": 14,
+    "start_line": 12,
+    "end_line": 15,
     "exported": true
   },
   {
@@ -21,8 +21,8 @@
     "kind": "func",
     "signature": "func Checkout(gw payments.Gateway, customerID string, cents int64) (*Order, error)",
     "doc": "Checkout charges the customer for the cart total and creates an order.",
-    "start_line": 17,
-    "end_line": 24,
+    "start_line": 18,
+    "end_line": 25,
     "exported": true
   },
   {
@@ -33,8 +33,8 @@
     "qualified": "checkout.newOrder",
     "kind": "func",
     "signature": "func newOrder(chargeID string) *Order",
-    "start_line": 26,
-    "end_line": 28,
+    "start_line": 27,
+    "end_line": 29,
     "exported": false
   },
   {
@@ -44,10 +44,10 @@
     "name": "audit",
     "qualified": "checkout.audit",
     "kind": "func",
-    "signature": "func audit(lookup func() *payments.PaymentService)",
-    "doc": "audit charges through a service it gets from a function value. Its type\nis not stated anywhere the index can see, so the call is linked by the\nmethod's unique name.",
-    "start_line": 33,
-    "end_line": 35,
+    "signature": "func audit()",
+    "doc": "audit charges through a service found by a package outside the\nrepository. The service's type is not stated anywhere the index can see,\nso the call is linked by the method's unique name.",
+    "start_line": 34,
+    "end_line": 37,
     "exported": false
   },
   {
@@ -59,8 +59,8 @@
     "kind": "struct",
     "signature": "type localSettler struct",
     "doc": "localSettler has a settle method, but cannot implement payments.settler:\nthat interface's method is unexported.",
-    "start_line": 39,
-    "end_line": 39,
+    "start_line": 41,
+    "end_line": 41,
     "exported": false
   },
   {
@@ -71,8 +71,8 @@
     "qualified": "checkout.localSettler.settle",
     "kind": "method",
     "signature": "func (localSettler) settle(chargeID string) error",
-    "start_line": 41,
-    "end_line": 41,
+    "start_line": 43,
+    "end_line": 43,
     "exported": false
   },
   {
@@ -84,8 +84,8 @@
     "kind": "struct",
     "signature": "type wrappedGateway struct",
     "doc": "wrappedGateway embeds a payments type, so it has StripeGateway's\nunexported settle method, promoted, and does implement payments.settler.",
-    "start_line": 45,
-    "end_line": 47,
+    "start_line": 47,
+    "end_line": 49,
     "exported": false
   },
   {

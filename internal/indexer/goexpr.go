@@ -27,11 +27,13 @@ import (
 // Anything else (a function value, a closure result, an untyped constant)
 // is unknown, and the call falls back to the other resolution rules.
 
-// goLocal is how a local name got its value.
+// goLocal is how a local name got its value, and from where on in the
+// source the definition holds.
 type goLocal struct {
 	typ    ast.Expr // a stated type: parameter, var x T, x.(T)
 	val    ast.Expr // x := val (the first result, for a call)
 	elemOf ast.Expr // for _, x := range elemOf
+	from   token.Pos
 }
 
 type goEncoder struct {
@@ -39,27 +41,42 @@ type goEncoder struct {
 	src      []byte
 	recvVar  string
 	recvType ast.Expr
-	aliases  map[string]string // import name -> path
-	locals   map[string]goLocal
+	aliases  map[string]string    // import name -> path
+	locals   map[string][]goLocal // in source order
 	visiting map[string]bool
 }
 
-// goLocals records the local names of a function and how each got its
-// value. Scopes are ignored: a name declared twice keeps its last use.
-func goLocals(d *ast.FuncDecl) map[string]goLocal {
-	locals := map[string]goLocal{}
-	addFields := func(fl *ast.FieldList) {
+// lookup returns the definition of a local name in effect at pos: the last
+// one before it. Scopes are not tracked, but definitions are ordered, so a
+// name redefined later or in another branch does not leak backwards, and
+// in x := f(x) the x on the right is still the earlier one (or a package).
+func (g *goEncoder) lookup(name string, pos token.Pos) (goLocal, bool) {
+	defs := g.locals[name]
+	for i := len(defs) - 1; i >= 0; i-- {
+		if defs[i].from <= pos {
+			return defs[i], true
+		}
+	}
+	return goLocal{}, false
+}
+
+// goLocals records the local names of a function, how each got its value,
+// and from where in the source each definition holds.
+func goLocals(d *ast.FuncDecl) map[string][]goLocal {
+	locals := map[string][]goLocal{}
+	def := func(name string, l goLocal) { locals[name] = append(locals[name], l) }
+	addFields := func(fl *ast.FieldList, from token.Pos) {
 		if fl == nil {
 			return
 		}
 		for _, f := range fl.List {
 			for _, n := range f.Names {
-				locals[n.Name] = goLocal{typ: f.Type}
+				def(n.Name, goLocal{typ: f.Type, from: from})
 			}
 		}
 	}
-	addFields(d.Type.Params)
-	addFields(d.Type.Results)
+	addFields(d.Type.Params, d.Pos())
+	addFields(d.Type.Results, d.Pos())
 	if d.Body == nil {
 		return locals
 	}
@@ -69,11 +86,11 @@ func goLocals(d *ast.FuncDecl) map[string]goLocal {
 			for i, name := range t.Names {
 				switch {
 				case t.Type != nil:
-					locals[name.Name] = goLocal{typ: t.Type}
+					def(name.Name, goLocal{typ: t.Type, from: t.End()})
 				case len(t.Values) == len(t.Names):
-					locals[name.Name] = goLocal{val: t.Values[i]}
+					def(name.Name, goLocal{val: t.Values[i], from: t.End()})
 				case len(t.Values) == 1 && i == 0:
-					locals[name.Name] = goLocal{val: t.Values[0]}
+					def(name.Name, goLocal{val: t.Values[0], from: t.End()})
 				}
 			}
 		case *ast.AssignStmt:
@@ -87,28 +104,32 @@ func goLocals(d *ast.FuncDecl) map[string]goLocal {
 				}
 				switch {
 				case len(t.Rhs) == len(t.Lhs):
-					locals[id.Name] = goLocal{val: t.Rhs[i]}
+					def(id.Name, goLocal{val: t.Rhs[i], from: t.End()})
 				case len(t.Rhs) == 1 && i == 0:
 					// x, err := f() / v, ok := m[k] / x, ok := y.(T): the first
 					// result is what the expression denotes.
-					locals[id.Name] = goLocal{val: t.Rhs[0]}
+					def(id.Name, goLocal{val: t.Rhs[0], from: t.End()})
+				default:
+					def(id.Name, goLocal{from: t.End()}) // a later result: unknown
 				}
 			}
 		case *ast.RangeStmt:
 			if t.Tok == token.DEFINE && t.Value != nil {
 				if id, ok := t.Value.(*ast.Ident); ok && id.Name != "_" {
-					locals[id.Name] = goLocal{elemOf: t.X}
+					def(id.Name, goLocal{elemOf: t.X, from: t.X.End()})
 				}
 			}
 		case *ast.TypeSwitchStmt:
 			// switch v := x.(type): v has a different type in every case.
 			if a, ok := t.Assign.(*ast.AssignStmt); ok && len(a.Lhs) == 1 {
 				if id, ok := a.Lhs[0].(*ast.Ident); ok {
-					delete(locals, id.Name)
+					def(id.Name, goLocal{from: a.End()}) // unknown
 				}
 			}
+			return true
 		case *ast.FuncLit:
-			addFields(t.Type.Params)
+			addFields(t.Type.Params, t.Type.End())
+			addFields(t.Type.Results, t.Type.End())
 		}
 		return true
 	})
@@ -140,9 +161,9 @@ func (g *goEncoder) encode(e ast.Expr) any {
 		}
 		return nil
 	case *ast.Ident:
-		return g.ident(t.Name)
+		return g.ident(t.Name, t.Pos())
 	case *ast.SelectorExpr:
-		if id, ok := t.X.(*ast.Ident); ok && g.isPackage(id.Name) {
+		if id, ok := t.X.(*ast.Ident); ok && g.isPackage(id.Name, id.Pos()) {
 			return []any{"p", g.aliases[id.Name], t.Sel.Name}
 		}
 		if x := g.encode(t.X); x != nil {
@@ -162,19 +183,19 @@ func (g *goEncoder) encode(e ast.Expr) any {
 
 // isPackage reports whether name refers to an imported package here, and
 // not to a local that shadows it.
-func (g *goEncoder) isPackage(name string) bool {
-	if _, local := g.locals[name]; local || name == g.recvVar {
+func (g *goEncoder) isPackage(name string, pos token.Pos) bool {
+	if _, local := g.lookup(name, pos); local || name == g.recvVar {
 		return false
 	}
 	_, ok := g.aliases[name]
 	return ok
 }
 
-func (g *goEncoder) ident(name string) any {
+func (g *goEncoder) ident(name string, pos token.Pos) any {
 	if name == g.recvVar && g.recvType != nil {
 		return []any{"t", g.typeText(g.recvType)}
 	}
-	l, ok := g.locals[name]
+	l, ok := g.lookup(name, pos)
 	if !ok {
 		if goPredeclared[name] || name == "nil" || name == "true" || name == "false" || name == "iota" {
 			return nil
@@ -212,8 +233,12 @@ func (g *goEncoder) call(c *ast.CallExpr) any {
 	}
 	switch f := fun.(type) {
 	case *ast.Ident:
-		if _, local := g.locals[f.Name]; local {
-			return nil // a function value
+		if l, local := g.lookup(f.Name, f.Pos()); local {
+			// Calling a local function value: its declared result type.
+			if ft, ok := l.typ.(*ast.FuncType); ok && ft.Results != nil && len(ft.Results.List) > 0 {
+				return []any{"t", g.typeText(ft.Results.List[0].Type)}
+			}
+			return nil
 		}
 		switch f.Name {
 		case "new":
@@ -237,7 +262,7 @@ func (g *goEncoder) call(c *ast.CallExpr) any {
 		}
 		return []any{"c", []any{"f", f.Name}}
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok && g.isPackage(id.Name) {
+		if id, ok := f.X.(*ast.Ident); ok && g.isPackage(id.Name, id.Pos()) {
 			return []any{"c", []any{"fp", g.aliases[id.Name], f.Sel.Name}}
 		}
 		if x := g.encode(f.X); x != nil {
