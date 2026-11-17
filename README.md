@@ -40,11 +40,15 @@ cd /path/to/repo
 
 ### Use with Claude Code
 
+From inside the repository you want to work on:
+
 ```bash
-claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve --db /abs/path/to/repo/.codewiki/index.db
+claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve
 ```
 
-Add `--watch` after `serve` to keep the index up to date as you edit. Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
+No index needs to exist beforehand. `serve` finds the repository root (the nearest directory above the working directory with a `.codewiki/` index or `.git`) and builds the index in the background on first start. Until the first build is done, tools reply that the index is still being built instead of returning empty results. After that it catches up on edits made while it was not running and keeps the index current as files change; pass `--watch=false` to serve the index as it is. The index is written to `.codewiki/`, which gets its own `.gitignore` so it never shows up in `git status`.
+
+For a client that does not start servers inside the project, pass `--root /abs/path/to/repo` (or `--db FILE` for an index stored elsewhere). Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
 
 ### CLI
 
@@ -58,8 +62,10 @@ codewiki file   [--db FILE] [--json] PATH
 codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
 codewiki overview [--db FILE] [--json]
 codewiki watch  [--db FILE] [--interval 2s] [PATH]
-codewiki serve  [--db FILE] [--watch]
+codewiki serve  [--db FILE] [--root PATH] [--watch=false]
 ```
+
+`reindex`, `watch` and `serve` reuse the `--include-tests` and `--exclude` settings the index was built with; flags passed to `reindex` override them.
 
 ## How it works
 
@@ -102,7 +108,7 @@ Anything ambiguous is dropped rather than guessed. Raw call sites are stored, so
 
 `codewiki reindex` hashes every file, re-parses only those whose content changed, removes deleted ones, and then rebuilds the call graph from the stored call sites. Edges *into* a changed file stay correct even though the files calling it were not re-parsed.
 
-`codewiki watch` (or `serve --watch`) polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. Polling needs no platform-specific file events and stays cheap on large trees.
+`codewiki watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
 
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
 

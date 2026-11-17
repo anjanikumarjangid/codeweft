@@ -2,8 +2,10 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,6 +20,11 @@ import (
 // real client like Claude Code uses over stdio.
 func connect(t *testing.T) *mcp.ClientSession {
 	t.Helper()
+	return connectWith(t, server.Options{})
+}
+
+func connectWith(t *testing.T, opts server.Options) *mcp.ClientSession {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +36,7 @@ func connect(t *testing.T) *mcp.ClientSession {
 
 	ctx := context.Background()
 	serverT, clientT := mcp.NewInMemoryTransports()
-	ss, err := server.New(st).Connect(ctx, serverT, nil)
+	ss, err := server.New(st, opts).Connect(ctx, serverT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +206,32 @@ func TestOverviewAndAPIs(t *testing.T) {
 		if !strings.Contains(apis, want) {
 			t.Errorf("list_apis missing %q:\n%s", want, apis)
 		}
+	}
+}
+
+// TestNotReady checks that while the index is not ready (the first build is
+// still running) every tool answers with a tool error that says why, and
+// works normally once it is ready.
+func TestNotReady(t *testing.T) {
+	var notReady atomic.Bool
+	notReady.Store(true)
+	cs := connectWith(t, server.Options{Ready: func() error {
+		if notReady.Load() {
+			return errors.New("the index is still being built; try again in a few seconds")
+		}
+		return nil
+	}})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "search_code", Arguments: map[string]any{"query": "payment"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "still being built") {
+		t.Fatalf("want a tool error explaining the index is not ready, got %+v", res)
+	}
+	notReady.Store(false)
+	if got := callText(t, cs, "search_code", map[string]any{"query": "payment"}); !strings.Contains(got, "ProcessPayment") {
+		t.Errorf("after ready, search_code = %q", got)
 	}
 }

@@ -16,8 +16,32 @@ const Version = "0.6.0"
 
 const maxRefs = 15 // callers/callees listed inline by get_symbol
 
+// Options configures New. The zero value serves st as it is.
+type Options struct {
+	// Ready, if set, is called before every tool call. A non-nil error is
+	// returned to the agent as a tool error instead of running the tool,
+	// e.g. while the first index of a repository is still being built and
+	// every query would otherwise come back empty.
+	Ready func() error
+}
+
+// addTool registers a tool whose handler first checks ready.
+func addTool[In, Out any](s *mcp.Server, ready func() error, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	if ready != nil {
+		inner := h
+		h = func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+			if err := ready(); err != nil {
+				var zero Out
+				return nil, zero, err
+			}
+			return inner(ctx, req, in)
+		}
+	}
+	mcp.AddTool(s, t, h)
+}
+
 // New builds an MCP server backed by st.
-func New(st *store.Store) *mcp.Server {
+func New(st *store.Store, opts Options) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{
 		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
 			"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
@@ -27,38 +51,38 @@ func New(st *store.Store) *mcp.Server {
 			"Prefer these tools over grepping or reading whole files.",
 	})
 	h := handlers{st}
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "search_code",
 		Description: "Ranked keyword search over the indexed codebase's functions, methods and types. " +
 			"Matches names (including camelCase and snake_case parts), signatures and doc comments. " +
 			"Returns qualified names and file:line locations.",
 	}, h.searchCode)
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_symbol",
 		Description: "Full details of a function, method or type: signature, doc comment, file and line range, " +
 			"source code, and its direct callers and callees. Accepts a qualified name from search_code, " +
 			"or a short name (which may return several matches).",
 	}, h.getSymbol)
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_dependency_graph",
 		Description: "Call graph around a symbol: what it calls (callees) or what calls it (callers), " +
 			"several levels deep. Pass an external package path such as 'database/sql' instead of a symbol " +
 			"to list every place in the codebase that calls into it.",
 	}, h.dependencyGraph)
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_file_summary",
 		Description: "Overview of one source file without reading it: package, doc comment, imports, every " +
 			"declaration with its signature, and which other files it calls into or is called from. " +
 			"Accepts a repository-relative path or a unique suffix such as 'store/query.go'.",
 	}, h.fileSummary)
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_architecture_overview",
 		Description: "Project-level map of the indexed codebase: languages, main packages or directories with " +
 			"their purpose, entry points (main functions, Python __main__ blocks), HTTP frameworks, how " +
 			"packages depend on each other, the most-called functions, and the most-used external libraries. " +
 			"Use it first when working in an unfamiliar repository.",
 	}, h.overview)
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "list_apis",
 		Description: "HTTP endpoints defined in the code, with method, route, handler function and location. " +
 			"Detects Go net/http, gin, echo, chi and fiber routes, Spring and JAX-RS annotations, and " +
