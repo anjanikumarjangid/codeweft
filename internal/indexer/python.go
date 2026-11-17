@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"encoding/json"
 	"path"
 	"strings"
 
@@ -251,6 +252,8 @@ func (pf *pyFile) function(def, outer *sitter.Node, prefix, class string) {
 	}
 	body := field(def, "body")
 	pf.add(outer, name, qual, kind, strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
+	// The return annotation: what calling it gives, for typing receivers.
+	pf.res.Symbols[len(pf.res.Symbols)-1].Result = pf.annotationRef(field(def, "return_type"))
 	pf.calls(def, body, qual, class)
 	if outer.Type() == "decorated_definition" {
 		for _, dec := range namedChildren(outer) {
@@ -318,6 +321,7 @@ func (pf *pyFile) mainGuard(n *sitter.Node) {
 
 func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	locals := map[string]string{}
+	exprs := map[string]any{} // x = <call or attribute>: how x's type can be found
 	for _, p := range namedChildren(field(def, "parameters")) {
 		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
 			var pname string
@@ -360,6 +364,12 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			if ref == "" && right != nil && right.Type() == "identifier" {
 				ref = locals[text(right, pf.src)] // self.repo = repo (typed param)
 			}
+			if ref == "" && left != nil && left.Type() == "identifier" && right != nil {
+				if e := pf.pyExpr(right, class, locals, exprs, 0); e != nil {
+					exprs[text(left, pf.src)] = e
+				}
+				return true
+			}
 			if ref == "" || left == nil {
 				return true
 			}
@@ -374,7 +384,7 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 				}
 			}
 		case "call":
-			pf.call(n, caller, class, locals)
+			pf.call(n, caller, class, locals, exprs)
 		}
 		return true
 	})
@@ -403,7 +413,7 @@ func (pf *pyFile) modulePath(n *sitter.Node) string {
 	return root + "." + strings.Join(parts, ".")
 }
 
-func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]string) {
+func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]string, exprs map[string]any) {
 	fn := field(n, "function")
 	if fn == nil {
 		return
@@ -441,10 +451,96 @@ func (pf *pyFile) call(n *sitter.Node, caller, class string, locals map[string]s
 			// pkg.models.Response(): a module path rooted at an import.
 			rc.Form, rc.A, rc.B = store.CallImport, pf.modulePath(obj), attr
 		default:
+			// A value whose type the resolver can work out (adapter =
+			// self.get_adapter(url); adapter.send(...)), else by name.
 			rc.Form, rc.B = store.CallMethod, attr
+			if e := pf.pyExpr(obj, class, locals, exprs, 0); e != nil {
+				if b, err := json.Marshal(e); err == nil {
+					rc.Form, rc.A = store.CallExpr, string(b)
+				}
+			}
 		}
 	default:
 		return
 	}
 	pf.res.Calls = append(pf.res.Calls, rc)
+}
+
+// pyExpr encodes an expression whose type the resolver can work out from
+// declarations, in the same form as Java's (java.go javaExpr), plus
+//
+//	["F", QUALIFIED]   the result of calling the module-level function
+//
+// Types come from annotations, constructor calls and return annotations.
+// It returns nil for anything else.
+func (pf *pyFile) pyExpr(n *sitter.Node, class string, locals map[string]string, exprs map[string]any, depth int) any {
+	if n == nil || depth > 10 {
+		return nil
+	}
+	self := []any{"t", "@" + class}
+	switch n.Type() {
+	case "parenthesized_expression":
+		if kids := namedChildren(n); len(kids) == 1 {
+			return pf.pyExpr(kids[0], class, locals, exprs, depth+1)
+		}
+	case "identifier":
+		x := text(n, pf.src)
+		switch {
+		case (x == "self" || x == "cls") && class != "":
+			return self
+		case locals[x] != "":
+			return []any{"t", locals[x]}
+		case exprs[x] != nil:
+			return exprs[x]
+		case isCapitalized(x):
+			if ref := pf.nameRef(x); ref != "" { // Base.__init__(self): the class
+				return []any{"t", ref}
+			}
+		}
+	case "attribute":
+		obj, attr := field(n, "object"), text(field(n, "attribute"), pf.src)
+		if x := pf.pyExpr(obj, class, locals, exprs, depth+1); x != nil {
+			return []any{"f", x, attr}
+		}
+	case "call":
+		fn := field(n, "function")
+		if fn == nil {
+			return nil
+		}
+		switch fn.Type() {
+		case "identifier":
+			name := text(fn, pf.src)
+			if isCapitalized(name) {
+				if ref := pf.nameRef(name); ref != "" { // Item(...): an instance
+					return []any{"t", ref}
+				}
+				return nil
+			}
+			if full, ok := pf.imports[name]; ok {
+				return []any{"F", full}
+			}
+			return []any{"F", pf.module + "." + name}
+		case "attribute":
+			obj, attr := field(fn, "object"), text(field(fn, "attribute"), pf.src)
+			if obj == nil {
+				return nil
+			}
+			if obj.Type() == "identifier" && (text(obj, pf.src) == "self" || text(obj, pf.src) == "cls") && class != "" {
+				return []any{"C", class, attr}
+			}
+			if mp := pf.modulePath(obj); mp != "" || (obj.Type() == "identifier" && pf.imports[text(obj, pf.src)] != "") {
+				if mp == "" {
+					mp = pf.imports[text(obj, pf.src)]
+				}
+				if isCapitalized(attr) {
+					return []any{"t", "@" + mp + "." + attr}
+				}
+				return []any{"F", mp + "." + attr}
+			}
+			if x := pf.pyExpr(obj, class, locals, exprs, depth+1); x != nil {
+				return []any{"c", x, attr}
+			}
+		}
+	}
+	return nil
 }

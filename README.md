@@ -105,7 +105,7 @@ Resolution is syntactic: nothing is built or type-checked, so it works on any ch
 |---|---|---|
 | Same package, or a method without a receiver in a class | `newOrder(id)`; Java `size()` inherited from a superclass, `check()` of an enclosing class | exact edge |
 | Package import (inside the module, via `go.mod`) | `payments.NewPaymentService(gw)` | exact edge |
-| Receiver whose type is stated or can be worked out | `s.gw.Charge(...)` with `gw Gateway`; `svc := payments.NewPaymentService(gw); svc.ProcessPayment(...)`; `base().size()`; `for _, x := range items` | exact edge to the method, also promoted from an embedded type or inherited |
+| Receiver whose type is stated or can be worked out | `s.gw.Charge(...)` with `gw Gateway`; `svc := payments.NewPaymentService(gw); svc.ProcessPayment(...)`; Java `base().size()`; Python `adapter = self.get_adapter(url); adapter.send(r)` with `-> BaseAdapter` | exact edge to the method, also promoted from an embedded type or inherited |
 | Type parameter | `p.Add(q).Bytes()` with `P Point[P]` | exact edge to the constraint's method |
 | Python name re-exported by a package | `requests.get(...)` with `from .api import get` in `requests/__init__.py` | exact edge to `requests.api.get` |
 | Python module path rooted at an import | `pkg.models.Response()`, `os.path.join(...)` | exact edge to `pkg.models.Response`; external reference `os.path.join` |
@@ -179,11 +179,11 @@ The call graph is checked against a compiler or a static analyser for each langu
 | Go: Go 1.24.7 standard library, linux/amd64 | `go/types` (the type checker) | 99.92% (44,074 of 44,110 edges) | 99.37% (44,373 of 44,654 calls); 99.56% where caller and callee are indexed |
 | Go: implementations, same tree | `go/types` | 100% (3,969 of 3,969) | 99.97% (3,969 of 3,970) |
 | Java: Guava `guava/src` (`fce80fd`) | `javac` | 99.45% (14,140 of 14,218 edges) | 97.30% (14,140 of 14,533 calls inside Guava) |
-| Python: requests `src` (`3c7baaa`) | jedi 0.19.2 | 99.16% (237 of 239 edges) agree with jedi | 98.34% (237 of 241) of jedi's edges found |
+| Python: requests `src` (`3c7baaa`) | jedi 0.19.2 | 99.17% (239 of 241 edges) agree with jedi | 99.17% (239 of 241) of jedi's edges found |
 
 - Precision counts edges between two symbols of the repository; recall counts the distinct caller-to-callee pairs the reference finds. Edges matched only by method name are part of both: in Go they are 81 of 44,110 (85% right), in Java 61 of 14,218 (66% right).
 - Calls that leave the repository are external references: in Guava 82% of the calls into the JDK and other libraries are found as such (`java.util.List.get`). In the standard library, 299 of the 375 calls into `vendor/` (dependencies, not indexed) are.
-- What remains in Go: calls through values the syntax cannot follow (function values, a variable narrowed by an earlier `if`), and code in the 2 files over the size limit. In Java: receivers that come out of generic library types (`map.get(k).foo()`), lambda parameters without stated types, and overloads with the same number of arguments in different classes. Python has no type checker that decides every call, so jedi is a reference to compare with, not ground truth; the six disagreements on requests are listed by `compare.py python`.
+- What remains in Go: calls through values the syntax cannot follow (function values, a variable narrowed by an earlier `if`), and code in the 2 files over the size limit. In Java: receivers that come out of generic library types (`map.get(k).foo()`), lambda parameters without stated types, and overloads with the same number of arguments in different classes. Python has no type checker that decides every call, so jedi is a reference to compare with, not ground truth; the four disagreements on requests are listed by `compare.py python` (two calls through attributes set at runtime on another class's objects, which jedi follows, and two where codewiki's answer is the more specific one).
 
 To reproduce (Go):
 
