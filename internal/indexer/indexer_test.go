@@ -792,3 +792,58 @@ func TestPythonReExports(t *testing.T) {
 		t.Errorf("tests for pkg.api.request = %+v, %v; want tests.test_api.test_get at distance 2", tests, err)
 	}
 }
+
+// TestBuildOutputDirs checks that directories named like build output are
+// skipped, unless they are Go packages (as Go's own go/build is), and that
+// --exclude still skips them.
+func TestBuildOutputDirs(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("go/build/build.go", "package build\n\n// Import finds a package.\nfunc Import() {}\n")
+	write("app/build/generated/Gen.java", "package gen;\n\nclass Gen {}\n")
+	write("lib/dist/bundle.py", "def bundled():\n    pass\n")
+	write("target/classes/A.java", "package a;\n\nclass A {}\n")
+
+	index := func(opts indexer.Options) map[string]bool {
+		t.Helper()
+		st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if _, err := indexer.Index(repo, st, opts); err != nil {
+			t.Fatal(err)
+		}
+		all, err := st.All()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, s := range all {
+			got[s.File] = true
+		}
+		return got
+	}
+	got := index(indexer.Options{})
+	if !got["go/build/build.go"] {
+		t.Error("a Go package in a directory named build was skipped")
+	}
+	for _, f := range []string{"app/build/generated/Gen.java", "lib/dist/bundle.py", "target/classes/A.java"} {
+		if got[f] {
+			t.Errorf("build output %s was indexed", f)
+		}
+	}
+	if got := index(indexer.Options{Exclude: []string{"build"}}); got["go/build/build.go"] {
+		t.Error("--exclude build should skip go/build too")
+	}
+}

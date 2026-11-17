@@ -6,7 +6,6 @@ import (
 	"hash/fnv"
 	"io/fs"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
@@ -17,19 +16,13 @@ import (
 // and needs no platform-specific file-system events.
 func fingerprint(root string, opts Options) (uint64, error) {
 	h := fnv.New64a()
-	skip := map[string]bool{}
-	for k := range defaultSkipDirs {
-		skip[k] = true
-	}
-	for _, d := range opts.Exclude {
-		skip[strings.TrimSpace(d)] = true
-	}
+	exclude := excludeSet(opts.Exclude)
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // files can disappear mid-walk while editing
 		}
 		if d.IsDir() {
-			if p != root && (skip[d.Name()] || strings.HasPrefix(d.Name(), ".")) {
+			if p != root && skipDir(p, d.Name(), exclude) {
 				return filepath.SkipDir
 			}
 			return nil

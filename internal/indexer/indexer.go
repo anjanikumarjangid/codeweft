@@ -121,8 +121,50 @@ type Result struct {
 
 var defaultSkipDirs = map[string]bool{
 	".git": true, ".codewiki": true, "vendor": true, "node_modules": true,
-	"testdata": true, "third_party": true, "build": true, "target": true,
-	"dist": true, "__pycache__": true, "venv": true,
+	"testdata": true, "third_party": true, "__pycache__": true, "venv": true,
+}
+
+// outputDirs are names build tools write their output to (Gradle, Maven,
+// Python packaging, JavaScript bundlers). They are skipped unless the
+// directory is itself a Go package: Go's own go/build is one.
+var outputDirs = map[string]bool{"build": true, "dist": true, "target": true}
+
+// skipDir reports whether the walk should not enter directory p, named
+// name. Hidden directories, the default skip list and the directories
+// excluded by the user are skipped; build output directories are skipped
+// unless they directly hold Go files.
+func skipDir(p, name string, exclude map[string]bool) bool {
+	switch {
+	case strings.HasPrefix(name, "."), defaultSkipDirs[name], exclude[name]:
+		return true
+	case outputDirs[name]:
+		return !hasGoFiles(p)
+	}
+	return false
+}
+
+func hasGoFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			return true
+		}
+	}
+	return false
+}
+
+// excludeSet turns the user's --exclude list into a set.
+func excludeSet(names []string) map[string]bool {
+	set := map[string]bool{}
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			set[n] = true
+		}
+	}
+	return set
 }
 
 // Index fully re-indexes the repository at root.
@@ -150,13 +192,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 	if opts.MaxFileBytes == 0 {
 		opts.MaxFileBytes = 1 << 20
 	}
-	skip := map[string]bool{}
-	for k := range defaultSkipDirs {
-		skip[k] = true
-	}
-	for _, d := range opts.Exclude {
-		skip[strings.TrimSpace(d)] = true
-	}
+	exclude := excludeSet(opts.Exclude)
 
 	tx, err := st.Begin()
 	if err != nil {
@@ -184,7 +220,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 			return walkErr
 		}
 		if d.IsDir() {
-			if p != root && (skip[d.Name()] || strings.HasPrefix(d.Name(), ".")) {
+			if p != root && skipDir(p, d.Name(), exclude) {
 				return filepath.SkipDir
 			}
 			return nil
