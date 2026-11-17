@@ -216,6 +216,8 @@ make vet
 
 `scripts/accuracy` is a separate Go module, so its tools are not part of the build; see [Accuracy](#accuracy).
 
+`scripts/eval/run.py` asks Claude Code the same questions about the Go standard library with and without codewiki (which functions call X, which types implement I), generated from the `go/types` ground truth, and scores each answer's precision and recall along with the tokens, turns and time it took. Running it spends Claude usage; `--dry-run` shows the questions without calling Claude. No results are published here yet.
+
 - `internal/indexer`: golden-file tests over a fixture repo in `testdata/sample`, for the extracted symbols, the full call graph and the type hierarchy. After an intended change, run `go test -tags sqlite_fts5 ./internal/indexer -update` and review the diff.
 - `internal/server`: drives the real MCP protocol through an in-memory client session.
 
