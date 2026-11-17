@@ -82,6 +82,9 @@ func TestListTools(t *testing.T) {
 		if tool.Description == "" || tool.InputSchema == nil {
 			t.Errorf("tool %s is missing a description or input schema", tool.Name)
 		}
+		if a := tool.Annotations; a == nil || !a.ReadOnlyHint || a.OpenWorldHint == nil || *a.OpenWorldHint {
+			t.Errorf("tool %s should be annotated read-only and closed-world: %+v", tool.Name, a)
+		}
 	}
 	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis"} {
 		if !got[want] {

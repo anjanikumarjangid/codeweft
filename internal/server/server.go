@@ -33,8 +33,12 @@ type Options struct {
 	Ready func() error
 }
 
-// addTool registers a tool whose handler first checks ready.
+// addTool registers a tool whose handler first checks ready. Every codewiki
+// tool only reads the local index, and says so, so clients can treat them
+// as safe to call.
 func addTool[In, Out any](s *mcp.Server, ready func() error, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	closedWorld := false
+	t.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}
 	if ready != nil {
 		inner := h
 		h = func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
