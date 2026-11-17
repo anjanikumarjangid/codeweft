@@ -111,6 +111,7 @@ func StoredOptions(st *store.Store) (Options, error) {
 // Result summarises an indexing run.
 type Result struct {
 	Files     int // files parsed in this run
+	TestFiles int // test files parsed in this run, indexed only for find-tests
 	Unchanged int // files skipped because their content hash matched
 	Removed   int // files deleted from the index
 	Symbols   int // symbols written in this run
@@ -175,6 +176,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 	type job struct {
 		abs, rel string
 		lang     *language
+		testOnly bool // a test file indexed only for find-tests, not as code
 	}
 	var jobs []job
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -196,9 +198,6 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !opts.IncludeTests && lang.isTest(rel) {
-			return nil
-		}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -207,7 +206,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 			res.Skipped++
 			return nil
 		}
-		jobs = append(jobs, job{abs: p, rel: rel, lang: lang})
+		jobs = append(jobs, job{abs: p, rel: rel, lang: lang, testOnly: !opts.IncludeTests && lang.isTest(rel)})
 		return nil
 	})
 	if err != nil {
@@ -243,6 +242,9 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 				}
 				sum := sha256.Sum256(src)
 				hash := hex.EncodeToString(sum[:])
+				if j.testOnly {
+					hash = "test:" + hash // see store.Tx.FileHashes
+				}
 				results[i].hash = hash
 				if known[j.rel] == hash {
 					results[i].unchanged = true
@@ -254,7 +256,8 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 					results[i].skipped = true
 					continue
 				}
-				fr.File.Hash = hash
+				fr.File.Hash = strings.TrimPrefix(hash, "test:")
+				fr.File.Test = j.testOnly
 				results[i].fr = fr
 			}
 		}()
@@ -286,8 +289,13 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 				return res, err
 			}
 		}
-		if err := write(tx, r.fr); err != nil {
+		isTest := jobs[i].lang.isTest(rel)
+		if err := write(tx, r.fr, isTest); err != nil {
 			return res, fmt.Errorf("%s: %w", rel, err)
+		}
+		if r.fr.File.Test {
+			res.TestFiles++
+			continue
 		}
 		res.Files++
 		res.Symbols += len(r.fr.Symbols)
@@ -314,10 +322,33 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 	return res, st.SetMeta("root", root)
 }
 
-func write(tx *store.Tx, fr *FileResult) error {
+// write stores one parsed file. A test file also records its functions as
+// test functions; a test-only file (the default for test files) stores
+// nothing else but its call sites, so test code never shows up in search,
+// the call graph or the type hierarchy, and test doubles never make a
+// call to the repository's own code ambiguous.
+func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 	id, err := tx.AddFile(fr.File)
 	if err != nil {
 		return err
+	}
+	if isTest {
+		for _, s := range fr.Symbols {
+			if s.Kind == "func" || s.Kind == "method" {
+				tf := store.TestFunc{Qualified: s.Qualified, Line: s.StartLine, Entry: isTestEntry(fr.File.Lang, s)}
+				if err := tx.AddTestFunc(id, tf); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if fr.File.Test {
+		for _, c := range fr.Calls {
+			if err := tx.AddRawCall(id, c); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for _, s := range fr.Symbols {
 		if err := tx.AddSymbol(id, s); err != nil {

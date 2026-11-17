@@ -351,7 +351,7 @@ type FileLink struct {
 // FindFiles returns indexed paths equal to p, or ending in "/"+p.
 func (s *Store) FindFiles(p string) ([]string, error) {
 	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
-	rows, err := s.db.Query(`SELECT path FROM files WHERE path = ? OR path LIKE ? ESCAPE '\' ORDER BY path LIMIT 20`,
+	rows, err := s.db.Query(`SELECT path FROM files WHERE test = 0 AND (path = ? OR path LIKE ? ESCAPE '\') ORDER BY path LIMIT 20`,
 		p, "%/"+escapeLike(p))
 	if err != nil {
 		return nil, err

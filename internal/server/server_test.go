@@ -86,7 +86,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s should be annotated read-only and closed-world: %+v", tool.Name, a)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis", "get_implementations"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis", "get_implementations", "find_tests"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -387,5 +387,39 @@ func TestImplementations(t *testing.T) {
 	got = callText(t, cs, "get_symbol", map[string]any{"name": "py.inventory.models.CachedItemRepository.get"})
 	if !strings.Contains(got, "Implements / overrides:\n- py.inventory.models.ItemRepository.get (overrides)") {
 		t.Errorf("get_symbol on an overriding method should name what it overrides:\n%s", got)
+	}
+}
+
+func TestFindTests(t *testing.T) {
+	cs := connect(t)
+	got := callText(t, cs, "find_tests", map[string]any{"symbol": "refill"})
+	for _, want := range []string{
+		"3 test(s) exercise ratelimit.refill:",
+		"- ratelimit.TestRefill at ratelimit/limiter_test.go:",
+		"(calls it directly)",
+		"- ratelimit.TestBurst at ratelimit/limiter_test.go:",
+		"(4 calls away, through ratelimit.TokenBucket.Allow)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("find_tests refill: missing %q in:\n%s", want, got)
+		}
+	}
+	if got := callText(t, cs, "find_tests", map[string]any{"symbol": "refill", "depth": 1}); strings.Contains(got, "TestBurst") {
+		t.Errorf("depth 1 should not reach TestBurst through Allow:\n%s", got)
+	}
+	if got := callText(t, cs, "find_tests", map[string]any{"symbol": "Gateway.Charge"}); !strings.Contains(got, "No test reaches payments.Gateway.Charge") {
+		t.Errorf("untested symbol:\n%s", got)
+	}
+	if got := callText(t, cs, "find_tests", map[string]any{"symbol": "place"}); !strings.Contains(got, "call find_tests again") {
+		t.Errorf("ambiguous name should list candidates:\n%s", got)
+	}
+	// get_symbol lists the nearest tests inline.
+	got = callText(t, cs, "get_symbol", map[string]any{"name": "StockService.reserve"})
+	if !strings.Contains(got, "Tested by:\n- py.inventory.test_stock.test_reserve_fails_without_stock at py/inventory/test_stock.py:9 (calls it directly)") {
+		t.Errorf("get_symbol should list tests:\n%s", got)
+	}
+	// Test code is not searchable.
+	if got := callText(t, cs, "search_code", map[string]any{"query": "allowTwice"}); !strings.Contains(got, "No symbols match") {
+		t.Errorf("test helper found by search_code:\n%s", got)
 	}
 }

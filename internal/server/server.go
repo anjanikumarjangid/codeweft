@@ -23,6 +23,15 @@ var (
 	maxBodyLines  = 200 // source lines shown by get_symbol
 	maxFileLinks  = 20  // related files listed by get_file_summary
 	maxImpls      = 50  // types or methods listed by get_implementations
+	maxTests      = 30  // tests listed by find_tests
+	maxSymTests   = 5   // tests listed inline by get_symbol
+)
+
+// Tests are found up to testCallers calls away through the repository's
+// own code, and testHelpers calls through helper functions in test files.
+const (
+	testCallers = 3
+	testHelpers = 3
 )
 
 // Options configures New. The zero value serves st as it is.
@@ -61,7 +70,8 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
 			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
 			"or what depends on it, get_implementations to find what implements an interface or overrides a " +
-			"method (where an interface call actually goes), and get_file_summary for an overview of a file " +
+			"method (where an interface call actually goes), find_tests to see which tests exercise code " +
+			"before changing it, and get_file_summary for an overview of a file " +
 			"before reading it. " +
 			"Prefer these tools over grepping or reading whole files.",
 	})
@@ -94,6 +104,13 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"Python from declared extends/implements and base classes. Pass a type from outside the " +
 			"repository, such as 'java.io.Serializable', to list the repository types that implement it.",
 	}, h.implementations)
+	addTool(s, opts.Ready, &mcp.Tool{
+		Name: "find_tests",
+		Description: "Tests that exercise a function, method or type: tests that call it directly, call " +
+			"something that calls it (up to `depth` calls away through the repository's code), or reach it " +
+			"through helper functions in test files. Nearest first, with the call each test goes through. " +
+			"Use it to know which tests to run, or which to update, before changing code.",
+	}, h.findTests)
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_file_summary",
 		Description: "Overview of one source file without reading it: package, doc comment, imports, every " +
@@ -362,6 +379,9 @@ type SymbolDetail struct {
 	Supertypes []store.TypeLink `json:"supertypes,omitempty"`
 	Subtypes   []store.TypeLink `json:"subtypes,omitempty"`
 	MoreSubs   int              `json:"more_subtypes,omitempty"`
+	// Tests that exercise the symbol, nearest first.
+	Tests     []store.TestRef `json:"tests,omitempty"`
+	MoreTests int             `json:"more_tests,omitempty"`
 }
 
 var typeKinds = map[string]bool{"struct": true, "interface": true, "type": true, "class": true, "enum": true, "record": true}
@@ -469,6 +489,13 @@ func (h handlers) getSymbol(ctx context.Context, req *mcp.CallToolRequest, in Sy
 		}
 		if len(d.Subtypes) > maxRefs {
 			d.MoreSubs, d.Subtypes = len(d.Subtypes)-maxRefs, d.Subtypes[:maxRefs]
+		}
+		tests, total, err := h.st.TestsFor(s.ID, testCallers, testHelpers, maxSymTests)
+		if err != nil {
+			return nil, out, err
+		}
+		if len(tests) > 0 {
+			d.Tests, d.MoreTests = tests, total-len(tests)
 		}
 		out.Matches = append(out.Matches, d)
 	}
@@ -641,6 +668,7 @@ func formatSymbols(name string, syms []SymbolDetail) string {
 		}
 		formatLinks(&b, up, s.Supertypes, 0)
 		formatLinks(&b, down, s.Subtypes, s.MoreSubs)
+		formatTests(&b, "Tested by", s.Tests, s.MoreTests, "use find_tests")
 	}
 	return b.String()
 }
@@ -663,6 +691,85 @@ func formatLinks(b *strings.Builder, title string, links []store.TypeLink, more 
 	if more > 0 {
 		fmt.Fprintf(b, "- ... and %d more (use get_implementations)\n", more)
 	}
+}
+
+// formatTests lists tests under a title; nothing when there are none.
+func formatTests(b *strings.Builder, title string, tests []store.TestRef, more int, hint string) {
+	if len(tests) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, t := range tests {
+		how := "calls it directly"
+		if t.Distance > 1 {
+			how = fmt.Sprintf("%d calls away, through %s", t.Distance, t.Via)
+		}
+		fmt.Fprintf(b, "- %s at %s (%s)\n", t.Qualified, t.Location, how)
+	}
+	if more > 0 {
+		fmt.Fprintf(b, "- ... and %d more (%s)\n", more, hint)
+	}
+}
+
+// TestsInput is the input of find_tests.
+type TestsInput struct {
+	Symbol string `json:"symbol" jsonschema:"qualified or short name of a function, method or type"`
+	Depth  int    `json:"depth,omitempty" jsonschema:"calls to follow up through the repository's code, default 3, max 6"`
+}
+
+// TestsOutput is the structured result of find_tests.
+type TestsOutput struct {
+	Root       string          `json:"root,omitempty"`
+	Tests      []store.TestRef `json:"tests"`
+	More       int             `json:"more,omitempty"`
+	Candidates []SymbolSummary `json:"candidates,omitempty"`
+	Total      int             `json:"total,omitempty"`
+}
+
+func (h handlers) findTests(ctx context.Context, req *mcp.CallToolRequest, in TestsInput) (*mcp.CallToolResult, TestsOutput, error) {
+	name := strings.TrimSpace(in.Symbol)
+	out := TestsOutput{Tests: []store.TestRef{}}
+	depth := min(max(in.Depth, 0), 6)
+	if depth == 0 {
+		depth = testCallers
+	}
+	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	if err != nil {
+		return nil, out, err
+	}
+	if len(syms) == 0 {
+		return text(fmt.Sprintf("No symbol named %q. Use search_code to find the name.", name)), out, nil
+	}
+	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
+		out.Total = total
+		for _, s := range syms {
+			out.Candidates = append(out.Candidates, summarize(s))
+		}
+		so := SymbolOutput{Candidates: out.Candidates, Total: total}
+		return text(strings.Replace(formatCandidates(name, so), "call get_symbol again", "call find_tests again", 1)), out, nil
+	}
+	s := syms[0]
+	out.Root = s.Qualified
+	tests, n, err := h.st.TestsFor(s.ID, depth, testHelpers, maxTests)
+	if err != nil {
+		return nil, out, err
+	}
+	out.Tests, out.More = tests, n-len(tests)
+	if len(tests) == 0 {
+		files, _, err := h.st.TestCount()
+		if err != nil {
+			return nil, out, err
+		}
+		if files == 0 {
+			return text("No test files are indexed for this repository."), out, nil
+		}
+		return text(fmt.Sprintf("No test reaches %s within %d call(s) through the repository's code. "+
+			"Calls the index cannot resolve (through function values, or ambiguous method names) are not followed.",
+			s.Qualified, depth)), out, nil
+	}
+	var b strings.Builder
+	formatTests(&b, fmt.Sprintf("%d test(s) exercise %s", n, s.Qualified), tests, out.More, "only the nearest are listed")
+	return text(strings.TrimPrefix(b.String(), "\n")), out, nil
 }
 
 // ImplInput is the input of get_implementations.

@@ -141,7 +141,7 @@ func (s *Store) BuildOverview(limit int) (*Overview, error) {
 	if o.Files, o.Symbols, o.Edges, err = s.Stats(); err != nil {
 		return nil, err
 	}
-	if o.Languages, err = s.counts(`SELECT lang, COUNT(*) FROM files GROUP BY lang ORDER BY COUNT(*) DESC, lang`); err != nil {
+	if o.Languages, err = s.counts(`SELECT lang, COUNT(*) FROM files WHERE test = 0 GROUP BY lang ORDER BY COUNT(*) DESC, lang`); err != nil {
 		return nil, err
 	}
 	if o.Frameworks, err = s.counts(`SELECT framework, COUNT(*) FROM endpoints GROUP BY framework ORDER BY COUNT(*) DESC, framework`); err != nil {
@@ -154,7 +154,7 @@ func (s *Store) BuildOverview(limit int) (*Overview, error) {
 	rows, err := s.db.Query(`SELECT f.dir, MIN(f.lang), COUNT(DISTINCT f.id),
 		(SELECT COUNT(*) FROM symbols s JOIN files f2 ON f2.id = s.file_id WHERE f2.dir = f.dir),
 		COALESCE(MAX(CASE WHEN f.doc != '' THEN f.doc END), '')
-		FROM files f GROUP BY f.dir ORDER BY 4 DESC, f.dir LIMIT ?`, limit*2)
+		FROM files f WHERE f.test = 0 GROUP BY f.dir ORDER BY 4 DESC, f.dir LIMIT ?`, limit*2)
 	if err != nil {
 		return nil, err
 	}

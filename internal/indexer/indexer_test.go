@@ -380,7 +380,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 14 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 17 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -403,7 +403,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 12 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 15 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -457,9 +457,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 14 default files + 1 test file - 4 Python files under py/.
-	if res.Files != 11 {
-		t.Fatalf("indexed %d files, want 11", res.Files)
+	// 14 default files + 2 Go and Java test files - 4 Python files under
+	// py/ (the Python test file is under py/ too).
+	if res.Files != 12 {
+		t.Fatalf("indexed %d files, want 12", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -480,8 +481,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 10 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 10 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 11 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 11 unchanged, 0 removed", res)
 	}
 }
 
@@ -653,5 +654,141 @@ func TestReindexUpdatesTypeHierarchy(t *testing.T) {
 	}
 	if !implements("com.shop.orders.CountingOrderRepository", "com.shop.orders.OrderRepository") {
 		t.Error("a relation declared in an unchanged file was lost")
+	}
+}
+
+// TestTestsFor checks which tests are found to exercise a symbol: directly,
+// through the repository's own callers, and through helpers in test files.
+func TestTestsFor(t *testing.T) {
+	st := indexSample(t)
+	tests := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		refs, total, err := st.TestsFor(syms[0].ID, 3, 3, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != len(refs) {
+			t.Errorf("%s: total %d, listed %d", name, total, len(refs))
+		}
+		var out []string
+		for _, r := range refs {
+			out = append(out, fmt.Sprintf("%s[%d via %s]", r.Qualified, r.Distance, r.Via))
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// Direct, and through the test helper allowTwice.
+		{"ratelimit.TokenBucket.Allow", "ratelimit.TestAllow[1 via ratelimit.TokenBucket.Allow] ratelimit.TestBurst[2 via ratelimit.TokenBucket.Allow]"},
+		// Direct, and through Allow -> refillLocked -> refill in the code
+		// under test. Testable is not a test.
+		{"ratelimit.refill", "ratelimit.TestRefill[1 via ratelimit.refill] ratelimit.TestAllow[3 via ratelimit.TokenBucket.Allow] ratelimit.TestBurst[4 via ratelimit.TokenBucket.Allow]"},
+		// Java: through OrderService.place, and through the newService helper
+		// for the constructor.
+		{"com.shop.billing.Billing.charge", "com.shop.orders.OrderServiceTest.placeCreatesAnOrder[2 via com.shop.orders.OrderService.place]"},
+		{"com.shop.orders.OrderService.OrderService", "com.shop.orders.OrderServiceTest.placeCreatesAnOrder[2 via com.shop.orders.OrderService.OrderService]"},
+		// Python: a module-level test and a test method in a class.
+		{"py.inventory.stock.StockService.reserve", "py.inventory.test_stock.test_reserve_fails_without_stock[1 via py.inventory.stock.StockService.reserve]"},
+		// reserve -> ItemRepository.get -> Item: the reserve test counts too.
+		{"py.inventory.models.Item", "py.inventory.test_stock.TestItem.test_item_keeps_count[1 via py.inventory.models.Item] py.inventory.test_stock.test_reserve_fails_without_stock[3 via py.inventory.stock.StockService.reserve]"},
+		{"payments.Gateway.Charge", ""},
+	} {
+		if got := tests(c.name); got != c.want {
+			t.Errorf("tests for %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+	// Test code stays out of search and lookup.
+	if hits, _ := st.Search("allowTwice", store.SearchOptions{}); len(hits) != 0 {
+		t.Errorf("test helper is searchable: %v", hits[0].Qualified)
+	}
+	if syms, _ := st.Lookup("TestAllow"); len(syms) != 0 {
+		t.Error("test function is a symbol")
+	}
+}
+
+// TestIncludeTestsSwitch checks that re-indexing with --include-tests makes
+// unchanged test files searchable, and that switching back hides them.
+func TestIncludeTestsSwitch(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	searchable := func() bool {
+		hits, _ := st.Search("allowTwice", store.SearchOptions{})
+		return len(hits) > 0
+	}
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if searchable() {
+		t.Fatal("test helper searchable without --include-tests")
+	}
+	res, err := indexer.Reindex(repo, st, indexer.Options{IncludeTests: true})
+	if err != nil || res.Files != 3 {
+		t.Fatalf("switching to --include-tests should re-index the 3 test files: %+v %v", res, err)
+	}
+	if !searchable() {
+		t.Error("test helper not searchable with --include-tests")
+	}
+	syms, _ := st.Lookup("ratelimit.TokenBucket.Allow")
+	if refs, _, _ := st.TestsFor(syms[0].ID, 3, 3, 50); len(refs) != 2 {
+		t.Errorf("tests for Allow with --include-tests: %+v", refs)
+	}
+	if _, err := indexer.Reindex(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if searchable() {
+		t.Error("test helper still searchable after switching back")
+	}
+}
+
+// TestPythonReExports checks that a call through a package that re-exports
+// a name (requests.get, defined as requests.api.get and imported into
+// requests/__init__.py) resolves to the definition, from code and tests.
+func TestPythonReExports(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("pkg/__init__.py", "from .api import get\n")
+	write("pkg/api.py", "def get(url):\n    return request('GET', url)\n\n\ndef request(method, url):\n    return None\n")
+	write("app.py", "import pkg\n\n\ndef main():\n    pkg.get('x')\n")
+	write("tests/test_api.py", "import pkg\n\n\ndef test_get():\n    pkg.get('x')\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := st.Lookup("app.main")
+	callees, err := st.Callees(main[0].ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range callees {
+		got = append(got, c.Qualified+"["+c.Confidence+"]")
+	}
+	if strings.Join(got, " ") != "pkg.api.get[exact]" {
+		t.Errorf("app.main callees = %v; want the exact pkg.api.get", got)
+	}
+	req, _ := st.Lookup("pkg.api.request")
+	tests, _, err := st.TestsFor(req[0].ID, 3, 3, 10)
+	if err != nil || len(tests) != 1 || tests[0].Qualified != "tests.test_api.test_get" || tests[0].Distance != 2 {
+		t.Errorf("tests for pkg.api.request = %+v, %v; want tests.test_api.test_get at distance 2", tests, err)
 	}
 }

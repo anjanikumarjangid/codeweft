@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "5"
+const SchemaVersion = "6"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS files (
 	package TEXT NOT NULL,
 	qual    TEXT NOT NULL,
 	doc     TEXT NOT NULL,
-	hash    TEXT NOT NULL
+	hash    TEXT NOT NULL,
+	test    INTEGER NOT NULL DEFAULT 0 -- 1: test-only file, its functions are in test_funcs
 );
 CREATE INDEX IF NOT EXISTS files_dir ON files(dir);
 CREATE TABLE IF NOT EXISTS symbols (
@@ -104,6 +105,22 @@ CREATE TABLE IF NOT EXISTS type_edges (
 CREATE INDEX IF NOT EXISTS type_edges_sub ON type_edges(sub_id);
 CREATE INDEX IF NOT EXISTS type_edges_super ON type_edges(super_id);
 CREATE INDEX IF NOT EXISTS type_edges_ref ON type_edges(super_ref);
+CREATE TABLE IF NOT EXISTS test_funcs (
+	id        INTEGER PRIMARY KEY,
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	qualified TEXT NOT NULL,
+	line      INTEGER NOT NULL,
+	entry     INTEGER NOT NULL -- 1: a test the runner calls (TestXxx, @Test, test_xxx)
+);
+CREATE INDEX IF NOT EXISTS test_funcs_file ON test_funcs(file_id);
+CREATE TABLE IF NOT EXISTS test_edges (
+	from_test INTEGER NOT NULL REFERENCES test_funcs(id) ON DELETE CASCADE,
+	to_id     INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+	to_test   INTEGER REFERENCES test_funcs(id) ON DELETE CASCADE,
+	line      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS test_edges_to ON test_edges(to_id);
+CREATE INDEX IF NOT EXISTS test_edges_to_test ON test_edges(to_test);
 CREATE TABLE IF NOT EXISTS edges (
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
@@ -127,7 +144,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -156,6 +173,14 @@ type File struct {
 	Qual    string // prefix used for qualified symbol names in this file
 	Doc     string // package or module doc comment
 	Hash    string
+	Test    bool // a test-only file: no symbols, its functions go to test_funcs
+}
+
+// TestFunc is a function or method declared in a test file.
+type TestFunc struct {
+	Qualified string
+	Line      int
+	Entry     bool // a test the test runner calls, not a helper
 }
 
 // Import is one import statement.
@@ -284,7 +309,7 @@ func (s *Store) Meta(key string) (string, error) {
 
 // Stats returns file, symbol and resolved-edge counts.
 func (s *Store) Stats() (files, symbols, edges int, err error) {
-	if err = s.db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&files); err != nil {
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE test = 0`).Scan(&files); err != nil {
 		return
 	}
 	if err = s.db.QueryRow(`SELECT COUNT(*) FROM symbols`).Scan(&symbols); err != nil {
