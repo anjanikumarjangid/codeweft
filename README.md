@@ -25,7 +25,13 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 
 ## Quick start
 
-Requires Go 1.24+ and a C compiler (the SQLite driver uses cgo).
+### Download
+
+Each [release](https://github.com/anjanikumarjangid/codewiki/releases) has archives for Linux (amd64, arm64; statically linked, so they run on any distribution), macOS (Apple silicon, Intel) and Windows (amd64), and a `checksums.txt` with their SHA-256 sums. Unpack one and put `codewiki` on your `PATH`. macOS may refuse to run a binary downloaded with a browser until you remove the quarantine flag: `xattr -d com.apple.quarantine codewiki`.
+
+### Build from source
+
+Requires Go 1.24+ and a C compiler (SQLite and tree-sitter are C libraries, used through cgo).
 
 ```bash
 git clone https://github.com/anjanikumarjangid/codewiki && cd codewiki
@@ -213,6 +219,8 @@ Re-indexing the standard library after changing one file takes 2.1 s: one file i
 make test   # unit, golden-file and MCP protocol tests
 make vet
 ```
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed: one job per platform (Linux and Windows cross-compiled on Ubuntu, macOS on a macOS runner), a smoke test on the native ones, and a GitHub release with the archives and their checksums.
 
 `scripts/accuracy` is a separate Go module, so its tools are not part of the build; see [Accuracy](#accuracy).
 

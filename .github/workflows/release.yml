@@ -1,0 +1,87 @@
+name: release
+
+# Pushing a tag such as v0.7.0 builds codewiki for Linux, macOS and Windows
+# and publishes the archives, with checksums, as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # cgo (SQLite, tree-sitter) needs a C compiler for the target.
+          # Linux is linked statically so the binary runs on any distribution.
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, cc: gcc, static: true, smoke: true }
+          - { runner: ubuntu-latest, goos: linux, goarch: arm64, cc: aarch64-linux-gnu-gcc, apt: gcc-aarch64-linux-gnu, static: true }
+          - { runner: ubuntu-latest, goos: windows, goarch: amd64, cc: x86_64-w64-mingw32-gcc, apt: gcc-mingw-w64-x86-64, ext: .exe }
+          - { runner: macos-latest, goos: darwin, goarch: arm64, cc: clang, smoke: true }
+          - { runner: macos-latest, goos: darwin, goarch: amd64, cc: clang -arch x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install cross compiler
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ldflags="-s -w -X github.com/anjanikumarjangid/codewiki/internal/server.Version=${version}"
+          tags="sqlite_fts5 sqlite_omit_load_extension"
+          if [ "${{ matrix.static }}" = "true" ]; then
+            ldflags="${ldflags} -linkmode external -extldflags -static"
+            tags="${tags} netgo osusergo"
+          fi
+          mkdir -p out
+          go build -trimpath -tags "${tags}" -ldflags "${ldflags}" -o "out/codewiki${{ matrix.ext }}" ./cmd/codewiki
+      - name: Smoke test
+        if: matrix.smoke
+        run: |
+          ./out/codewiki version | grep -q "${GITHUB_REF_NAME#v}"
+          ./out/codewiki index --db /tmp/sample.db testdata/sample
+          ./out/codewiki query --db /tmp/sample.db rate limiter | grep -q TokenBucket
+      - name: Package
+        run: |
+          name="codewiki_${GITHUB_REF_NAME#v}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "dist/${name}"
+          cp "out/codewiki${{ matrix.ext }}" LICENSE README.md "dist/${name}/"
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -qr "${name}.zip" "${name}"
+          else
+            tar -czf "${name}.tar.gz" "${name}"
+          fi
+          rm -r "${name}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > checksums.txt && cat checksums.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --generate-notes

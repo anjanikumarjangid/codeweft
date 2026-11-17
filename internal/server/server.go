@@ -11,8 +11,10 @@ import (
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
-// Version is reported to MCP clients and by `codewiki version`.
-const Version = "0.6.0"
+// Version is reported to MCP clients and by `codewiki version`. Release
+// builds set it from the git tag:
+// -ldflags "-X github.com/anjanikumarjangid/codewiki/internal/server.Version=1.2.3"
+var Version = "0.6.0"
 
 // Output limits. Every tool result lands in the agent's context window, so
 // lists and source are capped, and the agent is told what was left out and
