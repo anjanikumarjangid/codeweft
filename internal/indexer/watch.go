@@ -47,9 +47,15 @@ func fingerprint(root string, opts Options) (uint64, error) {
 	return h.Sum64(), err
 }
 
-// Watch keeps the index up to date until ctx is cancelled: it polls the
-// tree every interval and runs an incremental Reindex when anything
-// changed. report is called after each re-index.
+// Watch keeps the index up to date until ctx is cancelled. It first runs
+// one incremental Reindex to catch up on edits made while nothing was
+// watching, then polls the tree every interval and re-indexes when anything
+// changed. report is called after each re-index that changed the index or
+// failed.
+//
+// The baseline fingerprint is taken before the catch-up run, so a file
+// saved while that run is in progress still differs from the baseline and
+// is picked up on the next tick rather than missed.
 func Watch(ctx context.Context, root string, st *store.Store, opts Options, interval time.Duration, report func(Result, error)) error {
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -57,6 +63,10 @@ func Watch(ctx context.Context, root string, st *store.Store, opts Options, inte
 	last, err := fingerprint(root, opts)
 	if err != nil {
 		return err
+	}
+	res, err := Reindex(root, st, opts)
+	if report != nil && (err != nil || res.Files > 0 || res.Removed > 0) {
+		report(res, err)
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()

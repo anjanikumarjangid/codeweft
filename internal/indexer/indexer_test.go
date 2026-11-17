@@ -419,6 +419,45 @@ func TestWatchPicksUpChanges(t *testing.T) {
 	}
 }
 
+// TestWatchCatchesUpOnStart checks that edits made while nothing was
+// watching are indexed as soon as Watch starts, without waiting for another
+// edit.
+func TestWatchCatchesUpOnStart(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	src := "package payments\n\n// Audit records a charge.\nfunc Audit(id string) {}\n"
+	if err := os.WriteFile(filepath.Join(repo, "payments", "audit.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan indexer.Result, 1)
+	// A long interval: only the catch-up run can index the file in time.
+	go indexer.Watch(ctx, repo, st, indexer.Options{}, time.Hour, func(r indexer.Result, err error) {
+		if err == nil {
+			done <- r
+		}
+	})
+	select {
+	case r := <-done:
+		if r.Files != 1 {
+			t.Errorf("catch-up re-indexed %d files, want 1", r.Files)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not catch up on an edit made before it started")
+	}
+	if syms, _ := st.Lookup("payments.Audit"); len(syms) != 1 {
+		t.Error("file edited before watch started is not indexed")
+	}
+}
+
 func TestEndpointsAndOverview(t *testing.T) {
 	st := indexSample(t)
 	eps, err := st.ListEndpoints(store.EndpointFilter{})
