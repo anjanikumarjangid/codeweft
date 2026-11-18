@@ -383,12 +383,12 @@ Response size, p50 / largest in KB (about 250 tokens per KB):
 | `list_apis` | 0.7 / 0.7 | 1.9 / 1.9 | 10.0 / 10.0 | 0.0 / 0.0 | 3.5 / 3.5 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
 | `get_service_links` | 0.1 / 0.1 | 0.1 / 0.1 | 24.7 / 24.7 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 5.4 / 5.4 |
 
-What the numbers say:
+What the numbers say (measured before the changes noted below; `make bench` gives current numbers):
 - **Indexing** takes about 1 s per 180k lines of Go and 100k lines of Java. Django's Python is the slowest per line (4.8 s for 156k lines) because tree-sitter does all of the parsing.
 - **Memory** peaks while indexing (659 MB for Kubernetes). A running server only holds the SQLite index open.
-- **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (about 180 ms on the largest repositories). `get_service_links` takes 250 ms on Kubernetes, which has many HTTP client calls to match.
-- **Re-indexing** one changed file costs about the same as a run with no change (2.9 s on the standard library, 4.5 s on Kubernetes). Only the changed file is parsed, but the call graph, type hierarchy and test edges are rebuilt for the whole repository.
-- **Response sizes** stay at a few KB at the median. The largest are `get_file_summary` of a file with hundreds of declarations (184 KB for Kubernetes' largest file) and `get_dependency_graph` of the most-called functions (up to 60 KB). Both are on the [roadmap](#roadmap) to be capped like the other tools.
+- **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (about 180 ms on the largest repositories). `get_service_links` took 250 ms on Kubernetes; an indexed query now makes it about 6 ms.
+- **Re-indexing** one changed file used to cost about as much as a run with no change (2.9 s on the standard library, 4.5 s on Kubernetes), because the whole call graph was rebuilt. An edit that keeps a file's declarations now resolves only that file's calls: measured on a slower machine, 0.23 s with no change and 0.71 s after an edit on the standard library, 0.52 s and 1.55 s on Kubernetes.
+- **Response sizes** stay at a few KB at the median. The largest were `get_file_summary` of a file with hundreds of declarations (184 KB for Kubernetes' largest file) and `get_dependency_graph` of the most-called functions (up to 60 KB). Both are now capped ([Output size](#output-size)): the largest answers drop to 22 and 25 KB.
 
 ## Contributing
 
@@ -418,9 +418,9 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.4:** `get_file_summary`, incremental re-index using file hashes
 - [x] **v0.5:** Java and Python via tree-sitter
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
-- [x] **v0.7 (in progress):** workspaces of several repositories, `get_service_links` for HTTP routes, gRPC methods, Kafka topics, and Temporal workflows and activities; `.proto` files
-- [ ] Next: cap `get_file_summary` and `get_dependency_graph` responses on very large files and hubs; rebuild the call graph incrementally after an edit
-- [ ] Later: TypeScript and Rust, optional semantic search with local embeddings
+- [x] **v0.7:** workspaces of several repositories; `get_service_links` for HTTP routes, gRPC methods, Kafka, RabbitMQ, SQS and Pub/Sub, and Temporal workflows and activities, with values from configuration files; `.proto` files; TypeScript and JavaScript; `codeweft server` (self-hosted, kept current by GitHub webhooks) with a container image, Helm chart, npm and Homebrew packages; capped answers and incremental call graph updates
+- [ ] Next: a Postgres backend for several server replicas; per-user sign-in (GitHub OAuth) with per-repository access
+- [ ] Later: Kotlin, C# and Rust; gRPC and Temporal in TypeScript; bindings declared in infrastructure code (Terraform); optional semantic search with local embeddings
 
 ## License
 
