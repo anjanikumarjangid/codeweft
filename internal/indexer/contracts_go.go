@@ -67,6 +67,11 @@ func goTemplate(e ast.Expr, consts, aliases map[string]string) string {
 		}
 		path := aliases[pkg.Name]
 		switch {
+		case path == "os" && sel.Sel.Name == "Getenv" && len(t.Args) == 1:
+			// An environment variable: resolved from configuration files.
+			if k := goTemplate(t.Args[0], consts, aliases); !strings.ContainsAny(k, "*$") {
+				return "${" + k + "}"
+			}
 		case path == "fmt" && sel.Sel.Name == "Sprintf" && len(t.Args) > 0:
 			return fmtVerb.ReplaceAllString(goTemplate(t.Args[0], consts, aliases), "*")
 		case (path == "path" && sel.Sel.Name == "Join") || (path == "net/url" && sel.Sel.Name == "JoinPath"):
@@ -100,7 +105,7 @@ func httpUse(method, url, caller string, line int) (store.Contract, bool) {
 		return store.Contract{}, false // nothing of the path is known
 	}
 	return store.Contract{Kind: store.ContractHTTP, Role: store.RoleUses, Name: name, Method: method,
-		Symbol: caller, Line: line, Detail: url, Exact: !strings.Contains(url, "*")}, true
+		Symbol: caller, Line: line, Detail: url, Exact: !strings.Contains(url, "*") && !strings.Contains(url, "${")}, true
 }
 
 // goHTTPClientCalls finds HTTP requests made with net/http in a function

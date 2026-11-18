@@ -101,10 +101,8 @@ func (pf *pyFile) kafkaCall(n *sitter.Node, caller string, locals map[string]str
 	// KafkaConsumer("orders", "payments", group_id="billing")
 	if kind, group := pf.kafkaClient(n); kind == "C" {
 		for _, a := range positional {
-			if a.Type() == "string" || a.Type() == "identifier" {
-				if c, ok := topic(store.RoleProvides, a, group); ok {
-					out = append(out, c)
-				}
+			if c, ok := topic(store.RoleProvides, a, group); ok {
+				out = append(out, c)
 			}
 		}
 		return out

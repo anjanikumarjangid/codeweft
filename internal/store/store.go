@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "13"
+const SchemaVersion = "14"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -133,6 +133,14 @@ CREATE TABLE IF NOT EXISTS test_edges (
 );
 CREATE INDEX IF NOT EXISTS test_edges_to ON test_edges(to_id);
 CREATE INDEX IF NOT EXISTS test_edges_to_test ON test_edges(to_test);
+CREATE TABLE IF NOT EXISTS properties (
+	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	key     TEXT NOT NULL,
+	value   TEXT NOT NULL,
+	profile TEXT NOT NULL, -- Spring profile or .env variant, "" for the base file
+	line    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS properties_file ON properties(file_id);
 CREATE TABLE IF NOT EXISTS contracts (
 	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 	kind    TEXT NOT NULL,
@@ -170,7 +178,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "contracts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "properties", "contracts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -212,6 +220,15 @@ type File struct {
 	// declarations, imports, fields and supertypes, not its bodies. An
 	// edit that keeps it cannot change how calls elsewhere resolve.
 	Shape string
+}
+
+// Property is a key and value of a configuration file: a Spring
+// application.yml or .properties file, or a .env file.
+type Property struct {
+	Key     string
+	Value   string
+	Line    int
+	Profile string // the Spring profile, or the .env variant ("prod" for .env.prod); "" for the base
 }
 
 // TestFunc is a function or method declared in a test file.

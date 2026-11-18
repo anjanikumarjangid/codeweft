@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +122,15 @@ const (
 // Providers found twice (a workflow function and its registration) are
 // listed once, keeping the task queue when one of them names it.
 func (s *Store) resolveContracts(in []ContractRow) ([]ContractRow, error) {
+	props, err := s.loadProperties()
+	if err != nil {
+		return nil, err
+	}
+	if props != nil {
+		for i := range in {
+			props.resolve(&in[i])
+		}
+	}
 	out := []ContractRow{}
 	index := map[string]int{}
 	byName := map[string]int{} // providers by kind and name
@@ -655,4 +666,133 @@ func (c Contract) String() string {
 		name = c.Method + " " + name
 	}
 	return fmt.Sprintf("%s %s %s", c.Kind, c.Role, name)
+}
+
+// placeholder matches ${key} and ${key:default}.
+var placeholder = regexp.MustCompile(`\$\{([^}:]+)(?::([^}]*))?\}`)
+
+// property is a configuration value and where it is set.
+type property struct {
+	value, profile, dir, path string
+}
+
+// properties indexes the configuration values of the repository by key.
+type properties map[string][]property
+
+// loadProperties reads every configuration value, or nil when there is none.
+func (s *Store) loadProperties() (properties, error) {
+	rows, err := s.db.Query(`SELECT p.key, p.value, p.profile, f.dir, f.path FROM properties p
+		JOIN files f ON f.id = p.file_id ORDER BY f.path, p.line`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var props properties
+	for rows.Next() {
+		var key string
+		var p property
+		if err := rows.Scan(&key, &p.value, &p.profile, &p.dir, &p.path); err != nil {
+			return nil, err
+		}
+		if props == nil {
+			props = properties{}
+		}
+		props[key] = append(props[key], p)
+	}
+	return props, rows.Err()
+}
+
+// lookup finds a key's value for code in the directory from: the value
+// set nearest to it (a monorepo's modules keep their own configuration),
+// in a base file before a profile's. A key is also looked up in its
+// environment-variable form and back, as Spring binds them
+// (orders.topic and ORDERS_TOPIC).
+func (p properties) lookup(key, from string) (string, bool) {
+	cands := p[key]
+	if len(cands) == 0 {
+		cands = p[strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(key))]
+	}
+	if len(cands) == 0 && strings.ToUpper(key) == key {
+		cands = p[strings.ToLower(strings.ReplaceAll(key, "_", "."))]
+	}
+	if len(cands) == 0 {
+		return "", false
+	}
+	best, bestScore := cands[0], -1
+	for _, c := range cands {
+		score := commonDirs(c.dir, from) * 2
+		if c.profile == "" {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = c, score
+		}
+	}
+	return best.value, true
+}
+
+// commonDirs counts the leading directories two paths share.
+func commonDirs(a, b string) int {
+	if a == "." || b == "." {
+		return 0
+	}
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
+}
+
+// expand replaces the placeholders in s with their configured values, or
+// their defaults, following values that are placeholders themselves.
+func (p properties) expand(s, from string) string {
+	for pass := 0; pass < 5 && strings.Contains(s, "${"); pass++ {
+		next := placeholder.ReplaceAllStringFunc(s, func(m string) string {
+			sub := placeholder.FindStringSubmatch(m)
+			if v, ok := p.lookup(strings.TrimSpace(sub[1]), from); ok {
+				return v
+			}
+			if strings.Contains(m, ":") {
+				return sub[2] // the default
+			}
+			return m
+		})
+		if next == s {
+			break
+		}
+		s = next
+	}
+	return s
+}
+
+// resolve replaces the configuration placeholders of a contract: in an
+// HTTP contract's URL or route (then normalized again), in other kinds'
+// names, and in task queues and consumer groups. A contract is exact only
+// once its name holds no placeholder.
+func (p properties) resolve(c *ContractRow) {
+	if !strings.Contains(c.Name, "${") && !strings.Contains(c.Detail, "${") {
+		return
+	}
+	from := path.Dir(c.File)
+	if c.Kind == ContractHTTP {
+		d := p.expand(c.Detail, from)
+		if d == c.Detail {
+			return
+		}
+		if n := NormalizePath(d); n != "" {
+			c.Name = n
+		}
+		c.Detail = d
+		if c.Role == RoleUses {
+			c.Exact = !strings.Contains(d, "*") && !strings.Contains(d, "${")
+		}
+		return
+	}
+	name := p.expand(c.Name, from)
+	c.Detail = p.expand(c.Detail, from)
+	if name != c.Name {
+		c.Name = name
+		c.Exact = !strings.Contains(name, "${") && !strings.Contains(name, "*")
+	}
 }

@@ -33,10 +33,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 10 Go (one of them generated), 8 Java, 7 Python and 2 proto files;
-	// test files are kept apart and not counted.
-	if res.Files != 27 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 27 (1), 0", res.Files, res.Generated, res.Skipped)
+	// 11 Go (one of them generated), 8 Java, 7 Python, 2 proto and 3
+	// configuration files; test files are kept apart and not counted.
+	if res.Files != 31 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 31 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -80,8 +80,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 27 || syms != 176 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 27 and 176", files, syms)
+	if files != 31 || syms != 178 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 31 and 178", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -393,7 +393,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 30 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 34 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -416,7 +416,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 28 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 32 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -470,10 +470,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 27 default files + 2 Go and Java test files - 7 Python files under
-	// py/ (the Python test file is under py/ too).
-	if res.Files != 22 {
-		t.Fatalf("indexed %d files, want 22", res.Files)
+	// 31 default files + 2 Go and Java test files - 8 files under py/ (7
+	// Python files and a .env; the Python test file is under py/ too).
+	if res.Files != 25 {
+		t.Fatalf("indexed %d files, want 25", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -494,8 +494,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 21 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 21 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 24 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 24 unchanged, 0 removed", res)
 	}
 }
 
@@ -990,8 +990,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 26 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 26 files, 1 skipped", res, err)
+	if err != nil || res.Files != 30 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 30 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1439,6 +1439,8 @@ func TestHTTPLinks(t *testing.T) {
 		"GET /inventory/stock/*: checkout.stockLevel -> py.inventory.api.get_stock [pattern]",
 		"POST /inventory/stock/*/reserve: checkout.reserveRequest -> py.inventory.api.reserve [pattern]",
 		"POST /orders: py.inventory.api.place_order -> com.shop.orders.OrderController.place [pattern]",
+		// The base URL from os.Getenv("ORDERS_URL"), set in checkout/.env.
+		"GET /orders/*: checkout.orderStatus -> com.shop.orders.OrderController.get [pattern]",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -1446,8 +1448,7 @@ func TestHTTPLinks(t *testing.T) {
 	if len(res.Unmatched) != 0 {
 		t.Errorf("unmatched uses: %+v", res.Unmatched)
 	}
-	// GET /orders/{id} in Java is not called by anything in the fixture.
-	if len(res.Unreferring) != 1 || res.Unreferring[0].Symbol != "com.shop.orders.OrderController.get" {
+	if len(res.Unreferring) != 0 {
 		t.Errorf("unused routes: %+v", res.Unreferring)
 	}
 }
@@ -1633,8 +1634,11 @@ func TestKafkaLinks(t *testing.T) {
 			l.To.File, l.To.Line, l.Confidence))
 	}
 	want := []string{
-		// A topic read from configuration: the same property on both sides.
-		"${inventory.topic} [audit]: com.shop.orders.OrderEvents.requestRestock -> com.shop.orders.OrderEvents.audit at java/com/shop/orders/OrderEvents.java:29 (pattern)",
+		// A topic read from configuration: ${inventory.topic} in Java is
+		// inventory.restock in java/application.yml, which the Python
+		// consumer reads from RESTOCK_TOPIC in py/.env.
+		"inventory.restock [inventory-restock]: com.shop.orders.OrderEvents.requestRestock -> py.inventory.events.consume_restock_requests at py/inventory/events.py:24 (exact)",
+		"inventory.restock [audit]: com.shop.orders.OrderEvents.requestRestock -> com.shop.orders.OrderEvents.audit at java/com/shop/orders/OrderEvents.java:29 (exact)",
 		// kafka-go producer (package kafka from the path kafka-go) to a
 		// Spring listener and a kafka-python consumer, one per group.
 		"orders.placed [billing]: checkout.publishOrderPlaced -> com.shop.orders.OrderEvents.onOrderPlaced at java/com/shop/orders/OrderEvents.java:20 (exact)",
@@ -1869,4 +1873,50 @@ func lineDiff(got, want string) string {
 	}
 	sort.Strings(out)
 	return strings.Join(out, "\n")
+}
+
+func TestParseConfig(t *testing.T) {
+	parse := func(rel, src string) string {
+		t.Helper()
+		fr, err := indexer.ParseConfig(rel, []byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, p := range fr.Properties {
+			out = append(out, fmt.Sprintf("%s=%s [%s]", p.Key, p.Value, p.Profile))
+		}
+		return strings.Join(out, "; ")
+	}
+	yml := `app:
+  orders:
+    topic: orders.placed   # a comment
+    url: "http://orders:8080/api"
+  queues: [audit, billing]
+  list:
+    - a
+    - 'b'
+  auth-token: xyz
+spring.kafka.bootstrap-servers: kafka:9092
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+app.orders.topic: prod.orders
+`
+	want := "app.orders.topic=orders.placed []; app.orders.url=http://orders:8080/api []; app.queues=audit,billing []; " +
+		"app.list=a,b []; spring.kafka.bootstrap-servers=kafka:9092 []; " +
+		"spring.config.activate.on-profile=prod [prod]; app.orders.topic=prod.orders [prod]"
+	if got := parse("src/main/resources/application.yml", yml); got != want {
+		t.Errorf("yaml:\n got %s\nwant %s", got, want)
+	}
+	props := "# comment\n! also\norders.topic = orders.placed\nlong.value=a,\\\n  b\ndb.password=secret\n"
+	if got, want := parse("application-dev.properties", props), "orders.topic=orders.placed [dev]; long.value=a,b [dev]"; got != want {
+		t.Errorf("properties:\n got %s\nwant %s", got, want)
+	}
+	env := "# comment\nexport ORDERS_TOPIC=\"orders.placed\"\nBASE_URL=http://api:8080 # trailing\nGITHUB_TOKEN=ghp_x\nEMPTY=\n"
+	if got, want := parse(".env.staging", env), "ORDERS_TOPIC=orders.placed [staging]; BASE_URL=http://api:8080 [staging]; EMPTY= [staging]"; got != want {
+		t.Errorf(".env:\n got %s\nwant %s", got, want)
+	}
 }

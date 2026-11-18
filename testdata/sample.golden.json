@@ -370,6 +370,19 @@
     "exported": false
   },
   {
+    "file": "checkout/status.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "orderStatus",
+    "qualified": "checkout.orderStatus",
+    "kind": "func",
+    "signature": "func orderStatus(id string) (*http.Response, error)",
+    "doc": "orderStatus asks the orders service, found from the environment, for an order.",
+    "start_line": 9,
+    "end_line": 11,
+    "exported": false
+  },
+  {
     "file": "fulfillment/worker.go",
     "lang": "go",
     "package": "fulfillment",
@@ -1831,6 +1844,18 @@
     "signature": "def publish(self, sku)",
     "start_line": 20,
     "end_line": 21,
+    "exported": true
+  },
+  {
+    "file": "py/inventory/events.py",
+    "lang": "python",
+    "package": "py.inventory.events",
+    "name": "consume_restock_requests",
+    "qualified": "py.inventory.events.consume_restock_requests",
+    "kind": "func",
+    "signature": "def consume_restock_requests()",
+    "start_line": 24,
+    "end_line": 27,
     "exported": true
   },
   {

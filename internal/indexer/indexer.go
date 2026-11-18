@@ -35,12 +35,14 @@ type FileResult struct {
 	Calls      []store.RawCall
 	Endpoints  []store.Endpoint
 	Contracts  []store.Contract // other than the routes in Endpoints, which are added as contracts too
+	Properties []store.Property // of a configuration file
 }
 
 // language describes how to recognise and parse one language.
 type language struct {
 	name      string
 	exts      []string
+	match     func(base string) bool // recognises files by name rather than extension
 	isTest    func(rel string) bool
 	generated func(src []byte) bool
 	parse     func(rel string, src []byte) (*FileResult, error)
@@ -69,6 +71,13 @@ var languages = []language{
 		parse:     ParsePython,
 	},
 	{
+		name:      "config",
+		match:     isConfigFile,
+		isTest:    func(string) bool { return false },
+		generated: func([]byte) bool { return false },
+		parse:     ParseConfig,
+	},
+	{
 		name:      "proto",
 		exts:      []string{".proto"},
 		isTest:    func(string) bool { return false },
@@ -78,8 +87,11 @@ var languages = []language{
 }
 
 func languageFor(path string) *language {
-	ext := filepath.Ext(path)
+	ext, base := filepath.Ext(path), filepath.Base(path)
 	for i := range languages {
+		if languages[i].match != nil && languages[i].match(base) {
+			return &languages[i]
+		}
 		for _, e := range languages[i].exts {
 			if e == ext {
 				return &languages[i]
@@ -536,6 +548,11 @@ func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 // contracts. Unlike declarations, these change with almost every edit and
 // never affect how calls in other files resolve.
 func writeBodies(tx *store.Tx, id int64, fr *FileResult) error {
+	for _, p := range fr.Properties {
+		if err := tx.AddProperty(id, p); err != nil {
+			return err
+		}
+	}
 	for _, c := range fr.Calls {
 		if err := tx.AddRawCall(id, c); err != nil {
 			return err

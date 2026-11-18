@@ -19,3 +19,12 @@ class StockEvents:
 
     def publish(self, sku):
         self.producer.produce(STOCK_TOPIC, value=sku)
+
+
+def consume_restock_requests():
+    consumer = KafkaConsumer(os.environ["RESTOCK_TOPIC"], group_id="inventory-restock")
+    for message in consumer:
+        print(message)
+
+
+import os  # noqa: E402 (kept last so the lines above keep their numbers)

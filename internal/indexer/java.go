@@ -770,9 +770,15 @@ func (jf *javaFile) template(n *sitter.Node) string {
 			return v
 		}
 	case "method_invocation":
-		if obj := field(n, "object"); obj != nil && text(obj, jf.src) == "String" && text(field(n, "name"), jf.src) == "format" {
-			if args := namedChildren(field(n, "arguments")); len(args) > 0 {
-				return fmtVerb.ReplaceAllString(jf.template(args[0]), "*")
+		obj, name := field(n, "object"), text(field(n, "name"), jf.src)
+		args := namedChildren(field(n, "arguments"))
+		switch {
+		case obj != nil && text(obj, jf.src) == "String" && name == "format" && len(args) > 0:
+			return fmtVerb.ReplaceAllString(jf.template(args[0]), "*")
+		case obj != nil && text(obj, jf.src) == "System" && name == "getenv" && len(args) == 1:
+			// An environment variable: resolved from configuration files.
+			if k := jf.template(args[0]); !strings.ContainsAny(k, "*$") {
+				return "${" + k + "}"
 			}
 		}
 	}

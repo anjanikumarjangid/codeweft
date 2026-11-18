@@ -1,0 +1,7 @@
+# Configuration of the Java orders service.
+inventory:
+  topic: inventory.restock
+spring:
+  datasource:
+    url: jdbc:postgresql://db/orders
+    password: not-indexed

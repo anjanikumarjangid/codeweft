@@ -22,6 +22,8 @@ checkout.Handler.getOrder -> encoding/json.NewEncoder [external] line 28
 checkout.Handler.getOrder -> net/http.Request.PathValue [external] line 28
 checkout.stockLevel -> net/http.Get [external] line 36
 checkout.reserveRequest -> net/http.NewRequest [external] line 41
+checkout.orderStatus -> net/http.Get [external] line 10
+checkout.orderStatus -> os.Getenv [external] line 10
 fulfillment.RunWorker -> go.temporal.io/sdk/worker.New [external] line 15
 fulfillment.RunWorker -> go.temporal.io/sdk/worker.InterruptCh [external] line 19
 fulfillment.StartShipping -> go.temporal.io/sdk/client.Client.ExecuteWorkflow [external] line 25
@@ -76,6 +78,7 @@ py.inventory.api.place_order -> requests.post [external] line 36
 py.inventory.events.consume_orders -> kafka.KafkaConsumer [external] line 9
 py.inventory.events.StockEvents.__init__ -> confluent_kafka.Producer [external] line 18
 py.inventory.events.StockEvents.publish -> confluent_kafka.Producer.produce [external] line 21
+py.inventory.events.consume_restock_requests -> kafka.KafkaConsumer [external] line 25
 py.inventory.grpc_api.OrdersClient.__init__ -> py.inventory.orders_pb2_grpc.OrderServiceStub [external] line 24
 py.inventory.grpc_api.OrdersClient.order -> py.inventory.orders_pb2_grpc.OrderServiceStub.GetOrder [external] line 27
 py.inventory.grpc_api.OrdersClient.order -> py.inventory.orders_pb2.GetOrderRequest [external] line 27

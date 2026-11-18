@@ -154,6 +154,7 @@ func (t *Tx) UpdateFile(f File, symbols []Symbol, tests []TestFunc) (int64, erro
 		`DELETE FROM raw_calls WHERE file_id = ?`,
 		`DELETE FROM endpoints WHERE file_id = ?`,
 		`DELETE FROM contracts WHERE file_id = ?`,
+		`DELETE FROM properties WHERE file_id = ?`,
 	} {
 		if _, err := t.exec(q, id); err != nil {
 			return 0, err
@@ -303,6 +304,13 @@ func (t *Tx) AddTestFunc(fileID int64, tf TestFunc) error {
 func (t *Tx) AddEndpoint(fileID int64, e Endpoint) error {
 	_, err := t.exec(`INSERT INTO endpoints(file_id, method, path, handler, framework, line) VALUES(?, ?, ?, ?, ?, ?)`,
 		fileID, e.Method, e.Path, e.Handler, e.Framework, e.Line)
+	return err
+}
+
+// AddProperty records a key and value of a configuration file.
+func (t *Tx) AddProperty(fileID int64, p Property) error {
+	_, err := t.exec(`INSERT INTO properties(file_id, key, value, profile, line) VALUES(?, ?, ?, ?, ?)`,
+		fileID, p.Key, p.Value, p.Profile, p.Line)
 	return err
 }
 

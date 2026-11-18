@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (10 files), java (8 files), python (7 files), proto (2 files)",
+		"Languages: go (11 files), java (8 files), python (7 files), proto (2 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",

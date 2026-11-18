@@ -91,7 +91,7 @@ func goKafkaCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual string,
 			symbol = caller
 		}
 		out = append(out, store.Contract{Kind: store.ContractKafka, Role: role, Name: name, Symbol: symbol,
-			Line: line, Detail: group, Exact: !strings.Contains(name, "*")})
+			Line: line, Detail: group, Exact: !strings.Contains(name, "*") && !strings.Contains(name, "${")})
 	}
 	topics := func(role string, e ast.Expr, line int, symbol, group string) {
 		// topics := []string{topic}; SubscribeTopics(topics, nil)

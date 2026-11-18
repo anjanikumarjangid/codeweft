@@ -653,6 +653,16 @@ func (pf *pyFile) template(n *sitter.Node) string {
 		if fn := field(n, "function"); fn != nil && fn.Type() == "attribute" && text(field(fn, "attribute"), pf.src) == "format" {
 			return pyBraces.ReplaceAllString(pf.template(field(fn, "object")), "*")
 		}
+		if env := pf.envVar(n); env != "" {
+			return env
+		}
+	case "subscript":
+		// os.environ["KEY"]
+		if pf.isOSName(field(n, "value"), "environ") {
+			if k := pf.template(field(n, "subscript")); !strings.ContainsAny(k, "*$") {
+				return "${" + k + "}"
+			}
+		}
 	}
 	return "*"
 }
@@ -712,4 +722,54 @@ func (pf *pyFile) httpClientCall(n *sitter.Node, caller string, locals map[strin
 		return store.Contract{}, false
 	}
 	return httpUse(method, url, caller, line(n))
+}
+
+// isOSName reports whether n is the os module's attribute name: os.environ,
+// or environ imported from os.
+func (pf *pyFile) isOSName(n *sitter.Node, name string) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Type() {
+	case "attribute":
+		obj := field(n, "object")
+		return obj != nil && obj.Type() == "identifier" && pf.imports[text(obj, pf.src)] == "os" &&
+			text(field(n, "attribute"), pf.src) == name
+	case "identifier":
+		return pf.imports[text(n, pf.src)] == "os."+name
+	}
+	return false
+}
+
+// envVar evaluates os.getenv("KEY"[, default]) and os.environ.get(...) to
+// the placeholder ${KEY} or ${KEY:default}, resolved from configuration
+// files; "" for any other call.
+func (pf *pyFile) envVar(call *sitter.Node) string {
+	fn := field(call, "function")
+	isEnv := pf.isOSName(fn, "getenv")
+	if !isEnv && fn != nil && fn.Type() == "attribute" && text(field(fn, "attribute"), pf.src) == "get" {
+		isEnv = pf.isOSName(field(fn, "object"), "environ")
+	}
+	if !isEnv {
+		return ""
+	}
+	var args []*sitter.Node
+	for _, a := range namedChildren(field(call, "arguments")) {
+		if a.Type() != "keyword_argument" {
+			args = append(args, a)
+		}
+	}
+	if len(args) == 0 {
+		return ""
+	}
+	k := pf.template(args[0])
+	if strings.ContainsAny(k, "*$") {
+		return ""
+	}
+	if len(args) > 1 {
+		if d := pf.template(args[1]); !strings.ContainsAny(d, "*$}") {
+			return "${" + k + ":" + d + "}"
+		}
+	}
+	return "${" + k + "}"
 }
