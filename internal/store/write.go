@@ -83,6 +83,149 @@ func (t *Tx) FileHashes() (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// FileShapes returns path -> shape for every indexed file.
+func (t *Tx) FileShapes() (map[string]string, error) {
+	rows, err := t.tx.Query(`SELECT path, shape FROM files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var p, s string
+		if err := rows.Scan(&p, &s); err != nil {
+			return nil, err
+		}
+		out[p] = s
+	}
+	return out, rows.Err()
+}
+
+// UpdateFile replaces the contents of an indexed file whose shape did not
+// change, in place: its symbols and test functions keep their ids, so the
+// edges, test edges and type edges pointing at them stay valid. Its
+// symbols' lines, bodies and docs are updated, its call sites, routes and
+// contracts replaced, and the edges and test edges from its functions
+// removed, to be resolved again from its new call sites. The caller adds
+// those (AddRawCall, AddEndpoint, AddContract) and resolves them.
+func (t *Tx) UpdateFile(f File, symbols []Symbol, tests []TestFunc) (int64, error) {
+	var id int64
+	if err := t.tx.QueryRow(`SELECT id FROM files WHERE path = ?`, f.Path).Scan(&id); err != nil {
+		return 0, err
+	}
+	if _, err := t.exec(`UPDATE files SET doc = ?, hash = ?, generated = ? WHERE id = ?`, f.Doc, f.Hash, f.Generated, id); err != nil {
+		return 0, err
+	}
+	ids, err := t.ids(`SELECT id FROM symbols WHERE file_id = ? ORDER BY id`, id)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) != len(symbols) {
+		return 0, fmt.Errorf("%s: %d symbols stored, %d parsed for an unchanged shape", f.Path, len(ids), len(symbols))
+	}
+	for i, sym := range symbols {
+		if _, err := t.exec(`UPDATE symbols SET doc = ?, start_line = ?, end_line = ?, body = ? WHERE id = ?`,
+			sym.Doc, sym.StartLine, sym.EndLine, sym.Body, ids[i]); err != nil {
+			return 0, err
+		}
+		if _, err := t.exec(`DELETE FROM symbols_fts WHERE rowid = ?`, ids[i]); err != nil {
+			return 0, err
+		}
+		if _, err := t.exec(`INSERT INTO symbols_fts(rowid, name, qualified, terms, signature, doc) VALUES (?, ?, ?, ?, ?, ?)`,
+			ids[i], sym.Name, sym.Qualified, SplitWords(sym.Qualified), sym.Signature, sym.Doc); err != nil {
+			return 0, err
+		}
+	}
+	tids, err := t.ids(`SELECT id FROM test_funcs WHERE file_id = ? ORDER BY id`, id)
+	if err != nil {
+		return 0, err
+	}
+	if len(tids) != len(tests) {
+		return 0, fmt.Errorf("%s: %d test functions stored, %d parsed for an unchanged shape", f.Path, len(tids), len(tests))
+	}
+	for i, tf := range tests {
+		if _, err := t.exec(`UPDATE test_funcs SET line = ? WHERE id = ?`, tf.Line, tids[i]); err != nil {
+			return 0, err
+		}
+	}
+	for _, q := range []string{
+		`DELETE FROM edges WHERE from_id IN (SELECT id FROM symbols WHERE file_id = ?)`,
+		`DELETE FROM test_edges WHERE from_test IN (SELECT id FROM test_funcs WHERE file_id = ?)`,
+		`DELETE FROM raw_calls WHERE file_id = ?`,
+		`DELETE FROM endpoints WHERE file_id = ?`,
+		`DELETE FROM contracts WHERE file_id = ?`,
+	} {
+		if _, err := t.exec(q, id); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
+}
+
+func (t *Tx) ids(q string, args ...any) ([]int64, error) {
+	rows, err := t.tx.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// AddEdges inserts edges, without removing any.
+func (t *Tx) AddEdges(edges []Edge) error {
+	stmt, err := t.tx.Prepare(`INSERT INTO edges(from_id, to_id, to_ref, line, confidence) VALUES(?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range edges {
+		var to any
+		if e.ToID != 0 {
+			to = e.ToID
+		}
+		if _, err := stmt.Exec(e.FromID, to, e.ToRef, e.Line, e.Confidence); err != nil {
+			return fmt.Errorf("edge %d -> %s: %w", e.FromID, e.ToRef, err)
+		}
+	}
+	return nil
+}
+
+// AddTestEdges inserts test edges, without removing any.
+func (t *Tx) AddTestEdges(edges []TestEdge) error {
+	stmt, err := t.tx.Prepare(`INSERT INTO test_edges(from_test, to_id, to_test, line) VALUES(?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	nullable := func(id int64) any {
+		if id == 0 {
+			return nil
+		}
+		return id
+	}
+	for _, e := range edges {
+		if _, err := stmt.Exec(e.FromTest, nullable(e.ToID), nullable(e.ToTest), e.Line); err != nil {
+			return fmt.Errorf("test edge %d: %w", e.FromTest, err)
+		}
+	}
+	return nil
+}
+
+// ResolvedEdges counts the edges into the repository's own symbols.
+func (t *Tx) ResolvedEdges() (int, error) {
+	var n int
+	err := t.tx.QueryRow(`SELECT COUNT(*) FROM edges WHERE to_id IS NOT NULL`).Scan(&n)
+	return n, err
+}
+
 // DeleteFile removes a file and everything derived from it. Edges pointing
 // at its symbols are removed by the cascade; edges are rebuilt afterwards.
 func (t *Tx) DeleteFile(path string) error {
@@ -96,8 +239,8 @@ func (t *Tx) DeleteFile(path string) error {
 
 // AddFile inserts a file and returns its id.
 func (t *Tx) AddFile(f File) (int64, error) {
-	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test, f.Generated)
+	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated, shape)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test, f.Generated, f.Shape)
 	if err != nil {
 		return 0, err
 	}
@@ -193,7 +336,10 @@ type ResolveInput struct {
 }
 
 // LoadResolveInput reads symbols, fields and raw calls for resolution.
-func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
+//
+// With files given, only the call sites of those files are loaded: the
+// calls to resolve again after an edit that kept every file's shape.
+func (t *Tx) LoadResolveInput(module string, files ...string) (*ResolveInput, error) {
 	in := &ResolveInput{
 		Module:    module,
 		Symbols:   map[string]int64{},
@@ -313,20 +459,43 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		return nil, err
 	}
 
-	rows, err = t.tx.Query(`SELECT f.path, r.caller, r.form, r.a, r.b, r.c, r.line, r.args
-		FROM raw_calls r JOIN files f ON f.id = r.file_id ORDER BY r.rowid`)
+	// File paths by id, each string shared by all of the file's calls.
+	paths := map[int64]string{}
+	rows, err = t.tx.Query(`SELECT id, path FROM files`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		var p string
+		if err := rows.Scan(&id, &p); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		paths[id] = p
+	}
+	rows.Close()
+	q := `SELECT r.file_id, r.caller, r.form, r.a, r.b, r.c, r.line, r.args FROM raw_calls r`
+	var args []any
+	if len(files) > 0 {
+		q += ` JOIN files f ON f.id = r.file_id WHERE f.path IN (` + strings.TrimSuffix(strings.Repeat("?,", len(files)), ",") + `)`
+		for _, f := range files {
+			args = append(args, f)
+		}
+	}
+	rows, err = t.tx.Query(q+` ORDER BY r.rowid`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c RawCall
-		var p string
-		if err := rows.Scan(&p, &c.Caller, &c.Form, &c.A, &c.B, &c.C, &c.Line, &c.Args); err != nil {
+		var file int64
+		if err := rows.Scan(&file, &c.Caller, &c.Form, &c.A, &c.B, &c.C, &c.Line, &c.Args); err != nil {
 			return nil, err
 		}
 		in.Calls = append(in.Calls, c)
-		in.CallFiles = append(in.CallFiles, p)
+		in.CallFiles = append(in.CallFiles, paths[file])
 	}
 	return in, rows.Err()
 }
@@ -369,48 +538,112 @@ type TestEdge struct {
 	Line     int
 }
 
-// ReplaceTestEdges deletes all test edges and writes the given ones.
+// ReplaceTestEdges makes the test edges table hold exactly the given
+// edges, writing only the difference (see ReplaceEdges).
 func (t *Tx) ReplaceTestEdges(edges []TestEdge) error {
-	if _, err := t.tx.Exec(`DELETE FROM test_edges`); err != nil {
-		return err
+	want := make(map[TestEdge]int, len(edges))
+	for _, e := range edges {
+		want[e]++
 	}
-	stmt, err := t.tx.Prepare(`INSERT INTO test_edges(from_test, to_id, to_test, line) VALUES(?, ?, ?, ?)`)
+	rows, err := t.tx.Query(`SELECT rowid, from_test, COALESCE(to_id, 0), COALESCE(to_test, 0), line FROM test_edges`)
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
-	nullable := func(id int64) any {
-		if id == 0 {
-			return nil
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		var e TestEdge
+		if err := rows.Scan(&id, &e.FromTest, &e.ToID, &e.ToTest, &e.Line); err != nil {
+			rows.Close()
+			return err
 		}
-		return id
+		if want[e] > 0 {
+			want[e]--
+		} else {
+			stale = append(stale, id)
+		}
 	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := t.deleteRows("test_edges", stale); err != nil {
+		return err
+	}
+	var add []TestEdge
 	for _, e := range edges {
-		if _, err := stmt.Exec(e.FromTest, nullable(e.ToID), nullable(e.ToTest), e.Line); err != nil {
-			return fmt.Errorf("test edge %d: %w", e.FromTest, err)
+		if want[e] > 0 {
+			want[e]--
+			add = append(add, e)
 		}
 	}
-	return nil
+	return t.AddTestEdges(add)
 }
 
-// ReplaceEdges deletes all edges and writes the given ones.
+// ReplaceEdges makes the edges table hold exactly the given edges. Only
+// the difference is written: after an edit most edges are unchanged, and
+// deleting and re-inserting hundreds of thousands of rows (and their
+// indexes) would cost more than reading them.
 func (t *Tx) ReplaceEdges(edges []Edge) error {
-	if _, err := t.tx.Exec(`DELETE FROM edges`); err != nil {
-		return err
+	type key struct {
+		from, to int64
+		ref      string
+		line     int
+		conf     string
 	}
-	stmt, err := t.tx.Prepare(`INSERT INTO edges(from_id, to_id, to_ref, line, confidence) VALUES(?, ?, ?, ?, ?)`)
+	want := make(map[key]int, len(edges)) // how many of each are wanted
+	for _, e := range edges {
+		want[key{e.FromID, e.ToID, e.ToRef, e.Line, e.Confidence}]++
+	}
+	rows, err := t.tx.Query(`SELECT rowid, from_id, COALESCE(to_id, 0), to_ref, line, confidence FROM edges`)
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		var k key
+		if err := rows.Scan(&id, &k.from, &k.to, &k.ref, &k.line, &k.conf); err != nil {
+			rows.Close()
+			return err
+		}
+		if want[k] > 0 {
+			want[k]-- // already stored
+		} else {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := t.deleteRows("edges", stale); err != nil {
+		return err
+	}
+	var add []Edge
 	for _, e := range edges {
-		var to any
-		if e.ToID != 0 {
-			to = e.ToID
+		k := key{e.FromID, e.ToID, e.ToRef, e.Line, e.Confidence}
+		if want[k] > 0 {
+			want[k]--
+			add = append(add, e)
 		}
-		if _, err := stmt.Exec(e.FromID, to, e.ToRef, e.Line, e.Confidence); err != nil {
-			return fmt.Errorf("edge %d -> %s: %w", e.FromID, e.ToRef, err)
+	}
+	return t.AddEdges(add)
+}
+
+// deleteRows deletes rows of a table by rowid, a few hundred at a time.
+func (t *Tx) deleteRows(table string, ids []int64) error {
+	for len(ids) > 0 {
+		n := min(len(ids), 500)
+		args := make([]any, n)
+		for i, id := range ids[:n] {
+			args[i] = id
 		}
+		q := `DELETE FROM ` + table + ` WHERE rowid IN (` + strings.TrimSuffix(strings.Repeat("?,", n), ",") + `)`
+		if _, err := t.tx.Exec(q, args...); err != nil {
+			return err
+		}
+		ids = ids[n:]
 	}
 	return nil
 }

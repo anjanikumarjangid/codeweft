@@ -138,6 +138,10 @@ type Result struct {
 	// OtherPlatform counts Go files left out because their build
 	// constraints do not match the selected platform.
 	OtherPlatform int
+	// Partial is true when only the changed files' calls were resolved
+	// again: an incremental run where every changed file kept its
+	// declarations and no file was added or removed.
+	Partial bool
 }
 
 var defaultSkipDirs = map[string]bool{
@@ -338,7 +342,93 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 	close(work)
 	wg.Wait()
 
-	// 3. Write sequentially: SQLite has a single writer anyway.
+	// 3. An edit that keeps every changed file's shape (its declarations)
+	// and adds or removes no file cannot change how calls in other files
+	// resolve, or the type hierarchy: the changed files are updated in
+	// place and only their own calls resolved again. Anything else
+	// rebuilds the call graph from all stored call sites.
+	module := goModule(root)
+	if incremental {
+		fast, changed := true, 0
+		shapes, err := tx.FileShapes()
+		if err != nil {
+			return res, err
+		}
+		present := map[string]bool{}
+		for i, r := range results {
+			rel := jobs[i].rel
+			switch {
+			case r.err != nil:
+				return res, r.err
+			case r.skipped:
+				continue
+			}
+			present[rel] = true
+			if r.unchanged {
+				continue
+			}
+			changed++
+			_, isKnown := known[rel]
+			if !isKnown || shapes[rel] == "" || shapes[rel] != fileShape(r.fr, jobs[i].lang.isTest(rel)) {
+				fast = false
+			}
+		}
+		for p := range known {
+			if !present[p] {
+				fast = false // a file was removed, or no longer parses
+			}
+		}
+		if fast {
+			var paths []string
+			for i, r := range results {
+				if r.skipped || r.unchanged {
+					if r.skipped {
+						res.Skipped++
+					} else {
+						res.Unchanged++
+					}
+					continue
+				}
+				rel, isTest := jobs[i].rel, jobs[i].lang.isTest(jobs[i].rel)
+				r.fr.File.Shape = shapes[rel]
+				id, err := tx.UpdateFile(r.fr.File, storedSymbols(r.fr), testFuncs(r.fr, isTest))
+				if err != nil {
+					return res, fmt.Errorf("%s: %w", rel, err)
+				}
+				if err := writeBodies(tx, id, r.fr); err != nil {
+					return res, fmt.Errorf("%s: %w", rel, err)
+				}
+				paths = append(paths, rel)
+				if r.fr.File.Test {
+					res.TestFiles++
+				} else {
+					res.Files++
+					res.Symbols += len(r.fr.Symbols)
+					if r.fr.File.Generated {
+						res.Generated++
+					}
+				}
+			}
+			res.Partial = true
+			if changed > 0 {
+				if err := resolveFiles(tx, module, paths); err != nil {
+					return res, fmt.Errorf("resolve calls: %w", err)
+				}
+			}
+			if res.Edges, err = tx.ResolvedEdges(); err != nil {
+				return res, err
+			}
+			if err := tx.Commit(); err != nil {
+				return res, err
+			}
+			if err := st.SetMeta(optionsKey, string(saved)); err != nil {
+				return res, err
+			}
+			return res, st.SetMeta("root", root)
+		}
+	}
+
+	// 4. Write sequentially: SQLite has a single writer anyway.
 	seen := map[string]bool{}
 	for i, r := range results {
 		rel := jobs[i].rel
@@ -383,7 +473,7 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 		}
 	}
 
-	if res.Edges, err = resolve(tx, goModule(root)); err != nil {
+	if res.Edges, err = resolve(tx, module); err != nil {
 		return res, fmt.Errorf("resolve calls: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -401,62 +491,58 @@ func run(root string, st *store.Store, opts Options, incremental bool) (Result, 
 // the call graph or the type hierarchy, and test doubles never make a
 // call to the repository's own code ambiguous.
 func write(tx *store.Tx, fr *FileResult, isTest bool) error {
+	fr.File.Shape = fileShape(fr, isTest)
 	id, err := tx.AddFile(fr.File)
 	if err != nil {
 		return err
 	}
-	if isTest {
-		for _, s := range fr.Symbols {
-			if s.Kind == "func" || s.Kind == "method" {
-				tf := store.TestFunc{Qualified: s.Qualified, Line: s.StartLine, Entry: isTestEntry(fr.File.Lang, s)}
-				if err := tx.AddTestFunc(id, tf); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	if fr.File.Test {
-		for _, imp := range fr.Imports { // the context of its calls
-			if err := tx.AddImport(id, imp); err != nil {
-				return err
-			}
-		}
-		for _, c := range fr.Calls {
-			if err := tx.AddRawCall(id, c); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for _, s := range fr.Symbols {
-		if err := tx.AddSymbol(id, s); err != nil {
+	for _, tf := range testFuncs(fr, isTest) {
+		if err := tx.AddTestFunc(id, tf); err != nil {
 			return err
 		}
 	}
-	for _, imp := range fr.Imports {
+	for _, imp := range fr.Imports { // for a test-only file, the context of its calls
 		if err := tx.AddImport(id, imp); err != nil {
 			return err
 		}
 	}
-	for _, f := range fr.Fields {
-		if err := tx.AddField(id, f); err != nil {
-			return err
+	if !fr.File.Test {
+		for _, s := range fr.Symbols {
+			if err := tx.AddSymbol(id, s); err != nil {
+				return err
+			}
+		}
+		for _, f := range fr.Fields {
+			if err := tx.AddField(id, f); err != nil {
+				return err
+			}
+		}
+		for _, v := range fr.Vars {
+			if err := tx.AddVar(id, v); err != nil {
+				return err
+			}
+		}
+		for _, st := range fr.Supertypes {
+			if err := tx.AddSupertype(id, st); err != nil {
+				return err
+			}
 		}
 	}
-	for _, v := range fr.Vars {
-		if err := tx.AddVar(id, v); err != nil {
-			return err
-		}
-	}
-	for _, st := range fr.Supertypes {
-		if err := tx.AddSupertype(id, st); err != nil {
-			return err
-		}
-	}
+	return writeBodies(tx, id, fr)
+}
+
+// writeBodies stores what a file's function bodies and annotations give:
+// its call sites, and for code (not a test-only file) its routes and
+// contracts. Unlike declarations, these change with almost every edit and
+// never affect how calls in other files resolve.
+func writeBodies(tx *store.Tx, id int64, fr *FileResult) error {
 	for _, c := range fr.Calls {
 		if err := tx.AddRawCall(id, c); err != nil {
 			return err
 		}
+	}
+	if fr.File.Test {
+		return nil
 	}
 	for _, e := range fr.Endpoints {
 		if err := tx.AddEndpoint(id, e); err != nil {
@@ -478,6 +564,65 @@ func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 		}
 	}
 	return nil
+}
+
+// testFuncs lists the functions of a test file, for find_tests.
+func testFuncs(fr *FileResult, isTest bool) []store.TestFunc {
+	var out []store.TestFunc
+	if isTest {
+		for _, s := range fr.Symbols {
+			if s.Kind == "func" || s.Kind == "method" {
+				out = append(out, store.TestFunc{Qualified: s.Qualified, Line: s.StartLine, Entry: isTestEntry(fr.File.Lang, s)})
+			}
+		}
+	}
+	return out
+}
+
+// storedSymbols are the symbols stored for a file: none for a test-only
+// file, whose functions are kept as test functions.
+func storedSymbols(fr *FileResult) []store.Symbol {
+	if fr.File.Test {
+		return nil
+	}
+	return fr.Symbols
+}
+
+// fileShape fingerprints everything call resolution and the type
+// hierarchy read from a file: its package, its declarations with their
+// signatures, imports, fields, variables, supertypes and test functions,
+// in order. Bodies, doc comments, line numbers, call sites, routes and
+// contracts are left out: changing them cannot change how a call in
+// another file resolves.
+func fileShape(fr *FileResult, isTest bool) string {
+	type decl struct {
+		Name, Qualified, Kind, Signature, Result, Arity string
+		Exported                                        bool
+	}
+	shape := struct {
+		Lang, Package, Qual, Dir string
+		Test, IsTest             bool
+		Symbols                  []decl
+		Imports                  []store.Import
+		Fields                   []store.Field
+		Vars                     []store.Var
+		Supertypes               []store.Supertype
+		Tests                    []store.TestFunc
+	}{Lang: fr.File.Lang, Package: fr.File.Package, Qual: fr.File.Qual, Dir: fr.File.Dir, Test: fr.File.Test, IsTest: isTest,
+		Imports: fr.Imports}
+	for _, s := range storedSymbols(fr) {
+		shape.Symbols = append(shape.Symbols, decl{s.Name, s.Qualified, s.Kind, s.Signature, s.Result, s.Arity, s.Exported})
+	}
+	if !fr.File.Test {
+		shape.Fields, shape.Vars, shape.Supertypes = fr.Fields, fr.Vars, fr.Supertypes
+	}
+	for _, tf := range testFuncs(fr, isTest) {
+		tf.Line = 0
+		shape.Tests = append(shape.Tests, tf)
+	}
+	data, _ := json.Marshal(shape)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // goModule reads the module path from root/go.mod, or "" if there is none.

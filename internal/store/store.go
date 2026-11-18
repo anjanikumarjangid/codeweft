@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "12"
+const SchemaVersion = "13"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS files (
 	doc     TEXT NOT NULL,
 	hash    TEXT NOT NULL,
 	test    INTEGER NOT NULL DEFAULT 0, -- 1: test-only file, its functions are in test_funcs
-	generated INTEGER NOT NULL DEFAULT 0 -- 1: marked "Code generated ... DO NOT EDIT."
+	generated INTEGER NOT NULL DEFAULT 0, -- 1: marked "Code generated ... DO NOT EDIT."
+	shape   TEXT NOT NULL DEFAULT '' -- hash of the declarations call resolution depends on
 );
 CREATE INDEX IF NOT EXISTS files_dir ON files(dir);
 CREATE TABLE IF NOT EXISTS symbols (
@@ -207,6 +208,10 @@ type File struct {
 	Hash      string
 	Test      bool // a test-only file: no symbols, its functions go to test_funcs
 	Generated bool // generated code, ranked after hand-written code in search
+	// Shape fingerprints what call resolution reads from the file: its
+	// declarations, imports, fields and supertypes, not its bodies. An
+	// edit that keeps it cannot change how calls elsewhere resolve.
+	Shape string
 }
 
 // TestFunc is a function or method declared in a test file.

@@ -27,13 +27,46 @@ import (
 // Anything else (ambiguous names, calls of function values) is dropped
 // rather than guessed.
 func resolve(tx *store.Tx, module string) (int, error) {
-	in, err := tx.LoadResolveInput(module)
+	r, types, in, err := newResolver(tx, module)
 	if err != nil {
 		return 0, err
 	}
+	edges, testEdges, resolved := r.calls(in)
+	if err := tx.ReplaceEdges(edges); err != nil {
+		return 0, err
+	}
+	if err := tx.ReplaceTestEdges(testEdges); err != nil {
+		return 0, err
+	}
+	return resolved, resolveTypes(tx, r, types)
+}
+
+// resolveFiles resolves again only the call sites of the given files,
+// after an edit that kept every file's shape: the edges from those files'
+// functions were removed (store.Tx.UpdateFile), every other edge and the
+// type hierarchy still hold.
+func resolveFiles(tx *store.Tx, module string, files []string) error {
+	r, _, in, err := newResolver(tx, module, files...)
+	if err != nil {
+		return err
+	}
+	edges, testEdges, _ := r.calls(in)
+	if err := tx.AddEdges(edges); err != nil {
+		return err
+	}
+	return tx.AddTestEdges(testEdges)
+}
+
+// newResolver loads what resolution needs: every declaration, and the call
+// sites of the given files (all files when none are given).
+func newResolver(tx *store.Tx, module string, files ...string) (resolver, *store.TypeInput, *store.ResolveInput, error) {
+	in, err := tx.LoadResolveInput(module, files...)
+	if err != nil {
+		return resolver{}, nil, nil, err
+	}
 	types, err := tx.LoadTypeInput()
 	if err != nil {
-		return 0, err
+		return resolver{}, nil, nil, err
 	}
 	r := resolver{in: in}
 	// Twice: Java supertypes may be nested types inherited from other
@@ -41,6 +74,12 @@ func resolve(tx *store.Tx, module string) (int, error) {
 	r.supers = r.declaredSupers(types.Supertypes)
 	r.supers = r.declaredSupers(types.Supertypes)
 	r.typer = newGoTyper(types, r)
+	return r, types, in, nil
+}
+
+// calls resolves the loaded call sites into edges and test edges, and
+// counts the edges into the repository's own code.
+func (r resolver) calls(in *store.ResolveInput) ([]store.Edge, []store.TestEdge, int) {
 	var edges []store.Edge
 	var testEdges []store.TestEdge
 	resolved := 0
@@ -68,13 +107,7 @@ func resolve(tx *store.Tx, module string) (int, error) {
 		}
 		edges = append(edges, store.Edge{FromID: from, ToID: toID, ToRef: ref, Line: c.Line, Confidence: conf})
 	}
-	if err := tx.ReplaceEdges(edges); err != nil {
-		return 0, err
-	}
-	if err := tx.ReplaceTestEdges(testEdges); err != nil {
-		return 0, err
-	}
-	return resolved, resolveTypes(tx, r, types)
+	return edges, testEdges, resolved
 }
 
 type resolver struct {

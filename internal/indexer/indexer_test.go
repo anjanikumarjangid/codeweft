@@ -2,14 +2,18 @@ package indexer_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
 	"github.com/anjanikumarjangid/codewiki/internal/links"
@@ -1706,4 +1710,163 @@ public class Sender {
 	if got := contracts(indexer.ParseJava("com/example/Sender.java", []byte(javaSrc))); got != want {
 		t.Errorf("Java:\n got %s\nwant %s", got, want)
 	}
+}
+
+// dumpIndex lists everything derived from a repository that an
+// incremental run must keep equal to a full build: symbols with their
+// lines and docs, call edges, test edges, type edges, routes and contracts,
+// by name rather than by id.
+func dumpIndex(t *testing.T, db string) string {
+	t.Helper()
+	conn, err := sql.Open("sqlite3", "file:"+db+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var b strings.Builder
+	for _, q := range []string{
+		`SELECT f.path || ' ' || s.qualified || ' ' || s.kind || ' ' || s.start_line || '-' || s.end_line || ' ' || s.doc || ' ' || length(s.body)
+			FROM symbols s JOIN files f ON f.id = s.file_id`,
+		`SELECT s.qualified || ' -> ' || COALESCE(t.qualified, e.to_ref) || ' ' || e.line || ' ' || e.confidence
+			FROM edges e JOIN symbols s ON s.id = e.from_id LEFT JOIN symbols t ON t.id = e.to_id`,
+		`SELECT tf.qualified || ' -> ' || COALESCE(s.qualified, tt.qualified) || ' ' || te.line FROM test_edges te
+			JOIN test_funcs tf ON tf.id = te.from_test LEFT JOIN symbols s ON s.id = te.to_id LEFT JOIN test_funcs tt ON tt.id = te.to_test`,
+		`SELECT tf.qualified || ' ' || tf.line || ' ' || tf.entry FROM test_funcs tf`,
+		`SELECT s.qualified || ' ' || e.how || ' ' || COALESCE(t.qualified, e.super_ref) FROM type_edges e
+			JOIN symbols s ON s.id = e.sub_id LEFT JOIN symbols t ON t.id = e.super_id`,
+		`SELECT method || ' ' || path || ' ' || handler || ' ' || line FROM endpoints`,
+		`SELECT kind || ' ' || role || ' ' || name || ' ' || symbol || ' ' || line || ' ' || detail || ' ' || target FROM contracts`,
+	} {
+		rows, err := conn.Query(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, s)
+		}
+		rows.Close()
+		sort.Strings(lines)
+		b.WriteString(strings.Join(lines, "\n") + "\n--\n")
+	}
+	return b.String()
+}
+
+// TestIncrementalMatchesFullBuild edits a copy of the fixture step by step
+// and checks after each re-index that the index equals a full build of the
+// same tree, and that edits keeping every file's declarations take the
+// partial path (only the edited files' calls resolved again).
+func TestIncrementalMatchesFullBuild(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	db := filepath.Join(t.TempDir(), "index.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	replace := func(file, old, new string) {
+		t.Helper()
+		p := filepath.Join(repo, file)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), old) {
+			t.Fatalf("%s: %q not found", file, old)
+		}
+		if err := os.WriteFile(p, []byte(strings.Replace(string(data), old, new, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	steps := []struct {
+		name    string
+		edit    func()
+		partial bool
+	}{
+		{"no change", func() {}, true},
+		{"Go body: new call, lines shifted", func() {
+			replace("checkout/checkout.go", "// Order is a paid cart.", "\n\n// Order is a paid cart.")
+			replace("checkout/checkout.go", "	return &Order{ID:", "	audit()\n	return &Order{ID:")
+		}, true},
+		{"Go test body: calls a helper", func() {
+			replace("ratelimit/limiter_test.go", "	if refill(0, 1, 0) != 0 {", "	_ = allowTwice(&TokenBucket[string]{})\n	if refill(0, 1, 0) != 0 {")
+		}, true},
+		{"Java and Python bodies, two files at once", func() {
+			replace("java/com/shop/orders/OrderService.java", `        System.out.println("placed " + order.id());`,
+				`        System.out.println("placed " + order.id());
+        repo.save(order);`)
+			replace("py/inventory/stock.py", "    def _log(self, sku, qty):\n", "    def _log(self, sku, qty):\n        _enough(None, qty)\n")
+		}, true},
+		{"doc comment", func() {
+			replace("checkout/checkout.go", "// Checkout charges the customer", "// Checkout remits the customer")
+		}, true},
+		{"new function: declarations change", func() {
+			replace("checkout/checkout.go", "func newOrder(", "func Refund(id string) error { return nil }\n\nfunc newOrder(")
+		}, false},
+		{"file removed", func() {
+			if err := os.Remove(filepath.Join(repo, "py/inventory/notify.py")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	}
+	for _, step := range steps {
+		step.edit()
+		res, err := indexer.Reindex(repo, st, indexer.Options{})
+		if err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if res.Partial != step.partial {
+			t.Errorf("%s: partial = %v, want %v (%+v)", step.name, res.Partial, step.partial, res)
+		}
+		fullDB := filepath.Join(t.TempDir(), "full.db")
+		full, err := store.Open(fullDB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fres, err := indexer.Index(repo, full, indexer.Options{})
+		full.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Edges != fres.Edges {
+			t.Errorf("%s: %d resolved edges, full build %d", step.name, res.Edges, fres.Edges)
+		}
+		if got, want := dumpIndex(t, db), dumpIndex(t, fullDB); got != want {
+			t.Errorf("%s: index differs from a full build:\n%s", step.name, lineDiff(got, want))
+		}
+	}
+	// The new doc comment is searchable.
+	if hits, err := st.Search("remits", store.SearchOptions{}); err != nil || len(hits) == 0 || hits[0].Qualified != "checkout.Checkout" {
+		t.Errorf("search for the edited doc: %+v %v", hits, err)
+	}
+}
+
+// lineDiff lists the lines only in got (+) or only in want (-).
+func lineDiff(got, want string) string {
+	count := map[string]int{}
+	for _, l := range strings.Split(want, "\n") {
+		count[l]++
+	}
+	var out []string
+	for _, l := range strings.Split(got, "\n") {
+		if count[l] > 0 {
+			count[l]--
+		} else {
+			out = append(out, "+ "+l)
+		}
+	}
+	for l, n := range count {
+		for ; n > 0; n-- {
+			out = append(out, "- "+l)
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\n")
 }
