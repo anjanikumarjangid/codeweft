@@ -94,3 +94,25 @@ func TestTaskQueue(t *testing.T) {
 		t.Errorf("got %s, want %s", strings.Join(got, ", "), want)
 	}
 }
+
+func TestAMQPKeyMatch(t *testing.T) {
+	for _, c := range []struct {
+		pattern, key string
+		want         bool
+	}{
+		{"order.*", "order.created", true},
+		{"order.*", "order.created.eu", false},
+		{"order.#", "order.created.eu", true},
+		{"order.#", "order", true},
+		{"#.eu", "order.created.eu", true},
+		{"*.created", "invoice.created", true},
+		{"order.created", "order.created", true},
+		{"order.created", "order.paid", false},
+		{"", "anything", true}, // a fanout binding
+		{"#", "", true},
+	} {
+		if got := amqpKeyMatch(c.pattern, c.key); got != c.want {
+			t.Errorf("amqpKeyMatch(%q, %q) = %v, want %v", c.pattern, c.key, got, c.want)
+		}
+	}
+}

@@ -328,6 +328,7 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	defer func() { jf.stubs = savedStubs }()
 
 	jf.res.Contracts = append(jf.res.Contracts, jf.kafkaListener(n, qual)...)
+	jf.res.Contracts = append(jf.res.Contracts, jf.brokerListeners(n, qual)...)
 	fields := map[string]string{}
 	// Record components are fields with generated accessor methods.
 	if n.Type() == "record_declaration" {
@@ -398,6 +399,7 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 			sym := &jf.res.Symbols[len(jf.res.Symbols)-1]
 			sym.Arity = arity(field(m, "parameters"))
 			jf.res.Contracts = append(jf.res.Contracts, jf.kafkaListener(m, mq)...)
+			jf.res.Contracts = append(jf.res.Contracts, jf.brokerListeners(m, mq)...)
 			if temporalKind != "" && kind != "constructor" {
 				jf.res.Contracts = append(jf.res.Contracts, jf.temporalMethod(m, temporalKind, temporalPrefix, name, mname, mq)...)
 			}
@@ -555,6 +557,7 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				jf.res.Contracts = append(jf.res.Contracts, c)
 			}
 			jf.res.Contracts = append(jf.res.Contracts, jf.kafkaCall(n, locals, fields, caller)...)
+			jf.res.Contracts = append(jf.res.Contracts, jf.messagingCall(n, locals, fields, caller)...)
 			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {

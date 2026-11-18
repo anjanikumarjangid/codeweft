@@ -341,10 +341,12 @@ func (pf *pyFile) mainGuard(n *sitter.Node) {
 
 func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	locals := map[string]string{}
-	bound := pyBound(def, body, pf.src) // parameters and assigned names
-	grpcStubs := map[string]string{}    // local variables holding a gRPC stub
-	kafkaClients := map[string]string{} // local variables holding a Kafka client
-	exprs := map[string]any{}           // x = <call or attribute>: how x's type can be found
+	bound := pyBound(def, body, pf.src)   // parameters and assigned names
+	grpcStubs := map[string]string{}      // local variables holding a gRPC stub
+	kafkaClients := map[string]string{}   // local variables holding a Kafka client
+	assigned := map[string]*sitter.Node{} // local variables: the expression last assigned
+	sqsQueues := map[string]string{}      // local variables holding a boto3 SQS queue: its name
+	exprs := map[string]any{}             // x = <call or attribute>: how x's type can be found
 	for _, p := range namedChildren(field(def, "parameters")) {
 		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
 			var pname string
@@ -386,6 +388,12 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			if kind, group := pf.kafkaClient(right); kind != "" && left != nil && left.Type() == "identifier" {
 				kafkaClients[text(left, pf.src)] = kind + group
 			}
+			if left != nil && left.Type() == "identifier" && right != nil {
+				assigned[text(left, pf.src)] = right
+				if q := pf.sqsQueue(right, assigned); q != "" {
+					sqsQueues[text(left, pf.src)] = q
+				}
+			}
 			ref := pf.annotationRef(field(n, "type"))
 			if ref == "" {
 				ref = classRef(right)
@@ -424,6 +432,7 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 				pf.res.Contracts = append(pf.res.Contracts, c)
 			}
 			pf.res.Contracts = append(pf.res.Contracts, pf.kafkaCall(n, caller, kafkaClients)...)
+			pf.res.Contracts = append(pf.res.Contracts, pf.messagingCall(n, caller, assigned, sqsQueues)...)
 		}
 		return true
 	})

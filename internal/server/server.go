@@ -165,10 +165,10 @@ func newServer(set *RepoSet, labelled bool, repos []Repo, opts Options) *mcp.Ser
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_service_links",
 		Description: "How services talk to each other: HTTP routes and the client calls that reach them, " +
-			"Kafka topics and their producers and consumers, gRPC methods and their callers, Temporal workflows " +
-			"and activities and the code that starts them. Pass a route, topic, workflow or function name " +
-			"(any part of it) to narrow the list, and kind to pick one: http, grpc, kafka, temporal-workflow, " +
-			"temporal-activity. Also lists calls whose provider is not indexed.",
+			"Kafka topics, RabbitMQ queues, SQS queues and Pub/Sub topics with their producers and consumers, " +
+			"gRPC methods and their callers, Temporal workflows and activities and the code that starts them. Pass a route, topic, workflow or function name " +
+			"(any part of it) to narrow the list, and kind to pick one: http, grpc, kafka, amqp, sqs, pubsub, " +
+			"temporal-workflow, temporal-activity. Also lists calls whose provider is not indexed.",
 	}, bind(h, handlers.serviceLinks))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "find_tests",
@@ -1198,7 +1198,7 @@ func formatExternal(name string, refs []store.Ref) string {
 // LinksInput is the input of get_service_links.
 type LinksInput struct {
 	Query string `json:"query,omitempty" jsonschema:"optional: part of a route, topic, workflow, activity or function name"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional: http, grpc, kafka, temporal-workflow or temporal-activity"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional: http, grpc, kafka, amqp, sqs, pubsub, temporal-workflow or temporal-activity"`
 	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
@@ -1275,8 +1275,10 @@ func queueNote(e links.End) string {
 		return ", service " + e.Detail
 	case e.Kind == store.ContractKafka:
 		return ", consumer group " + e.Detail
+	case e.Kind == store.ContractTemporalWorkflow || e.Kind == store.ContractTemporalActivity:
+		return ", task queue " + e.Detail
 	}
-	return ", task queue " + e.Detail
+	return ""
 }
 
 func endWhere(e links.End) string {
@@ -1302,6 +1304,9 @@ func formatServiceLinks(out LinksOutput) string {
 			last = key
 		}
 		how := queueNote(l.From)
+		if l.Via != "" {
+			how += ", via " + l.Via
+		}
 		if l.Confidence != "exact" {
 			how = fmt.Sprintf(", matched as a pattern: %s", l.From.Detail)
 		}

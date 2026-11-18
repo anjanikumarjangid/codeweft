@@ -137,6 +137,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				res.Contracts = append(res.Contracts, goTemporalCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
 				res.Contracts = append(res.Contracts, goGRPCCalls(fset, d.Body, qualified, qual, aliases, enc, clientFields)...)
 				res.Contracts = append(res.Contracts, goKafkaCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
+				res.Contracts = append(res.Contracts, goMessagingCalls(fset, d.Body, qualified, aliases, consts, enc)...)
 			}
 			if c, ok := goWorkflowDef(fset, d, qualified, aliases); ok {
 				res.Contracts = append(res.Contracts, c)

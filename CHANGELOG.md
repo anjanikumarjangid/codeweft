@@ -14,6 +14,7 @@ The first release. codeweft was developed as *codewiki* until this release.
 - **Tests**: which tests reach a function, through the code and test helpers.
 - **MCP tools** over stdio: `search_code`, `get_symbol`, `get_dependency_graph`, `get_implementations`, `find_tests`, `get_file_summary`, `get_architecture_overview`, `list_apis`, `get_service_links`. Every answer is capped and says what it left out.
 - **Service links** (`get_service_links`, `codeweft links`): HTTP routes and the client calls reaching them; gRPC methods and their callers, named from `.proto` files; Kafka topics, from producers to consumers; Temporal workflows and activities, with task queues. Across Go, Java and Python.
+- **RabbitMQ, SQS and Pub/Sub links**: producers to consumers in Go, Java and Python, through RabbitMQ bindings (with topic patterns) and Pub/Sub subscriptions declared in code.
 - **Configuration values**: topics, URLs, routes and queues set in Spring `application*.yml`/`.properties` files, `.env` files or environment variables (`os.Getenv`, `os.getenv`, `System.getenv`) are resolved, so services configured with the same value link. Secret-looking keys are never read.
 - **Workspaces**: one server over several repositories (`serve --workspace`), with links across them.
 - **Self-hosted server** (`codeweft server`): clones repositories (or a GitHub organization), keeps them indexed from GitHub push webhooks and periodic syncs, and serves them over MCP Streamable HTTP with bearer tokens; `/status`, `/metrics`, `/healthz`, `/readyz`.

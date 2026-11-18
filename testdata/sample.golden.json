@@ -1,5 +1,44 @@
 [
   {
+    "file": "checkout/broker.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "announceOrder",
+    "qualified": "checkout.announceOrder",
+    "kind": "func",
+    "signature": "func announceOrder(ctx context.Context, ch *amqp.Channel, body []byte) error",
+    "doc": "announceOrder publishes a created order on the orders exchange.",
+    "start_line": 15,
+    "end_line": 17,
+    "exported": false
+  },
+  {
+    "file": "checkout/broker.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "requestShipment",
+    "qualified": "checkout.requestShipment",
+    "kind": "func",
+    "signature": "func requestShipment(ctx context.Context, client *sqs.Client, id string) error",
+    "doc": "requestShipment queues an order for shipping.",
+    "start_line": 20,
+    "end_line": 23,
+    "exported": false
+  },
+  {
+    "file": "checkout/broker.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "publishInvoice",
+    "qualified": "checkout.publishInvoice",
+    "kind": "func",
+    "signature": "func publishInvoice(ctx context.Context, client *pubsub.Client, data []byte)",
+    "doc": "publishInvoice publishes an order's invoice.",
+    "start_line": 26,
+    "end_line": 28,
+    "exported": false
+  },
+  {
     "file": "checkout/checkout.go",
     "lang": "go",
     "package": "checkout",
@@ -715,6 +754,67 @@
     "signature": "void serve(WorkerFactory factory)",
     "start_line": 58,
     "end_line": 62,
+    "exported": false
+  },
+  {
+    "file": "java/com/shop/orders/BrokerConsumers.java",
+    "lang": "java",
+    "package": "com.shop.orders",
+    "name": "BrokerConsumers",
+    "qualified": "com.shop.orders.BrokerConsumers",
+    "kind": "class",
+    "signature": "public class BrokerConsumers",
+    "doc": "Consumers of the orders service's queues and subscriptions.",
+    "start_line": 15,
+    "end_line": 32,
+    "exported": true
+  },
+  {
+    "file": "java/com/shop/orders/BrokerConsumers.java",
+    "lang": "java",
+    "package": "com.shop.orders",
+    "name": "bill",
+    "qualified": "com.shop.orders.BrokerConsumers.bill",
+    "kind": "method",
+    "signature": "@RabbitListener(bindings = @QueueBinding( value = @Queue(\"billing-orders\"), exchange = @Exchange(value = \"orders\", type = \"topic\"), key = \"order.*\")) public void bill(String order)",
+    "start_line": 16,
+    "end_line": 20,
+    "exported": true
+  },
+  {
+    "file": "java/com/shop/orders/BrokerConsumers.java",
+    "lang": "java",
+    "package": "com.shop.orders",
+    "name": "email",
+    "qualified": "com.shop.orders.BrokerConsumers.email",
+    "kind": "method",
+    "signature": "@RabbitListener(queues = \"emails\") public void email(String message)",
+    "start_line": 22,
+    "end_line": 23,
+    "exported": true
+  },
+  {
+    "file": "java/com/shop/orders/BrokerConsumers.java",
+    "lang": "java",
+    "package": "com.shop.orders",
+    "name": "ship",
+    "qualified": "com.shop.orders.BrokerConsumers.ship",
+    "kind": "method",
+    "signature": "@SqsListener(\"shipments\") public void ship(String id)",
+    "start_line": 25,
+    "end_line": 26,
+    "exported": true
+  },
+  {
+    "file": "java/com/shop/orders/BrokerConsumers.java",
+    "lang": "java",
+    "package": "com.shop.orders",
+    "name": "auditInvoices",
+    "qualified": "com.shop.orders.BrokerConsumers.auditInvoices",
+    "kind": "method",
+    "signature": "void auditInvoices(SubscriptionAdminClient admin, String project)",
+    "start_line": 28,
+    "end_line": 31,
     "exported": false
   },
   {
@@ -1795,6 +1895,54 @@
     "signature": "def place_order(customer_id: str)",
     "start_line": 35,
     "end_line": 36,
+    "exported": true
+  },
+  {
+    "file": "py/inventory/broker.py",
+    "lang": "python",
+    "package": "py.inventory.broker",
+    "name": "audit_orders",
+    "qualified": "py.inventory.broker.audit_orders",
+    "kind": "func",
+    "signature": "def audit_orders(channel)",
+    "start_line": 9,
+    "end_line": 11,
+    "exported": true
+  },
+  {
+    "file": "py/inventory/broker.py",
+    "lang": "python",
+    "package": "py.inventory.broker",
+    "name": "send_email",
+    "qualified": "py.inventory.broker.send_email",
+    "kind": "func",
+    "signature": "def send_email(channel, body)",
+    "start_line": 14,
+    "end_line": 15,
+    "exported": true
+  },
+  {
+    "file": "py/inventory/broker.py",
+    "lang": "python",
+    "package": "py.inventory.broker",
+    "name": "ship",
+    "qualified": "py.inventory.broker.ship",
+    "kind": "func",
+    "signature": "def ship(order_id)",
+    "start_line": 18,
+    "end_line": 20,
+    "exported": true
+  },
+  {
+    "file": "py/inventory/broker.py",
+    "lang": "python",
+    "package": "py.inventory.broker",
+    "name": "reserve_invoiced_stock",
+    "qualified": "py.inventory.broker.reserve_invoiced_stock",
+    "kind": "func",
+    "signature": "def reserve_invoiced_stock(project)",
+    "start_line": 23,
+    "end_line": 29,
     "exported": true
   },
   {

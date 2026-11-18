@@ -33,10 +33,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 11 Go (one of them generated), 8 Java, 7 Python, 2 proto and 3
+	// 12 Go (one of them generated), 9 Java, 8 Python, 2 proto and 3
 	// configuration files; test files are kept apart and not counted.
-	if res.Files != 31 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 31 (1), 0", res.Files, res.Generated, res.Skipped)
+	if res.Files != 34 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 34 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -80,8 +80,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 31 || syms != 178 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 31 and 178", files, syms)
+	if files != 34 || syms != 190 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 34 and 190", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -393,7 +393,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 34 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 37 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -416,7 +416,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 32 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 35 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -470,10 +470,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 31 default files + 2 Go and Java test files - 8 files under py/ (7
+	// 34 default files + 2 Go and Java test files - 9 files under py/ (8
 	// Python files and a .env; the Python test file is under py/ too).
-	if res.Files != 25 {
-		t.Fatalf("indexed %d files, want 25", res.Files)
+	if res.Files != 27 {
+		t.Fatalf("indexed %d files, want 27", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -494,8 +494,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 24 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 24 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 26 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 26 unchanged, 0 removed", res)
 	}
 }
 
@@ -990,8 +990,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 30 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 30 files, 1 skipped", res, err)
+	if err != nil || res.Files != 33 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 33 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1918,5 +1918,46 @@ app.orders.topic: prod.orders
 	env := "# comment\nexport ORDERS_TOPIC=\"orders.placed\"\nBASE_URL=http://api:8080 # trailing\nGITHUB_TOKEN=ghp_x\nEMPTY=\n"
 	if got, want := parse(".env.staging", env), "ORDERS_TOPIC=orders.placed [staging]; BASE_URL=http://api:8080 [staging]; EMPTY= [staging]"; got != want {
 		t.Errorf(".env:\n got %s\nwant %s", got, want)
+	}
+}
+
+// TestMessagingLinks links RabbitMQ, SQS and Pub/Sub producers to their
+// consumers across the fixture's languages, through RabbitMQ bindings and
+// Pub/Sub subscriptions declared in code, and a queue URL set in a .env.
+func TestMessagingLinks(t *testing.T) {
+	st := indexSample(t)
+	var ends []links.End
+	for _, kind := range []string{store.ContractAMQP, store.ContractSQS, store.ContractPubSub} {
+		rows, err := st.Contracts(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			ends = append(ends, links.End{ContractRow: r})
+		}
+	}
+	res := links.Match(ends)
+	var got []string
+	for _, l := range res.Links {
+		s := fmt.Sprintf("%s %s: %s -> %s", l.To.Kind, l.To.Name, l.From.Symbol, l.To.Symbol)
+		if l.Via != "" {
+			s += " via " + l.Via
+		}
+		got = append(got, s)
+	}
+	want := []string{
+		`amqp billing-orders: checkout.announceOrder -> com.shop.orders.BrokerConsumers.bill via exchange orders, key "order.*" bound to queue billing-orders by com.shop.orders.BrokerConsumers.bill`,
+		"amqp emails: py.inventory.broker.send_email -> com.shop.orders.BrokerConsumers.email",
+		`amqp inventory-audit: checkout.announceOrder -> py.inventory.broker.audit_orders via exchange orders, key "#" bound to queue inventory-audit by py.inventory.broker.audit_orders`,
+		"pubsub invoices-audit: checkout.publishInvoice -> com.shop.orders.BrokerConsumers.auditInvoices via subscription invoices-audit of topic invoices, created by com.shop.orders.BrokerConsumers.auditInvoices",
+		"pubsub invoices-inventory: checkout.publishInvoice -> py.inventory.broker.reserve_invoiced_stock via subscription invoices-inventory of topic invoices, created by py.inventory.broker.reserve_invoiced_stock",
+		"sqs shipments: checkout.requestShipment -> com.shop.orders.BrokerConsumers.ship",
+		"sqs shipments: py.inventory.broker.ship -> com.shop.orders.BrokerConsumers.ship",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(res.Unmatched) != 0 || len(res.Unreferring) != 0 {
+		t.Errorf("unmatched uses %+v, providers %+v", res.Unmatched, res.Unreferring)
 	}
 }

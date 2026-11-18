@@ -17,6 +17,17 @@ const (
 	ContractKafka            = "kafka"
 	ContractTemporalWorkflow = "temporal-workflow"
 	ContractTemporalActivity = "temporal-activity"
+	// ContractAMQP is RabbitMQ (AMQP 0-9-1): a use publishes to an exchange
+	// with a routing key ("exchange/key"; just "key" for the default
+	// exchange, which routes to the queue of that name), a provider
+	// consumes a queue, and bindings route one to the other.
+	ContractAMQP = "amqp"
+	// ContractSQS is Amazon SQS, by queue name.
+	ContractSQS = "sqs"
+	// ContractPubSub is Google Cloud Pub/Sub: a use publishes to a topic,
+	// a provider receives from a subscription, a binding attaches a
+	// subscription to its topic.
+	ContractPubSub = "pubsub"
 )
 
 // Contract roles. A link goes from a use to what provides it: an HTTP
@@ -25,6 +36,10 @@ const (
 const (
 	RoleProvides = "provides"
 	RoleUses     = "uses"
+	// RoleBinds routes what is published to Name (an AMQP "exchange/key
+	// pattern", a Pub/Sub topic) to what is consumed as Detail (a queue, a
+	// subscription). Symbol is the function declaring the binding.
+	RoleBinds = "binds"
 )
 
 // Contract is a point where code meets another service, or another part
@@ -790,9 +805,27 @@ func (p properties) resolve(c *ContractRow) {
 		return
 	}
 	name := p.expand(c.Name, from)
+	if c.Kind == ContractSQS {
+		name = SQSQueueName(name) // a queue URL from configuration
+	}
 	c.Detail = p.expand(c.Detail, from)
 	if name != c.Name {
 		c.Name = name
 		c.Exact = !strings.Contains(name, "${") && !strings.Contains(name, "*")
 	}
+}
+
+// SQSQueueName returns the queue name in an SQS queue URL
+// (https://sqs.us-east-1.amazonaws.com/123456789012/orders -> orders) or
+// ARN (arn:aws:sqs:us-east-1:123456789012:orders); a name is kept.
+func SQSQueueName(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "arn:") {
+		return s[strings.LastIndexByte(s, ':')+1:]
+	}
+	if strings.Contains(s, "://") {
+		s = strings.TrimSuffix(s, "/")
+		return s[strings.LastIndexByte(s, '/')+1:]
+	}
+	return s
 }

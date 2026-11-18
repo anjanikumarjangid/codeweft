@@ -1,3 +1,7 @@
+checkout.announceOrder -> github.com/rabbitmq/amqp091-go.Channel.PublishWithContext [external] line 16
+checkout.requestShipment -> github.com/aws/aws-sdk-go-v2/service/sqs.Client.SendMessage [external] line 21
+checkout.requestShipment -> github.com/aws/aws-sdk-go-v2/aws.String [external] line 21
+checkout.publishInvoice -> cloud.google.com/go/pubsub.Client.Topic [external] line 27
 checkout.Checkout -> payments.NewPaymentService [exact] line 19
 checkout.Checkout -> payments.PaymentService.ProcessPayment [exact] line 20
 checkout.Checkout -> checkout.newOrder [exact] line 24
@@ -42,6 +46,11 @@ com.shop.orders.BillingStarter.serve -> com.shop.orders.BillingActivitiesImpl [e
 com.shop.orders.BillingStarter.serve -> io.temporal.worker.WorkerFactory.newWorker [external] line 59
 com.shop.orders.BillingStarter.serve -> io.temporal.worker.Worker.registerWorkflowImplementationTypes [external] line 60
 com.shop.orders.BillingStarter.serve -> io.temporal.worker.Worker.registerActivitiesImplementations [external] line 61
+com.shop.orders.BrokerConsumers.auditInvoices -> com.google.cloud.pubsub.v1.SubscriptionAdminClient.createSubscription [external] line 29
+com.shop.orders.BrokerConsumers.auditInvoices -> com.google.pubsub.v1.SubscriptionName.of [external] line 29
+com.shop.orders.BrokerConsumers.auditInvoices -> com.google.pubsub.v1.TopicName.of [external] line 29
+com.shop.orders.BrokerConsumers.auditInvoices -> com.google.cloud.pubsub.v1.Subscriber.newBuilder [external] line 30
+com.shop.orders.BrokerConsumers.auditInvoices -> com.google.pubsub.v1.ProjectSubscriptionName.of [external] line 30
 com.shop.orders.Order.create -> com.shop.orders.Order [exact] line 10
 com.shop.orders.Order.total -> java.util.List.size [external] line 15
 com.shop.orders.OrderController.place -> com.shop.orders.OrderService.place [exact] line 21
@@ -75,6 +84,13 @@ py.inventory.api.__main__ -> fastapi.FastAPI [external] line 24
 py.inventory.api.__main__ -> fastapi.FastAPI.include_router [external] line 25
 py.inventory.api.__main__ -> uvicorn.run [external] line 26
 py.inventory.api.place_order -> requests.post [external] line 36
+py.inventory.broker.ship -> boto3.client [external] line 19
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.PublisherClient [external] line 24
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.SubscriberClient [external] line 25
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.PublisherClient.topic_path [external] line 26
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.SubscriberClient.subscription_path [external] line 27
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.SubscriberClient.create_subscription [external] line 28
+py.inventory.broker.reserve_invoiced_stock -> google.cloud.pubsub_v1.SubscriberClient.subscribe [external] line 29
 py.inventory.events.consume_orders -> kafka.KafkaConsumer [external] line 9
 py.inventory.events.StockEvents.__init__ -> confluent_kafka.Producer [external] line 18
 py.inventory.events.StockEvents.publish -> confluent_kafka.Producer.produce [external] line 21
