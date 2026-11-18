@@ -1,0 +1,10 @@
+[
+  {"name": "MCP Go SDK", "url": "https://github.com/modelcontextprotocol/go-sdk", "ref": "v1.1.0"},
+  {"name": "Go standard library", "goroot": true},
+  {"name": "Kubernetes", "url": "https://github.com/kubernetes/kubernetes", "ref": "v1.31.0"},
+  {"name": "Guava", "url": "https://github.com/google/guava", "ref": "v33.4.0"},
+  {"name": "Spring PetClinic", "url": "https://github.com/spring-projects/spring-petclinic", "ref": "500158f732419217507c7656904b8e6aa1bcc0d6"},
+  {"name": "requests", "url": "https://github.com/psf/requests", "ref": "3c7baaa05ab4aa49cc819ce3a819d260de19c157"},
+  {"name": "Django", "url": "https://github.com/django/django", "ref": "5.1.4"},
+  {"name": "microservices-demo", "url": "https://github.com/GoogleCloudPlatform/microservices-demo", "ref": "v0.10.2"}
+]

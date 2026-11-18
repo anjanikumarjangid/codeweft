@@ -161,7 +161,7 @@ Test files (`*_test.go`; `*Test.java`, `*Tests.java`, `*IT.java` and `src/test/`
 
 `--include-tests` additionally indexes test code as ordinary code, so it shows up in search and the call graph.
 
-Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. `find_tests` for the most-called functions answers in 0.24 s (`fmt.Sprintf`, reached by 8,313 tests) and 0.14 s (Guava's `Preconditions.checkNotNull`, 5,308 tests).
+Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. For the 50 most-called functions, `find_tests` answers in 7.8 ms at the median and 110 ms at the 95th percentile on the Go standard library (`fmt.Sprintf` alone is reached by over 8,000 tests), and in 2.7 / 10 ms on Guava.
 
 ### Incremental re-index
 
@@ -249,17 +249,61 @@ python3 scripts/accuracy/compare.py python /tmp/requests.db /tmp/py.txt
 
 ## Benchmarks
 
-Measured on a Linux cloud VM with 4 vCPUs (Intel Xeon @ 2.10 GHz) and 15 GB of RAM, Go 1.24.7. Times are the best of three runs; runs vary by about 10%. "Query" is a whole `codewiki query` process, start to exit. Test files are parsed and kept apart (see [Tests](#tests)); Go files are those of linux/amd64.
+Reproducible with `make bench`: [`scripts/bench`](scripts/bench) clones each repository of [`corpus.json`](scripts/bench/corpus.json) at its pinned tag or commit, and measures:
+- indexing as a separate process, from scratch each run, with CPU time and peak memory;
+- incremental re-indexing, with nothing changed and with the largest file edited;
+- every MCP tool through the real MCP server, with queries generated from the index: the 50 most-called functions, the types with the most implementations, the largest files, and words from symbol names;
+- the time from starting `codewiki serve` to its first tool answer.
 
-| Repository | Files | Test files | Symbols | Call edges | Full index | Query |
-|---|---|---|---|---|---|---|
-| [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.1.0 | 54 | 34 | 923 | 722 | 0.11 s | 8 ms |
-| Go standard library `src/` (Go 1.24.7; 196 generated files) | 2,503 | 1,402 | 38,642 | 210,690 | 6.24 s | 7 ms |
-| [Guava](https://github.com/google/guava) `fce80fd` (Java, 495k lines) | 2,156 | 1,111 | 36,632 | 54,573 | 6.04 s | 10 ms |
-| [requests](https://github.com/psf/requests) `3c7baaa` (Python) | 22 | 15 | 306 | 271 | 0.10 s | 5 ms |
-| [Spring PetClinic](https://github.com/spring-projects/spring-petclinic) `500158f` (Java, 17 endpoints) | 30 | 20 | 118 | 92 | 0.05 s | 6 ms |
+Test files are parsed and kept apart (see [Tests](#tests)); Go files are those of linux/amd64. "Files" counts files other than tests; "Call edges" counts calls resolved to the repository's own code.
 
-Re-indexing the standard library after changing one file takes 3.1 s: one file is parsed, then the call graph, the type hierarchy and the test edges are rebuilt from stored data.
+Machine: linux/amd64, 4 vCPUs (Intel(R) Xeon(R) Processor @ 2.30GHz), 16 GB RAM, go1.24.7. Full index: median of 3 runs, each from scratch (fastest and slowest in brackets).
+
+| Repository | Files | Lines | Symbols | Call edges | Full index | CPU | Peak memory | Index size | Re-index, no change | Re-index, one file | Server start |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| MCP Go SDK `v1.1.0` | 56 | 14,043 | 939 | 740 | 0.10 s (0.10-0.12) | 0.2 s | 23 MB | 2 MB | 0.04 s | 0.04 s | 12 ms |
+| Go standard library `go1.24.7` | 2,503 | 1,107,573 | 38,642 | 210,683 | 5.40 s (5.29-5.61) | 8.3 s | 362 MB | 118 MB | 2.87 s | 2.85 s | 182 ms |
+| Kubernetes `v1.31.0` | 8,188 | 1,696,593 | 91,865 | 85,601 | 9.34 s (9.30-9.85) | 14.6 s | 659 MB | 230 MB | 4.46 s | 4.48 s | 193 ms |
+| Guava `v33.4.0` | 2,219 | 497,238 | 36,924 | 54,696 | 5.76 s (5.70-5.84) | 12.9 s | 338 MB | 122 MB | 1.64 s | 1.77 s | 92 ms |
+| Spring PetClinic `500158f` | 30 | 1,899 | 118 | 92 | 0.06 s (0.05-0.11) | 0.1 s | 59 MB | 1 MB | 0.01 s | 0.01 s | 8 ms |
+| requests `3c7baaa` | 22 | 6,874 | 306 | 273 | 0.18 s (0.17-0.19) | 0.3 s | 59 MB | 1 MB | 0.02 s | 0.03 s | 9 ms |
+| Django `5.1.4` | 883 | 156,354 | 10,591 | 10,960 | 4.82 s (4.72-4.97) | 14.2 s | 232 MB | 46 MB | 0.68 s | 0.79 s | 36 ms |
+| microservices-demo `v0.10.2` | 47 | 22,123 | 2,342 | 451 | 0.13 s (0.13-0.14) | 0.2 s | 59 MB | 3 MB | 0.04 s | 0.04 s | 11 ms |
+
+Tool latency through the MCP protocol, p50 / p95 in ms:
+
+| Tool | MCP Go SDK | Go standard library | Kubernetes | Guava | Spring PetClinic | requests | Django | microservices-demo |
+|---|---|---|---|---|---|---|---|---|
+| `search_code` | 0.5 / 0.8 | 2.2 / 9.4 | 3.1 / 17 | 1.6 / 4.6 | 0.4 / 0.6 | 0.5 / 0.9 | 0.8 / 1.6 | 0.5 / 1.0 |
+| `get_symbol` | 1.2 / 1.9 | 20 / 132 | 7.6 / 37 | 34 / 148 | 1.0 / 2.3 | 1.0 / 2.1 | 5.6 / 9.8 | 1.0 / 1.1 |
+| `find_tests` | 0.7 / 1.2 | 7.8 / 110 | 1.9 / 4.0 | 2.7 / 10 | 0.5 / 1.3 | 0.5 / 1.3 | 1.6 / 3.2 | 0.4 / 0.6 |
+| `get_dependency_graph` | 0.5 / 1.1 | 1.4 / 18 | 1.0 / 9.6 | 1.2 / 13 | 0.2 / 0.8 | 0.3 / 0.7 | 0.6 / 5.9 | 0.3 / 1.4 |
+| `get_implementations` | 0.7 / 1.0 | 8.1 / 11 | 18 / 26 | 7.7 / 11 | 0.4 / 0.5 | 0.3 / 0.6 | 2.5 / 4.0 | 0.4 / 0.6 |
+| `get_file_summary` | 1.0 / 3.3 | 6.1 / 19 | 9.0 / 16 | 5.2 / 14 | 0.4 / 0.8 | 0.5 / 2.8 | 2.6 / 5.5 | 0.7 / 5.0 |
+| `get_architecture_overview` | 4.2 / 4.3 | 170 / 174 | 178 / 188 | 82 / 82 | 1.0 / 1.6 | 1.1 / 1.4 | 20 / 22 | 3.0 / 3.9 |
+| `list_apis` | 0.6 / 0.7 | 0.9 / 1.0 | 3.0 / 4.1 | 0.3 / 0.6 | 0.7 / 0.8 | 0.2 / 0.5 | 0.2 / 0.3 | 0.2 / 0.3 |
+| `get_service_links` | 0.6 / 0.7 | 1.4 / 1.5 | 246 / 258 | 0.8 / 0.9 | 0.5 / 0.7 | 0.1 / 0.2 | 0.4 / 0.5 | 5.3 / 5.9 |
+
+Response size, p50 / largest in KB (about 250 tokens per KB):
+
+| Tool | MCP Go SDK | Go standard library | Kubernetes | Guava | Spring PetClinic | requests | Django | microservices-demo |
+|---|---|---|---|---|---|---|---|---|
+| `search_code` | 1.4 / 2.3 | 1.3 / 2.1 | 2.0 / 3.5 | 2.0 / 3.4 | 1.2 / 3.0 | 1.4 / 2.9 | 1.4 / 2.5 | 1.4 / 2.2 |
+| `get_symbol` | 1.8 / 4.4 | 2.8 / 9.3 | 4.2 / 6.8 | 6.6 / 23.3 | 1.5 / 7.0 | 2.2 / 8.9 | 3.9 / 9.3 | 1.0 / 3.3 |
+| `find_tests` | 0.9 / 3.4 | 2.9 / 4.8 | 4.5 / 6.7 | 4.8 / 8.0 | 0.3 / 3.7 | 0.6 / 4.0 | 4.0 / 6.0 | 0.2 / 0.6 |
+| `get_dependency_graph` | 0.4 / 2.5 | 1.0 / 33.2 | 0.5 / 44.5 | 1.7 / 59.9 | 0.4 / 3.3 | 0.3 / 1.9 | 0.7 / 24.2 | 0.3 / 4.3 |
+| `get_implementations` | 0.3 / 1.7 | 3.8 / 4.9 | 6.1 / 10.5 | 3.4 / 9.6 | 0.5 / 1.2 | 0.2 / 1.7 | 2.4 / 4.9 | 0.3 / 0.4 |
+| `get_file_summary` | 1.9 / 11.8 | 17.9 / 63.0 | 27.0 / 184.0 | 21.0 / 57.2 | 1.1 / 3.1 | 1.5 / 8.9 | 9.9 / 20.5 | 2.5 / 19.2 |
+| `get_architecture_overview` | 5.5 / 5.5 | 6.4 / 6.4 | 7.8 / 7.8 | 9.5 / 9.5 | 2.9 / 2.9 | 1.4 / 1.4 | 5.9 / 5.9 | 4.0 / 4.0 |
+| `list_apis` | 0.7 / 0.7 | 1.9 / 1.9 | 10.0 / 10.0 | 0.0 / 0.0 | 3.5 / 3.5 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
+| `get_service_links` | 0.1 / 0.1 | 0.1 / 0.1 | 24.7 / 24.7 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 5.4 / 5.4 |
+
+What the numbers say:
+- **Indexing** takes about 1 s per 180k lines of Go and 100k lines of Java. Django's Python is the slowest per line (4.8 s for 156k lines) because tree-sitter does all of the parsing.
+- **Memory** peaks while indexing (659 MB for Kubernetes). A running server only holds the SQLite index open.
+- **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (about 180 ms on the largest repositories). `get_service_links` takes 250 ms on Kubernetes, which has many HTTP client calls to match.
+- **Re-indexing** one changed file costs about the same as a run with no change (2.9 s on the standard library, 4.5 s on Kubernetes). Only the changed file is parsed, but the call graph, type hierarchy and test edges are rebuilt for the whole repository.
+- **Response sizes** stay at a few KB at the median. The largest are `get_file_summary` of a file with hundreds of declarations (184 KB for Kubernetes' largest file) and `get_dependency_graph` of the most-called functions (up to 60 KB). Both are on the [roadmap](#roadmap) to be capped like the other tools.
 
 ## Development
 
@@ -286,6 +330,7 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.5:** Java and Python via tree-sitter
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
 - [x] **v0.7 (in progress):** workspaces of several repositories, `get_service_links` for HTTP routes, gRPC methods, Kafka topics, and Temporal workflows and activities; `.proto` files
+- [ ] Next: cap `get_file_summary` and `get_dependency_graph` responses on very large files and hubs; rebuild the call graph incrementally after an edit
 - [ ] Later: TypeScript and Rust, optional semantic search with local embeddings
 
 ## License
