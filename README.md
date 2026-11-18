@@ -335,4 +335,4 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE). Commits before the switch were published under the MIT License.
