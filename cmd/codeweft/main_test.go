@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 func writeFile(t *testing.T, path, src string) {
@@ -114,7 +114,7 @@ func TestResolveServeFindsRepositoryRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.root != repo || cfg.db != filepath.Join(repo, ".codewiki", "index.db") || cfg.exists {
+	if cfg.root != repo || cfg.db != filepath.Join(repo, ".codeweft", "index.db") || cfg.exists {
 		t.Errorf("from a subdirectory: got %+v; want root %s with no index yet", cfg, repo)
 	}
 
@@ -158,9 +158,9 @@ func TestServeBuildsIndexOnFirstStart(t *testing.T) {
 	if !indexed(t, cfg.db, "sub/deep.B") {
 		t.Error("first build did not index the repository")
 	}
-	data, err := os.ReadFile(filepath.Join(repo, ".codewiki", ".gitignore"))
+	data, err := os.ReadFile(filepath.Join(repo, ".codeweft", ".gitignore"))
 	if err != nil || !strings.Contains(string(data), "*") {
-		t.Errorf(".codewiki/.gitignore = %q, %v; want it to ignore everything", data, err)
+		t.Errorf(".codeweft/.gitignore = %q, %v; want it to ignore everything", data, err)
 	}
 }
 

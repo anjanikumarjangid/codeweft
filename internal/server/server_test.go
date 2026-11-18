@@ -11,13 +11,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anjanikumarjangid/codewiki/internal/indexer"
-	"github.com/anjanikumarjangid/codewiki/internal/server"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/indexer"
+	"github.com/anjanikumarjangid/codeweft/internal/server"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // connect indexes the sample repo and returns an MCP client session talking
-// to a codewiki server over an in-memory transport, the same protocol path a
+// to a codeweft server over an in-memory transport, the same protocol path a
 // real client like Claude Code uses over stdio.
 func connect(t *testing.T) *mcp.ClientSession {
 	t.Helper()

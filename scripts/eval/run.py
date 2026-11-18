@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Does codewiki help a coding agent? A small, repeatable eval.
+"""Does codeweft help a coding agent? A small, repeatable eval.
 
 Questions about the Go standard library are generated from the go/types
-ground truth written by scripts/accuracy (never from codewiki's own
+ground truth written by scripts/accuracy (never from codeweft's own
 answers), so every answer can be scored as a set:
 
   callers     "Which functions and methods call X directly?"
   implements  "Which types in package P implement interface I?"
 
 Each question is put to Claude Code (`claude -p`) twice: with only its
-built-in read and search tools, and with those plus codewiki's MCP tools.
+built-in read and search tools, and with those plus codeweft's MCP tools.
 Every run records the answer's precision, recall and F1 against the truth,
 and the tokens, turns, time and cost it took.
 
@@ -17,8 +17,8 @@ Running it spends the account's Claude usage; --dry-run prints the
 questions and expected answers without calling Claude.
 
 Usage:
-  python3 run.py --truth DIR --index STD.db --codewiki BIN --dry-run
-  python3 run.py --truth DIR --index STD.db --codewiki BIN --questions 6 --repeats 2 --out results.jsonl
+  python3 run.py --truth DIR --index STD.db --codeweft BIN --dry-run
+  python3 run.py --truth DIR --index STD.db --codeweft BIN --questions 6 --repeats 2 --out results.jsonl
   python3 run.py --report results.jsonl
 """
 import argparse
@@ -111,13 +111,13 @@ def run_claude(q, src, condition, binary, index, model, budget):
     if model:
         cmd += ["--model", model]
     cfg = None
-    if condition == "codewiki":
+    if condition == "codeweft":
         cfg = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        json.dump({"mcpServers": {"codewiki": {"command": binary,
+        json.dump({"mcpServers": {"codeweft": {"command": binary,
                                                "args": ["serve", "--db", index, "--watch=false"]}}}, cfg)
         cfg.close()
         cmd += ["--mcp-config", cfg.name]
-        tools.append("mcp__codewiki")
+        tools.append("mcp__codeweft")
     cmd += ["--allowedTools", ",".join(tools)]
     start = time.time()
     try:
@@ -153,7 +153,7 @@ def report(path):
     print(f"{len(rows)} runs\n")
     print("| Condition | Runs | Errors | Mean F1 | Mean recall | Mean precision | Median input tokens | Median turns | Median seconds | Total cost |")
     print("|---|---|---|---|---|---|---|---|---|---|")
-    for cond in ("baseline", "codewiki"):
+    for cond in ("baseline", "codeweft"):
         rs = by.get(cond, [])
         ok = [r for r in rs if "error" not in r]
         if not ok:
@@ -177,8 +177,8 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--truth", help="directory written by scripts/accuracy (calls.txt, implements.txt)")
-    ap.add_argument("--index", help="codewiki index of the standard library")
-    ap.add_argument("--codewiki", help="codewiki binary")
+    ap.add_argument("--index", help="codeweft index of the standard library")
+    ap.add_argument("--codeweft", help="codeweft binary")
     ap.add_argument("--src", default=None, help="standard library source (default: $(go env GOROOT)/src)")
     ap.add_argument("--questions", type=int, default=6)
     ap.add_argument("--repeats", type=int, default=2)
@@ -201,14 +201,14 @@ def main():
         for q in qs:
             print(f"{q['id']}  ({len(q['expected'])} expected)\n  {q['prompt']}\n  expected: {', '.join(q['expected'])}\n")
         return
-    if not (a.index and a.codewiki):
-        sys.exit("--index and --codewiki are required")
+    if not (a.index and a.codeweft):
+        sys.exit("--index and --codeweft are required")
     src = a.src or os.path.join(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip(), "src")
     with open(a.out, "a") as out:
         for rep in range(a.repeats):
             for q in qs:
-                for cond in ("baseline", "codewiki"):
-                    r = run_claude(q, src, cond, os.path.abspath(a.codewiki), os.path.abspath(a.index), a.model, a.budget)
+                for cond in ("baseline", "codeweft"):
+                    r = run_claude(q, src, cond, os.path.abspath(a.codeweft), os.path.abspath(a.index), a.model, a.budget)
                     row = {"question": q["id"], "condition": cond, "repeat": rep, "expected": q["expected"], **r}
                     out.write(json.dumps(row) + "\n")
                     out.flush()

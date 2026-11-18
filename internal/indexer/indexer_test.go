@@ -15,9 +15,9 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/anjanikumarjangid/codewiki/internal/indexer"
-	"github.com/anjanikumarjangid/codewiki/internal/links"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/indexer"
+	"github.com/anjanikumarjangid/codeweft/internal/links"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")

@@ -1,8 +1,10 @@
-# codewiki
+# codeweft
 
 **A local MCP server that gives AI coding agents structured, deterministic context about a codebase.**
 
-When an agent like Claude Code needs to know *where rate limiting is implemented*, *what `ProcessPayment` looks like* or *what breaks if this function changes*, it usually greps, opens a dozen files and guesses. `codewiki` parses the code once into an index of functions, methods, types and the calls between them, then answers those questions directly over the [Model Context Protocol](https://modelcontextprotocol.io/).
+*Formerly codewiki.* In weaving, the weft is the thread that runs across all the others and binds them into one cloth; codeweft binds functions, files, repositories and the services calling each other into one map an agent can read.
+
+When an agent like Claude Code needs to know *where rate limiting is implemented*, *what `ProcessPayment` looks like* or *what breaks if this function changes*, it usually greps, opens a dozen files and guesses. `codeweft` parses the code once into an index of functions, methods, types and the calls between them, then answers those questions directly over the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 - **Deterministic:** answers come from the parsed source, not from a model's guess.
 - **Local:** one binary and one SQLite file. No cloud service, no API keys, no embeddings.
@@ -28,23 +30,23 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 
 ### Download
 
-Each [release](https://github.com/anjanikumarjangid/codewiki/releases) has archives for Linux (amd64, arm64; statically linked, so they run on any distribution), macOS (Apple silicon, Intel) and Windows (amd64), and a `checksums.txt` with their SHA-256 sums. Unpack one and put `codewiki` on your `PATH`. macOS may refuse to run a binary downloaded with a browser until you remove the quarantine flag: `xattr -d com.apple.quarantine codewiki`.
+Each [release](https://github.com/anjanikumarjangid/codeweft/releases) has archives for Linux (amd64, arm64; statically linked, so they run on any distribution), macOS (Apple silicon, Intel) and Windows (amd64), and a `checksums.txt` with their SHA-256 sums. Unpack one and put `codeweft` on your `PATH`. macOS may refuse to run a binary downloaded with a browser until you remove the quarantine flag: `xattr -d com.apple.quarantine codeweft`.
 
 ### Build from source
 
 Requires Go 1.24+ and a C compiler (SQLite and tree-sitter are C libraries, used through cgo).
 
 ```bash
-git clone https://github.com/anjanikumarjangid/codewiki && cd codewiki
+git clone https://github.com/anjanikumarjangid/codeweft && cd codeweft
 make build
 
-# index a repository (writes PATH/.codewiki/index.db)
-./bin/codewiki index /path/to/repo
+# index a repository (writes PATH/.codeweft/index.db)
+./bin/codeweft index /path/to/repo
 
 # try it from the terminal
 cd /path/to/repo
-/path/to/codewiki/bin/codewiki query rate limiter
-/path/to/codewiki/bin/codewiki symbol TokenBucket.Allow
+/path/to/codeweft/bin/codeweft query rate limiter
+/path/to/codeweft/bin/codeweft symbol TokenBucket.Allow
 ```
 
 ### Use with Claude Code
@@ -52,12 +54,12 @@ cd /path/to/repo
 From inside the repository you want to work on:
 
 ```bash
-claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve
+claude mcp add codeweft -- /abs/path/to/codeweft/bin/codeweft serve
 ```
 
-No index needs to exist beforehand. `serve` finds the repository root (the nearest directory above the working directory with a `.codewiki/` index or `.git`) and builds the index in the background on first start. Until the first build is done, tools reply that the index is still being built instead of returning empty results. After that it catches up on edits made while it was not running and keeps the index current as files change; pass `--watch=false` to serve the index as it is. The index is written to `.codewiki/`, which gets its own `.gitignore` so it never shows up in `git status`.
+No index needs to exist beforehand. `serve` finds the repository root (the nearest directory above the working directory with a `.codeweft/` index or `.git`) and builds the index in the background on first start. Until the first build is done, tools reply that the index is still being built instead of returning empty results. After that it catches up on edits made while it was not running and keeps the index current as files change; pass `--watch=false` to serve the index as it is. The index is written to `.codeweft/`, which gets its own `.gitignore` so it never shows up in `git status`.
 
-For a client that does not start servers inside the project, pass `--root /abs/path/to/repo` (or `--db FILE` for an index stored elsewhere). Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
+For a client that does not start servers inside the project, pass `--root /abs/path/to/repo` (or `--db FILE` for an index stored elsewhere). Then ask something like: *"Using codeweft, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
 
 ### Several repositories
 
@@ -68,28 +70,28 @@ Services that call each other usually live in separate repositories. A workspace
 ```
 
 ```bash
-claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve --workspace /abs/path/to/workspace.json
+claude mcp add codeweft -- /abs/path/to/codeweft/bin/codeweft serve --workspace /abs/path/to/workspace.json
 ```
 
-Each repository keeps its own index at `PATH/.codewiki/index.db`, built and watched as with one repository. Every tool then answers across all of them: results are labelled with their repository (`[orders] main.getOrder`), a name found in two repositories lists both, and every tool takes an optional `repo` argument to look in one. `get_service_links` links a client call in one repository to the route serving it in another. A repository's name defaults to its directory name. `codewiki links --workspace FILE` prints the same links from the terminal.
+Each repository keeps its own index at `PATH/.codeweft/index.db`, built and watched as with one repository. Every tool then answers across all of them: results are labelled with their repository (`[orders] main.getOrder`), a name found in two repositories lists both, and every tool takes an optional `repo` argument to look in one. `get_service_links` links a client call in one repository to the route serving it in another. A repository's name defaults to its directory name. `codeweft links --workspace FILE` prints the same links from the terminal.
 
 ### CLI
 
 ```
-codewiki index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
-codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
-codewiki symbol [--db FILE] [--json] NAME
-codewiki reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
-codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
-codewiki impl   [--db FILE] [--up] [--depth N] [--json] NAME
-codewiki tests  [--db FILE] [--depth N] [--json] NAME
-codewiki file   [--db FILE] [--json] PATH
-codewiki links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
-codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
-codewiki overview [--db FILE] [--json]
-codewiki watch  [--db FILE] [--interval 2s] [PATH]
-codewiki serve  [--db FILE] [--root PATH] [--watch=false]
-codewiki serve  --workspace FILE [--watch=false]
+codeweft index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
+codeweft query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
+codeweft symbol [--db FILE] [--json] NAME
+codeweft reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
+codeweft deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+codeweft impl   [--db FILE] [--up] [--depth N] [--json] NAME
+codeweft tests  [--db FILE] [--depth N] [--json] NAME
+codeweft file   [--db FILE] [--json] PATH
+codeweft links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
+codeweft apis   [--db FILE] [--method M] [--json] [ROUTE]
+codeweft overview [--db FILE] [--json]
+codeweft watch  [--db FILE] [--interval 2s] [PATH]
+codeweft serve  [--db FILE] [--root PATH] [--watch=false]
+codeweft serve  --workspace FILE [--watch=false]
 ```
 
 `reindex`, `watch` and `serve` reuse the `--include-tests`, `--skip-generated`, `--platform` and `--exclude` settings the index was built with; flags passed to `reindex` override them.
@@ -106,7 +108,7 @@ Python ▶ tree-sitter┘
                                         │
                                   call resolver ──▶ edges
                                         │
-Claude Code ◀── MCP over stdio ◀── codewiki serve
+Claude Code ◀── MCP over stdio ◀── codeweft serve
 ```
 
 1. **Index:** walks the repo, skips `vendor/`, `testdata/` and hidden directories, and parses files in parallel: Go with the standard library `go/ast`, Java and Python with [tree-sitter](https://tree-sitter.github.io/). Every language produces the same model, so search and the call graph work identically across them. Generated files (`// Code generated ... DO NOT EDIT.`) are indexed and flagged: search ranks them after hand-written code, and tools label them; `--skip-generated` leaves them out. Go files are selected for one build configuration, as the `go` command and gopls do (see below).
@@ -140,7 +142,7 @@ Anything ambiguous is dropped rather than guessed: a receiver of a known type th
 
 ### Build configurations (Go)
 
-Go code often declares a name once per platform or build tag (`conn_linux.go`, `conn_windows.go`, a stub behind `//go:build omitfeature`). Indexing all of them at once would merge declarations that never coexist, so Go files are selected for one build configuration with `go/build`'s own matching: by default the GOOS/GOARCH codewiki runs on; `--platform windows/amd64` picks another; `--platform all` indexes every file. The choice is stored with the index, so re-indexing and watching keep it.
+Go code often declares a name once per platform or build tag (`conn_linux.go`, `conn_windows.go`, a stub behind `//go:build omitfeature`). Indexing all of them at once would merge declarations that never coexist, so Go files are selected for one build configuration with `go/build`'s own matching: by default the GOOS/GOARCH codeweft runs on; `--platform windows/amd64` picks another; `--platform all` indexes every file. The choice is stored with the index, so re-indexing and watching keep it.
 
 ### Type hierarchy
 
@@ -165,9 +167,9 @@ Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. For th
 
 ### Incremental re-index
 
-`codewiki reindex` hashes every file, re-parses only those whose content changed and removes deleted ones. Most edits change only function bodies, and each file also records a *shape*: a hash of what call resolution reads from it (its declarations and their signatures, imports, fields, variables and supertypes), not its bodies, docs or line numbers. When every changed file keeps its shape and no file was added or removed, no call elsewhere can resolve differently. The changed files are then updated in place, keeping their symbols' ids, so the edges pointing at them stay valid, and only their own calls are resolved again. Any other edit rebuilds the call graph, the test edges and the type hierarchy from all stored call sites, so edges *into* a changed file stay correct even though the files calling it were not re-parsed; only the edges that differ are written. A test checks, edit by edit, that both paths give exactly the index a full build gives.
+`codeweft reindex` hashes every file, re-parses only those whose content changed and removes deleted ones. Most edits change only function bodies, and each file also records a *shape*: a hash of what call resolution reads from it (its declarations and their signatures, imports, fields, variables and supertypes), not its bodies, docs or line numbers. When every changed file keeps its shape and no file was added or removed, no call elsewhere can resolve differently. The changed files are then updated in place, keeping their symbols' ids, so the edges pointing at them stay valid, and only their own calls are resolved again. Any other edit rebuilds the call graph, the test edges and the type hierarchy from all stored call sites, so edges *into* a changed file stay correct even though the files calling it were not re-parsed; only the edges that differ are written. A test checks, edit by edit, that both paths give exactly the index a full build gives.
 
-`codewiki watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
+`codeweft watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
 
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
 
@@ -222,12 +224,12 @@ The call graph is checked against a compiler or a static analyser for each langu
 
 - Precision counts edges between two symbols of the repository; recall counts the distinct caller-to-callee pairs the reference finds. Edges matched only by method name are part of both: in Go they are 81 of 44,110 (85% right), in Java 61 of 14,218 (66% right).
 - Calls that leave the repository are external references: in Guava 82% of the calls into the JDK and other libraries are found as such (`java.util.List.get`). In the standard library, 299 of the 375 calls into `vendor/` (dependencies, not indexed) are.
-- What remains in Go: calls through values the syntax cannot follow (function values, a variable narrowed by an earlier `if`), and code in the 2 files over the size limit. In Java: receivers that come out of generic library types (`map.get(k).foo()`), lambda parameters without stated types, and overloads with the same number of arguments in different classes. Python has no type checker that decides every call, so jedi is a reference to compare with, not ground truth; the four disagreements on requests are listed by `compare.py python` (two calls through attributes set at runtime on another class's objects, which jedi follows, and two where codewiki's answer is the more specific one).
+- What remains in Go: calls through values the syntax cannot follow (function values, a variable narrowed by an earlier `if`), and code in the 2 files over the size limit. In Java: receivers that come out of generic library types (`map.get(k).foo()`), lambda parameters without stated types, and overloads with the same number of arguments in different classes. Python has no type checker that decides every call, so jedi is a reference to compare with, not ground truth; the four disagreements on requests are listed by `compare.py python` (two calls through attributes set at runtime on another class's objects, which jedi follows, and two where codeweft's answer is the more specific one).
 
 To reproduce (Go):
 
 ```bash
-make build && ./bin/codewiki index --db /tmp/std.db "$(go env GOROOT)/src"
+make build && ./bin/codeweft index --db /tmp/std.db "$(go env GOROOT)/src"
 cd scripts/accuracy && mkdir -p /tmp/truth
 go run ./calls /tmp/truth && go run ./implements /tmp/truth
 python3 compare.py calls /tmp/std.db /tmp/truth
@@ -237,11 +239,11 @@ python3 compare.py implements /tmp/std.db /tmp/truth
 Java (needs a JDK) and Python (needs jedi):
 
 ```bash
-./bin/codewiki index --db /tmp/guava.db guava/guava/src
+./bin/codeweft index --db /tmp/guava.db guava/guava/src
 javac -d /tmp/ct scripts/accuracy/java/CallTruth.java && java -cp /tmp/ct CallTruth guava/guava/src > /tmp/java.txt
 python3 scripts/accuracy/compare.py java /tmp/guava.db /tmp/java.txt
 
-./bin/codewiki index --db /tmp/requests.db requests
+./bin/codeweft index --db /tmp/requests.db requests
 python3 -m venv /tmp/jedi && /tmp/jedi/bin/pip install jedi==0.19.2
 /tmp/jedi/bin/python scripts/accuracy/python/truth.py requests > /tmp/py.txt
 python3 scripts/accuracy/compare.py python /tmp/requests.db /tmp/py.txt
@@ -253,7 +255,7 @@ Reproducible with `make bench`: [`scripts/bench`](scripts/bench) clones each rep
 - indexing as a separate process, from scratch each run, with CPU time and peak memory;
 - incremental re-indexing, with nothing changed and with the largest file edited;
 - every MCP tool through the real MCP server, with queries generated from the index: the 50 most-called functions, the types with the most implementations, the largest files, and words from symbol names;
-- the time from starting `codewiki serve` to its first tool answer.
+- the time from starting `codeweft serve` to its first tool answer.
 
 Test files are parsed and kept apart (see [Tests](#tests)); Go files are those of linux/amd64. "Files" counts files other than tests; "Call edges" counts calls resolved to the repository's own code.
 
@@ -316,7 +318,7 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 
 `scripts/accuracy` is a separate Go module, so its tools are not part of the build; see [Accuracy](#accuracy).
 
-`scripts/eval/run.py` asks Claude Code the same questions about the Go standard library with and without codewiki (which functions call X, which types implement I), generated from the `go/types` ground truth, and scores each answer's precision and recall along with the tokens, turns and time it took. Running it spends Claude usage; `--dry-run` shows the questions without calling Claude. No results are published here yet.
+`scripts/eval/run.py` asks Claude Code the same questions about the Go standard library with and without codeweft (which functions call X, which types implement I), generated from the `go/types` ground truth, and scores each answer's precision and recall along with the tokens, turns and time it took. Running it spends Claude usage; `--dry-run` shows the questions without calling Claude. No results are published here yet.
 
 - `internal/indexer`: golden-file tests over a fixture repo in `testdata/sample`, for the extracted symbols, the full call graph and the type hierarchy. After an intended change, run `go test -tags sqlite_fts5 ./internal/indexer -update` and review the diff.
 - `internal/server`: drives the real MCP protocol through an in-memory client session.

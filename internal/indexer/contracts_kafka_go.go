@@ -5,7 +5,7 @@ import (
 	"go/token"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Kafka, Go clients. A topic is provided by the code consuming it and used

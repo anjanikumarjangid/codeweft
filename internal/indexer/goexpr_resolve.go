@@ -7,7 +7,7 @@ import (
 	"go/token"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // goType is a type found for an expression: either a type expression

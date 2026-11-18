@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // End is one side of a link: a contract in a repository.

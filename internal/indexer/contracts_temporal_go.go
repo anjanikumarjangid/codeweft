@@ -5,7 +5,7 @@ import (
 	"go/token"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Temporal, Go SDK (go.temporal.io/sdk).

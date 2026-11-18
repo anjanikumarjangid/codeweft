@@ -1,7 +1,7 @@
-"""Prints the call edges jedi infers in a Python source tree, in codewiki's
+"""Prints the call edges jedi infers in a Python source tree, in codeweft's
 naming: "caller callee". Python has no type checker that decides every call,
 so this is a reference to compare with, not ground truth: disagreements are
-worth reading both ways. Test files are left out, as codewiki keeps them
+worth reading both ways. Test files are left out, as codeweft keeps them
 apart from the code.
 
 Usage (jedi 0.19.2):

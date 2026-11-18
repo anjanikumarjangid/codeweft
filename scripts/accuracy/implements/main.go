@@ -1,5 +1,5 @@
 // Command implements type-checks the Go standard library and writes the
-// ground truth for codewiki's Go type hierarchy:
+// ground truth for codeweft's Go type hierarchy:
 //
 //	OUTDIR/implements.txt  every pair "T I" where the named concrete type T
 //	                       (or *T) implements the interface I
@@ -8,7 +8,7 @@
 //
 // Both types are declared in the standard library and neither is generic;
 // empty interfaces and constraint-only interfaces are left out. Names
-// follow codewiki's qualification.
+// follow codeweft's qualification.
 //
 // Usage: go run ./implements OUTDIR
 package main

@@ -5,7 +5,7 @@ import (
 
 	sitter "github.com/smacker/go-tree-sitter"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Temporal, Java SDK (io.temporal).

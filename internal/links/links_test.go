@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 func TestNormalizePath(t *testing.T) {

@@ -1,6 +1,6 @@
 name: release
 
-# Pushing a tag such as v0.7.0 builds codewiki for Linux, macOS and Windows
+# Pushing a tag such as v0.7.0 builds codeweft for Linux, macOS and Windows
 # and publishes the archives, with checksums, as a GitHub release.
 on:
   push:
@@ -40,25 +40,25 @@ jobs:
           CC: ${{ matrix.cc }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          ldflags="-s -w -X github.com/anjanikumarjangid/codewiki/internal/server.Version=${version}"
+          ldflags="-s -w -X github.com/anjanikumarjangid/codeweft/internal/server.Version=${version}"
           tags="sqlite_fts5 sqlite_omit_load_extension"
           if [ "${{ matrix.static }}" = "true" ]; then
             ldflags="${ldflags} -linkmode external -extldflags -static"
             tags="${tags} netgo osusergo"
           fi
           mkdir -p out
-          go build -trimpath -tags "${tags}" -ldflags "${ldflags}" -o "out/codewiki${{ matrix.ext }}" ./cmd/codewiki
+          go build -trimpath -tags "${tags}" -ldflags "${ldflags}" -o "out/codeweft${{ matrix.ext }}" ./cmd/codeweft
       - name: Smoke test
         if: matrix.smoke
         run: |
-          ./out/codewiki version | grep -q "${GITHUB_REF_NAME#v}"
-          ./out/codewiki index --db /tmp/sample.db testdata/sample
-          ./out/codewiki query --db /tmp/sample.db rate limiter | grep -q TokenBucket
+          ./out/codeweft version | grep -q "${GITHUB_REF_NAME#v}"
+          ./out/codeweft index --db /tmp/sample.db testdata/sample
+          ./out/codeweft query --db /tmp/sample.db rate limiter | grep -q TokenBucket
       - name: Package
         run: |
-          name="codewiki_${GITHUB_REF_NAME#v}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          name="codeweft_${GITHUB_REF_NAME#v}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "dist/${name}"
-          cp "out/codewiki${{ matrix.ext }}" LICENSE README.md "dist/${name}/"
+          cp "out/codeweft${{ matrix.ext }}" LICENSE NOTICE README.md "dist/${name}/"
           cd dist
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -qr "${name}.zip" "${name}"

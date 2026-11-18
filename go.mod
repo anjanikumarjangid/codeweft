@@ -1,4 +1,4 @@
-module github.com/anjanikumarjangid/codewiki
+module github.com/anjanikumarjangid/codeweft
 
 go 1.24
 

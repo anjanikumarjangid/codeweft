@@ -21,7 +21,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // FileResult is everything extracted from one source file.
@@ -105,7 +105,7 @@ type Options struct {
 	// Platform selects the Go files of one build configuration, as the go
 	// command and gopls do: "linux/amd64" keeps the files whose build
 	// constraints (//go:build lines, _GOOS_GOARCH file names) match it,
-	// "all" keeps every file, and "" means the platform codewiki runs on.
+	// "all" keeps every file, and "" means the platform codeweft runs on.
 	Platform string `json:"platform,omitempty"`
 }
 
@@ -145,7 +145,7 @@ type Result struct {
 }
 
 var defaultSkipDirs = map[string]bool{
-	".git": true, ".codewiki": true, "vendor": true, "node_modules": true,
+	".git": true, ".codeweft": true, "vendor": true, "node_modules": true,
 	"testdata": true, "third_party": true, "__pycache__": true, "venv": true,
 }
 

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // goStringConsts collects a file's package-level string constants and

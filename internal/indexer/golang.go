@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // generatedHeader is the convention from https://go.dev/s/generatedcode.

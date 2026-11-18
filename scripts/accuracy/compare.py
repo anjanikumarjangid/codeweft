@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare a codewiki index of the Go standard library with go/types.
+"""Compare a codeweft index of the Go standard library with go/types.
 
 Usage:
   python3 compare.py calls      INDEX.db TRUTHDIR   (after: go run ./calls TRUTHDIR)
@@ -8,7 +8,7 @@ Usage:
   python3 compare.py python     INDEX.db TRUTH.txt  (after: python truth.py ROOT > TRUTH.txt)
 
 Only edges inside the type-checked universe are scored: go/types sees the
-files of one GOOS/GOARCH, while codewiki indexes every platform's files.
+files of one GOOS/GOARCH, while codeweft indexes every platform's files.
 Uses only the Python standard library.
 """
 import collections
@@ -51,7 +51,7 @@ def calls(db, truthdir):
     wrong = [k for k in scored if k not in truth]
     wrong_os = [k for k in wrong if k.split()[0] in per_os]
     indexed = {e for e in truth if e.split()[0] in symbols and e.split()[1] in symbols}
-    print(f"truth: {len(truth)} distinct call edges; codewiki edges scored: {len(scored)}")
+    print(f"truth: {len(truth)} distinct call edges; codeweft edges scored: {len(scored)}")
     print("precision:", pct(len(correct), len(scored)))
     for conf in ("exact", "name"):
         s = {k for k, v in scored.items() if v == conf}
@@ -100,7 +100,7 @@ def java(db, truth_file):
     truth = [(a, b) for a, b in truth if b not in synthetic]
     kinds = dict(db.execute("SELECT qualified, kind FROM symbols"))
 
-    def norm(callee):  # new X() of a class without a constructor: codewiki links X
+    def norm(callee):  # new X() of a class without a constructor: codeweft links X
         if callee not in kinds:
             owner, _, name = callee.rpartition(".")
             if owner.rsplit(".", 1)[-1] == name and kinds.get(owner) in ("class", "enum", "record"):
@@ -140,13 +140,13 @@ def python(db, truth_file):
     scored = {k: v for k, v in ours.items() if k[0] in callers}
     agree = {k for k in scored if k in internal}
     print(f"jedi: {len(internal)} internal distinct call edges")
-    print("codewiki edges jedi also infers:", pct(len(agree), len(scored)))
+    print("codeweft edges jedi also infers:", pct(len(agree), len(scored)))
     for conf in ("exact", "name"):
         s = {k for k, v in scored.items() if v == conf}
         print(f"  {conf} edges:", pct(len(s & agree), len(s)))
-    print("jedi edges codewiki also finds:", pct(len(agree), len(internal)))
+    print("jedi edges codeweft also finds:", pct(len(agree), len(internal)))
     for a, b in sorted(set(scored) - agree):
-        print(f"  only codewiki: {a} -> {b} [{scored[(a, b)]}]")
+        print(f"  only codeweft: {a} -> {b} [{scored[(a, b)]}]")
     for a, b in sorted(internal - agree):
         print(f"  only jedi: {a} -> {b}")
 

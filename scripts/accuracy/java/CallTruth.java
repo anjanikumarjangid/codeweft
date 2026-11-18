@@ -9,9 +9,9 @@ import java.util.stream.*;
 /**
  * Compiles a Java source tree with javac (as far as its dependencies allow:
  * missing annotation libraries do not stop method calls from resolving) and
- * prints every resolved call as "caller callee", in codewiki's naming:
+ * prints every resolved call as "caller callee", in codeweft's naming:
  * package, classes, then the method, or the class name again for a
- * constructor. Calls inside anonymous classes are left out, as codewiki
+ * constructor. Calls inside anonymous classes are left out, as codeweft
  * does; creating an anonymous subclass of a class calls that class's
  * constructor.
  *

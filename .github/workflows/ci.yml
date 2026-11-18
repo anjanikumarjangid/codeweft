@@ -18,5 +18,5 @@ jobs:
       - run: make build
       - name: Smoke test (index and query this repo)
         run: |
-          ./bin/codewiki index .
-          ./bin/codewiki query search code | grep -q "internal/"
+          ./bin/codeweft index .
+          ./bin/codeweft query search code | grep -q "internal/"

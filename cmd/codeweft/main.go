@@ -1,4 +1,4 @@
-// Command codewiki indexes a codebase and serves it to AI coding agents over MCP.
+// Command codeweft indexes a codebase and serves it to AI coding agents over MCP.
 package main
 
 import (
@@ -16,46 +16,46 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anjanikumarjangid/codewiki/internal/indexer"
-	"github.com/anjanikumarjangid/codewiki/internal/links"
-	"github.com/anjanikumarjangid/codewiki/internal/server"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
-	"github.com/anjanikumarjangid/codewiki/internal/workspace"
+	"github.com/anjanikumarjangid/codeweft/internal/indexer"
+	"github.com/anjanikumarjangid/codeweft/internal/links"
+	"github.com/anjanikumarjangid/codeweft/internal/server"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/workspace"
 )
 
-const usage = `codewiki: structured codebase context for AI coding agents
+const usage = `codeweft: structured codebase context for AI coding agents
 
 Usage:
-  codewiki index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
-  codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
-  codewiki symbol [--db FILE] [--json] NAME
-  codewiki reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
-  codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
-  codewiki impl   [--db FILE] [--up] [--depth N] NAME
-  codewiki tests  [--db FILE] [--depth N] [--json] NAME
-  codewiki links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
-  codewiki file   [--db FILE] [--json] PATH
-  codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
-  codewiki overview [--db FILE] [--json]
-  codewiki watch  [--db FILE] [--interval 2s] [PATH]
-  codewiki serve  [--db FILE] [--root PATH] [--watch=false]
-  codewiki serve  --workspace FILE [--watch=false]
+  codeweft index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
+  codeweft query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
+  codeweft symbol [--db FILE] [--json] NAME
+  codeweft reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
+  codeweft deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+  codeweft impl   [--db FILE] [--up] [--depth N] NAME
+  codeweft tests  [--db FILE] [--depth N] [--json] NAME
+  codeweft links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
+  codeweft file   [--db FILE] [--json] PATH
+  codeweft apis   [--db FILE] [--method M] [--json] [ROUTE]
+  codeweft overview [--db FILE] [--json]
+  codeweft watch  [--db FILE] [--interval 2s] [PATH]
+  codeweft serve  [--db FILE] [--root PATH] [--watch=false]
+  codeweft serve  --workspace FILE [--watch=false]
 
-By default the index is stored at PATH/.codewiki/index.db, and other commands
-look for .codewiki/index.db in the current directory. reindex, watch and
+By default the index is stored at PATH/.codeweft/index.db, and other commands
+look for .codeweft/index.db in the current directory. reindex, watch and
 serve --watch reuse the --include-tests, --skip-generated, --platform and
 --exclude settings the index was built with; flags passed to reindex
 override them. Go files are indexed for one build configuration, by default
 this machine's GOOS/GOARCH; --platform all indexes every file.
 
 serve needs no flags when started inside a repository: it finds the
-repository root (the nearest directory with .codewiki/ or .git), builds the
+repository root (the nearest directory with .codeweft/ or .git), builds the
 index in the background if there is none, and keeps it up to date.
 
 A workspace serves several repositories together, so that agents can follow
 calls between services. The workspace file is JSON listing them, with paths
 relative to the file: {"repos": [{"name": "orders", "path": "../orders"}]}.
-Each repository keeps its own index at PATH/.codewiki/index.db.
+Each repository keeps its own index at PATH/.codeweft/index.db.
 `
 
 func main() {
@@ -92,19 +92,19 @@ func main() {
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "version", "--version":
-		fmt.Println("codewiki", server.Version)
+		fmt.Println("codeweft", server.Version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
 		err = fmt.Errorf("unknown command %q\n\n%s", os.Args[1], usage)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "codewiki:", err)
+		fmt.Fprintln(os.Stderr, "codeweft:", err)
 		os.Exit(1)
 	}
 }
 
-const defaultDB = ".codewiki/index.db"
+const defaultDB = ".codeweft/index.db"
 
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
@@ -141,7 +141,7 @@ func runIndex(args []string) error {
 
 func openExisting(path string) (*store.Store, error) {
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("no index at %s (run `codewiki index PATH` first, or pass --db)", path)
+		return nil, fmt.Errorf("no index at %s (run `codeweft index PATH` first, or pass --db)", path)
 	}
 	return store.Open(path)
 }
@@ -566,7 +566,7 @@ func runServe(args []string) error {
 	defer st.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ready := startIndexing(ctx, st, cfg, *watch, func(msg string) { fmt.Fprintln(os.Stderr, "codewiki:", msg) })
+	ready := startIndexing(ctx, st, cfg, *watch, func(msg string) { fmt.Fprintln(os.Stderr, "codeweft:", msg) })
 	// stdout carries the MCP protocol; anything else must go to stderr.
 	return server.New(st, server.Options{Ready: ready}).Run(ctx, &mcp.StdioTransport{})
 }
@@ -600,7 +600,7 @@ func serveWorkspace(path string, watch bool) error {
 		repos = append(repos, server.Repo{Name: r.Name, Store: st})
 		name := r.Name
 		checks = append(checks, startIndexing(ctx, st, serveConfig{root: r.Path, db: db, exists: statErr == nil}, watch,
-			func(msg string) { fmt.Fprintf(os.Stderr, "codewiki [%s]: %s\n", name, msg) }))
+			func(msg string) { fmt.Fprintf(os.Stderr, "codeweft [%s]: %s\n", name, msg) }))
 	}
 	// Tools answer once every index can be queried: until then results
 	// would silently leave a repository out.
@@ -643,10 +643,10 @@ type serveConfig struct {
 }
 
 // resolveServe works out the repository and index for serve, so that a
-// client can start `codewiki serve` from anywhere inside a repository with
+// client can start `codeweft serve` from anywhere inside a repository with
 // no flags. With --db the index's recorded root is used unless --root is
 // given; otherwise the root is found by walking up from --root or the
-// current directory, and the index lives at ROOT/.codewiki/index.db.
+// current directory, and the index lives at ROOT/.codeweft/index.db.
 func resolveServe(db, root string) (serveConfig, error) {
 	if db != "" {
 		_, err := os.Stat(db)
@@ -681,7 +681,7 @@ func resolveServe(db, root string) (serveConfig, error) {
 }
 
 // findRoot returns the nearest directory at or above dir that holds a
-// codewiki index or a .git entry, or dir itself if there is none.
+// codeweft index or a .git entry, or dir itself if there is none.
 func findRoot(dir string) string {
 	for d := dir; ; {
 		if _, err := os.Stat(filepath.Join(d, defaultDB)); err == nil {
@@ -738,11 +738,11 @@ func startIndexing(ctx context.Context, st *store.Store, cfg serveConfig, watch 
 		return ready
 	}
 	if root == "" {
-		setStatus(errors.New("the index does not record which repository it belongs to; rebuild it with `codewiki index PATH`"))
+		setStatus(errors.New("the index does not record which repository it belongs to; rebuild it with `codeweft index PATH`"))
 		return ready
 	}
 	if build {
-		setStatus(fmt.Errorf("codewiki is building the index of %s for the first time; try again in a few seconds", root))
+		setStatus(fmt.Errorf("codeweft is building the index of %s for the first time; try again in a few seconds", root))
 		ensureGitignore(filepath.Dir(cfg.db))
 	}
 	go func() {
@@ -756,7 +756,7 @@ func startIndexing(ctx context.Context, st *store.Store, cfg serveConfig, watch 
 		}
 		if err != nil {
 			logf("indexing failed: " + err.Error())
-			setStatus(fmt.Errorf("codewiki could not index %s: %w", root, err))
+			setStatus(fmt.Errorf("codeweft could not index %s: %w", root, err))
 			return
 		}
 		setStatus(nil)
@@ -777,10 +777,10 @@ func startIndexing(ctx context.Context, st *store.Store, cfg serveConfig, watch 
 	return ready
 }
 
-// ensureGitignore makes an index directory named .codewiki ignore itself,
+// ensureGitignore makes an index directory named .codeweft ignore itself,
 // so the index never shows up in the repository's git status.
 func ensureGitignore(dir string) {
-	if filepath.Base(dir) != ".codewiki" {
+	if filepath.Base(dir) != ".codeweft" {
 		return
 	}
 	p := filepath.Join(dir, ".gitignore")
@@ -788,7 +788,7 @@ func ensureGitignore(dir string) {
 		return
 	}
 	_ = os.MkdirAll(dir, 0o755)
-	_ = os.WriteFile(p, []byte("# Created by codewiki: the index is a local cache.\n*\n"), 0o644)
+	_ = os.WriteFile(p, []byte("# Created by codeweft: the index is a local cache.\n*\n"), 0o644)
 }
 
 func runWatch(args []string) error {
@@ -877,7 +877,7 @@ func runOverview(args []string) error {
 }
 
 // interspersed lets flags appear after positional arguments, so both
-// `codewiki query --limit 3 rate limiter` and `codewiki query rate limiter --limit 3` work.
+// `codeweft query --limit 3 rate limiter` and `codeweft query rate limiter --limit 3` work.
 func interspersed(fs *flag.FlagSet, args []string) []string {
 	var flags, rest []string
 	for i := 0; i < len(args); i++ {

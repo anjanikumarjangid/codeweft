@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Repo is one repository a server answers about: its name, which labels

@@ -8,13 +8,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anjanikumarjangid/codewiki/internal/links"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/links"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
-// Version is reported to MCP clients and by `codewiki version`. Release
+// Version is reported to MCP clients and by `codeweft version`. Release
 // builds set it from the git tag:
-// -ldflags "-X github.com/anjanikumarjangid/codewiki/internal/server.Version=1.2.3"
+// -ldflags "-X github.com/anjanikumarjangid/codeweft/internal/server.Version=1.2.3"
 var Version = "0.6.0"
 
 // Output limits. Every tool result lands in the agent's context window, so
@@ -50,7 +50,7 @@ type Options struct {
 	Ready func() error
 }
 
-// addTool registers a tool whose handler first checks ready. Every codewiki
+// addTool registers a tool whose handler first checks ready. Every codeweft
 // tool only reads the local index, and says so, so clients can treat them
 // as safe to call.
 func addTool[In, Out any](s *mcp.Server, ready func() error, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
@@ -79,7 +79,7 @@ func New(st *store.Store, opts Options) *mcp.Server {
 // with their repository's name, a repo argument narrows any tool to one,
 // and get_service_links links the services' contracts across repositories.
 func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
-	instructions := "codewiki answers questions about the indexed codebase from a parsed index. " +
+	instructions := "codeweft answers questions about the indexed codebase from a parsed index. " +
 		"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
 		"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
 		"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
@@ -97,7 +97,7 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 			"): results are labelled with their repository, every tool takes an optional repo argument to look in one, " +
 			"and get_service_links shows how the services call each other."
 	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{Instructions: instructions})
+	s := mcp.NewServer(&mcp.Implementation{Name: "codeweft", Version: Version}, &mcp.ServerOptions{Instructions: instructions})
 	h := handlers{st: repos[0].Store, repos: repos}
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "search_code",

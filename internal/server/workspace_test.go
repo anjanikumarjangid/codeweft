@@ -10,9 +10,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anjanikumarjangid/codewiki/internal/indexer"
-	"github.com/anjanikumarjangid/codewiki/internal/server"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/indexer"
+	"github.com/anjanikumarjangid/codeweft/internal/server"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Two services: web calls the orders service over HTTP. Both have a main

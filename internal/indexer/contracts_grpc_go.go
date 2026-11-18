@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // gRPC, Go (google.golang.org/grpc and protoc-gen-go-grpc code).

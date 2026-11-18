@@ -1,4 +1,4 @@
-// Command bench measures codewiki on a pinned corpus of repositories:
+// Command bench measures codeweft on a pinned corpus of repositories:
 // indexing time, memory and index size, incremental re-indexing, the
 // latency and response size of every MCP tool, and server startup.
 //
@@ -6,7 +6,7 @@
 //	    [-cache DIR] [-runs 3] [-only NAME] [-out results.json] [-md results.md]
 //
 // Repositories are cloned at the pinned ref into the cache directory once.
-// Indexing runs the codewiki binary (built from this checkout) as a
+// Indexing runs the codeweft binary (built from this checkout) as a
 // separate process, so its peak memory can be read. Tool calls go through
 // the real MCP server over an in-memory transport, as a client's would,
 // with queries generated from the index itself: the most-called
@@ -38,8 +38,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anjanikumarjangid/codewiki/internal/server"
-	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codeweft/internal/server"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 type repo struct {
@@ -84,7 +84,7 @@ type Tool struct {
 
 func main() {
 	corpusPath := flag.String("corpus", "scripts/bench/corpus.json", "corpus file")
-	cache := flag.String("cache", filepath.Join(os.TempDir(), "codewiki-bench"), "where repositories are cloned")
+	cache := flag.String("cache", filepath.Join(os.TempDir(), "codeweft-bench"), "where repositories are cloned")
 	runs := flag.Int("runs", 3, "full index runs per repository")
 	only := flag.String("only", "", "measure only the repositories whose name contains this")
 	out := flag.String("out", "", "write results as JSON to this file")
@@ -96,8 +96,8 @@ func main() {
 	check(err)
 	check(json.Unmarshal(data, &corpus))
 	check(os.MkdirAll(*cache, 0o755))
-	bin := filepath.Join(*cache, "codewiki")
-	run("go", "build", "-tags", "sqlite_fts5", "-o", bin, "./cmd/codewiki")
+	bin := filepath.Join(*cache, "codeweft")
+	run("go", "build", "-tags", "sqlite_fts5", "-o", bin, "./cmd/codeweft")
 
 	var results []Result
 	for _, r := range corpus {
@@ -128,7 +128,7 @@ func main() {
 // Report is the whole benchmark run.
 type Report struct {
 	Machine string   `json:"machine"`
-	Commit  string   `json:"codewiki_commit"`
+	Commit  string   `json:"codeweft_commit"`
 	Date    string   `json:"date"`
 	Runs    int      `json:"runs"`
 	Results []Result `json:"results"`
@@ -159,7 +159,7 @@ func fetch(r repo, cache string) (string, string) {
 
 func measure(bin, dir string, runs int) Result {
 	var res Result
-	tmp, err := os.MkdirTemp("", "codewiki-bench-*")
+	tmp, err := os.MkdirTemp("", "codeweft-bench-*")
 	check(err)
 	defer os.RemoveAll(tmp)
 	db := filepath.Join(tmp, "index.db")
@@ -214,7 +214,7 @@ func measure(bin, dir string, runs int) Result {
 	return res
 }
 
-// timed runs the codewiki binary and returns its wall time, CPU time (user
+// timed runs the codeweft binary and returns its wall time, CPU time (user
 // and system) and peak resident memory in KiB.
 func timed(bin string, args ...string) (wall, cpu float64, rssKB int64) {
 	cmd := exec.Command(bin, args...)
@@ -244,9 +244,9 @@ func largestFile(conn *sql.DB, dir string) string {
 
 func commentFor(path string) string {
 	if strings.HasSuffix(path, ".py") {
-		return "\n# codewiki benchmark edit\n"
+		return "\n# codeweft benchmark edit\n"
 	}
-	return "\n// codewiki benchmark edit\n"
+	return "\n// codeweft benchmark edit\n"
 }
 
 func countLines(conn *sql.DB, dir string) int {
@@ -427,7 +427,7 @@ func tools(db string, conn *sql.DB) []Tool {
 	return out
 }
 
-// startup measures `codewiki serve` on an existing index: from starting the
+// startup measures `codeweft serve` on an existing index: from starting the
 // process to the answer of its first tool call, the median of 5 starts.
 func startup(bin, db string) float64 {
 	var times []float64
@@ -477,7 +477,7 @@ func machine() string {
 
 func markdown(r Report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Machine: %s. codewiki %s, %s. Full index: median of %d runs (min-max).\n\n", r.Machine, r.Commit, r.Date, r.Runs)
+	fmt.Fprintf(&b, "Machine: %s. codeweft %s, %s. Full index: median of %d runs (min-max).\n\n", r.Machine, r.Commit, r.Date, r.Runs)
 	b.WriteString("| Repository | Files | Lines | Symbols | Call edges | Full index | CPU | Peak memory | Index size | Re-index, no change | Re-index, one file | Server start |\n")
 	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, x := range r.Results {

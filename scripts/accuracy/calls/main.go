@@ -1,12 +1,12 @@
 // Command calls type-checks every package of the Go standard library and
-// writes the ground truth for codewiki's call graph:
+// writes the ground truth for codeweft's call graph:
 //
 //	OUTDIR/calls.txt    every static call edge "caller callee"
 //	OUTDIR/callers.txt  every function and method declaration it saw
 //
-// Names follow codewiki's qualification (package directory, then Func or
+// Names follow codeweft's qualification (package directory, then Func or
 // Type.Method). Calls inside closures are attributed to the enclosing
-// declaration, as codewiki does. Calls of function values, builtins and
+// declaration, as codeweft does. Calls of function values, builtins and
 // conversions have no static callee and are not edges. Only the files the
 // current GOOS/GOARCH builds are type-checked.
 //
@@ -36,7 +36,7 @@ type pkgInfo struct {
 	CgoFiles   []string
 }
 
-// qual is codewiki's qualifier for a package: its path, plus the package
+// qual is codeweft's qualifier for a package: its path, plus the package
 // name when that differs from the last path element.
 func qual(p *types.Package) string {
 	if path.Base(p.Path()) == p.Name() {
@@ -45,7 +45,7 @@ func qual(p *types.Package) string {
 	return p.Path() + "/" + p.Name()
 }
 
-// name returns codewiki's qualified name for a function or method, or ""
+// name returns codeweft's qualified name for a function or method, or ""
 // for a method of an unnamed type.
 func name(f *types.Func) string {
 	f = f.Origin()
@@ -86,7 +86,7 @@ func main() {
 			panic(err)
 		}
 		if strings.HasPrefix(p.ImportPath, "vendor/") {
-			continue // codewiki does not index vendor/
+			continue // codeweft does not index vendor/
 		}
 		var files []*ast.File
 		for _, f := range append(p.GoFiles, p.CgoFiles...) {

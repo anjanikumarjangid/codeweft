@@ -1,4 +1,4 @@
-// Package workspace reads a workspace file: the repositories codewiki serves
+// Package workspace reads a workspace file: the repositories codeweft serves
 // together, so that tools can answer across services.
 //
 // A workspace file is JSON:
@@ -12,7 +12,7 @@
 //
 // Paths are relative to the file. A repository's name defaults to the base
 // name of its directory; it labels results and selects a repository in
-// tools. Each repository keeps its own index at PATH/.codewiki/index.db.
+// tools. Each repository keeps its own index at PATH/.codeweft/index.db.
 package workspace
 
 import (
