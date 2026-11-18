@@ -75,6 +75,48 @@ claude mcp add codeweft -- /abs/path/to/codeweft/bin/codeweft serve --workspace 
 
 Each repository keeps its own index at `PATH/.codeweft/index.db`, built and watched as with one repository. Every tool then answers across all of them: results are labelled with their repository (`[orders] main.getOrder`), a name found in two repositories lists both, and every tool takes an optional `repo` argument to look in one. `get_service_links` links a client call in one repository to the route serving it in another. A repository's name defaults to its directory name. `codeweft links --workspace FILE` prints the same links from the terminal.
 
+### Self-hosted server
+
+`codeweft server` runs codeweft as a shared service for a team or an organization. It clones your repositories, keeps their indexes current from GitHub push webhooks (and a periodic sync), and serves all of them to every developer's MCP client over [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports). Nobody needs to index anything locally.
+
+```bash
+export CODEWEFT_REPOS="acme/orders acme/payments acme/web"   # or CODEWEFT_GITHUB_ORG=acme
+export GITHUB_TOKEN=...              # clones private repositories
+export GITHUB_WEBHOOK_SECRET=...     # enables /webhooks/github
+export CODEWEFT_API_TOKENS=...       # what clients send as their bearer token
+codeweft server --addr :8080 --data /var/lib/codeweft
+```
+
+Then, in each developer's `.mcp.json` (Claude Code; other clients take the same URL and header):
+
+```json
+{
+  "mcpServers": {
+    "codeweft": {
+      "type": "http",
+      "url": "https://codeweft.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${CODEWEFT_TOKEN}" }
+    }
+  }
+}
+```
+
+In each repository's GitHub settings (or once for the organization), add a webhook to `https://codeweft.example.com/webhooks/github` with content type `application/json`, the same secret, and the *push* event. A push to a repository's default branch (a merged pull request, whatever the merge method) brings its clone to the new commit and re-indexes it: only the files the push changed are parsed, and when they keep their declarations only their own calls are resolved again, which takes about a second even on Kubernetes-sized repositories.
+
+| Variable | Meaning |
+|---|---|
+| `CODEWEFT_REPOS` | Repositories, separated by spaces, commas or new lines: `owner/name` on GitHub, any Git URL, or an absolute path indexed in place. Prefix `name=` to choose the label, suffix `#branch` for a branch other than the default. |
+| `CODEWEFT_GITHUB_ORG` | Also serve every repository of this organization or user (not archived ones, nor forks unless `CODEWEFT_GITHUB_INCLUDE_FORKS=true`). New repositories are picked up on their first push, or at the next periodic sync. |
+| `GITHUB_TOKEN` | Clones private repositories and lists the organization. Passed to Git as an HTTP header through the environment: never written into a URL, a clone's configuration or a log. A fine-grained token with read access to *Contents* and *Metadata* is enough. |
+| `GITHUB_WEBHOOK_SECRET` | Enables `/webhooks/github`. Deliveries without a valid signature are refused. |
+| `CODEWEFT_API_TOKENS` | Bearer tokens clients must send, separated by commas. Required: the server refuses to start without, unless `CODEWEFT_ALLOW_UNAUTHENTICATED=true` (for a server only reachable behind something that authenticates). |
+| `CODEWEFT_DATA_DIR` | Clones and indexes (default `./codeweft-data`); keep it on a persistent volume. |
+| `CODEWEFT_SYNC_INTERVAL` | Periodic sync of every repository (default `10m`; `0` turns it off), which also catches missed webhooks. |
+| `CODEWEFT_SYNC_CONCURRENCY` | Repositories indexed at once (default 2). |
+| `CODEWEFT_GITHUB_URL`, `CODEWEFT_GITHUB_API_URL` | For GitHub Enterprise Server. |
+
+Besides `/mcp` and `/webhooks/github`, the server answers `/healthz` (the process runs), `/readyz` (a repository is indexed), `/status` (each repository's branch, commit, index time, counts and last error, as JSON) and `/metrics` (Prometheus); the last two need a token. Every repository is served as in a [workspace](#several-repositories): results are labelled with their repository, every tool takes a `repo` argument, and `get_service_links` links the services across repositories. The index is SQLite on the data volume: the server is its only user, so no database needs to be run. Code from the repositories is only parsed, never built or run.
+
 ### CLI
 
 ```
@@ -92,6 +134,7 @@ codeweft overview [--db FILE] [--json]
 codeweft watch  [--db FILE] [--interval 2s] [PATH]
 codeweft serve  [--db FILE] [--root PATH] [--watch=false]
 codeweft serve  --workspace FILE [--watch=false]
+codeweft server [--addr :8080] [--data DIR]
 ```
 
 `reindex`, `watch` and `serve` reuse the `--include-tests`, `--skip-generated`, `--platform` and `--exclude` settings the index was built with; flags passed to `reindex` override them.

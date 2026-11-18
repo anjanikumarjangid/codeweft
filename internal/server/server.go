@@ -50,6 +50,14 @@ type Options struct {
 	Ready func() error
 }
 
+// bind calls a tool's handler with the repositories served at the time of
+// the call.
+func bind[In, Out any](h handlers, f func(handlers, context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error)) mcp.ToolHandlerFor[In, Out] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		return f(h.snapshot(), ctx, req, in)
+	}
+}
+
 // addTool registers a tool whose handler first checks ready. Every codeweft
 // tool only reads the local index, and says so, so clients can treat them
 // as safe to call.
@@ -79,6 +87,28 @@ func New(st *store.Store, opts Options) *mcp.Server {
 // with their repository's name, a repo argument narrows any tool to one,
 // and get_service_links links the services' contracts across repositories.
 func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
+	return newServer(NewRepoSet(repos...), len(repos) > 1, repos, opts)
+}
+
+// NewDynamic builds an MCP server answering about a set of repositories
+// that changes while it runs, as a hosted codeweft server adds the
+// repositories it clones once their first index is built. Results are
+// always labelled with their repository.
+func NewDynamic(set *RepoSet, opts Options) *mcp.Server {
+	ready := opts.Ready
+	opts.Ready = func() error {
+		if len(set.Repos()) == 0 {
+			return fmt.Errorf("no repository is indexed yet: the server is still cloning and indexing; try again in a moment")
+		}
+		if ready != nil {
+			return ready()
+		}
+		return nil
+	}
+	return newServer(set, true, nil, opts)
+}
+
+func newServer(set *RepoSet, labelled bool, repos []Repo, opts Options) *mcp.Server {
 	instructions := "codeweft answers questions about the indexed codebase from a parsed index. " +
 		"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
 		"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
@@ -88,7 +118,12 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 		"before changing it, and get_file_summary for an overview of a file " +
 		"before reading it. " +
 		"Prefer these tools over grepping or reading whole files."
-	if len(repos) > 1 {
+	switch {
+	case repos == nil:
+		instructions += " This server answers about several repositories: results are labelled with their repository, " +
+			"every tool takes an optional repo argument to look in one, get_architecture_overview lists them, " +
+			"and get_service_links shows how the services call each other."
+	case len(repos) > 1:
 		names := make([]string, len(repos))
 		for i, r := range repos {
 			names[i] = r.Name
@@ -98,26 +133,26 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 			"and get_service_links shows how the services call each other."
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "codeweft", Version: Version}, &mcp.ServerOptions{Instructions: instructions})
-	h := handlers{st: repos[0].Store, repos: repos}
+	h := handlers{set: set, labelled: labelled}
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "search_code",
 		Description: "Ranked keyword search over the indexed codebase's functions, methods and types. " +
 			"Matches names (including camelCase and snake_case parts), signatures and doc comments. " +
 			"Returns qualified names and file:line locations.",
-	}, h.searchCode)
+	}, bind(h, handlers.searchCode))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_symbol",
 		Description: "Full details of a function, method or type: signature, doc comment, file and line range, " +
 			"source code (first 200 lines), and its direct callers and callees. Accepts a qualified name from " +
 			"search_code, or a short name; a short name that matches several symbols returns the list of " +
 			"candidates to choose from.",
-	}, h.getSymbol)
+	}, bind(h, handlers.getSymbol))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_dependency_graph",
 		Description: "Call graph around a symbol: what it calls (callees) or what calls it (callers), " +
 			"several levels deep. Pass an external package path such as 'database/sql' instead of a symbol " +
 			"to list every place in the codebase that calls into it.",
-	}, h.dependencyGraph)
+	}, bind(h, handlers.dependencyGraph))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_implementations",
 		Description: "Type hierarchy around an interface, class or method. By default lists what implements " +
@@ -126,7 +161,7 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 			"implementations are found from method sets (names plus parameter and result types); Java and " +
 			"Python from declared extends/implements and base classes. Pass a type from outside the " +
 			"repository, such as 'java.io.Serializable', to list the repository types that implement it.",
-	}, h.implementations)
+	}, bind(h, handlers.implementations))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_service_links",
 		Description: "How services talk to each other: HTTP routes and the client calls that reach them, " +
@@ -134,33 +169,33 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 			"and activities and the code that starts them. Pass a route, topic, workflow or function name " +
 			"(any part of it) to narrow the list, and kind to pick one: http, grpc, kafka, temporal-workflow, " +
 			"temporal-activity. Also lists calls whose provider is not indexed.",
-	}, h.serviceLinks)
+	}, bind(h, handlers.serviceLinks))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "find_tests",
 		Description: "Tests that exercise a function, method or type: tests that call it directly, call " +
 			"something that calls it (up to `depth` calls away through the repository's code), or reach it " +
 			"through helper functions in test files. Nearest first, with the call each test goes through. " +
 			"Use it to know which tests to run, or which to update, before changing code.",
-	}, h.findTests)
+	}, bind(h, handlers.findTests))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_file_summary",
 		Description: "Overview of one source file without reading it: package, doc comment, imports, every " +
 			"declaration with its signature, and which other files it calls into or is called from. " +
 			"Accepts a repository-relative path or a unique suffix such as 'store/query.go'.",
-	}, h.fileSummary)
+	}, bind(h, handlers.fileSummary))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_architecture_overview",
 		Description: "Project-level map of the indexed codebase: languages, main packages or directories with " +
 			"their purpose, entry points (main functions, Python __main__ blocks), HTTP frameworks, how " +
 			"packages depend on each other, the most-called functions, and the most-used external libraries. " +
 			"Use it first when working in an unfamiliar repository.",
-	}, h.overview)
+	}, bind(h, handlers.overview))
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "list_apis",
 		Description: "HTTP endpoints defined in the code, with method, route, handler function and location. " +
 			"Detects Go net/http, gin, echo, chi and fiber routes, Spring and JAX-RS annotations, and " +
 			"Flask and FastAPI decorators, including router and group prefixes.",
-	}, h.listAPIs)
+	}, bind(h, handlers.listAPIs))
 	return s
 }
 

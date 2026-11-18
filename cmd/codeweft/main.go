@@ -7,15 +7,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/anjanikumarjangid/codeweft/internal/hosted"
 	"github.com/anjanikumarjangid/codeweft/internal/indexer"
 	"github.com/anjanikumarjangid/codeweft/internal/links"
 	"github.com/anjanikumarjangid/codeweft/internal/server"
@@ -40,6 +43,7 @@ Usage:
   codeweft watch  [--db FILE] [--interval 2s] [PATH]
   codeweft serve  [--db FILE] [--root PATH] [--watch=false]
   codeweft serve  --workspace FILE [--watch=false]
+  codeweft server [--addr :8080] [--data DIR]   (configured by environment variables, see below)
 
 By default the index is stored at PATH/.codeweft/index.db, and other commands
 look for .codeweft/index.db in the current directory. reindex, watch and
@@ -56,6 +60,25 @@ A workspace serves several repositories together, so that agents can follow
 calls between services. The workspace file is JSON listing them, with paths
 relative to the file: {"repos": [{"name": "orders", "path": "../orders"}]}.
 Each repository keeps its own index at PATH/.codeweft/index.db.
+
+server runs codeweft as a shared service for a team or an organization: it
+clones the repositories, keeps them indexed from GitHub push webhooks and
+periodic syncs, and serves them over MCP Streamable HTTP at /mcp. It is
+configured by environment variables:
+
+  CODEWEFT_REPOS              owner/name, Git URLs or absolute paths, each
+                              optionally name=... and ...#branch
+  CODEWEFT_GITHUB_ORG         also serve every repository of an org or user
+  GITHUB_TOKEN                clones private repositories, lists the org
+  GITHUB_WEBHOOK_SECRET       enables /webhooks/github (push events)
+  CODEWEFT_API_TOKENS         bearer tokens clients must send (comma-separated)
+  CODEWEFT_ALLOW_UNAUTHENTICATED=true   serve without tokens
+  CODEWEFT_DATA_DIR           clones and indexes (default ./codeweft-data)
+  CODEWEFT_SYNC_INTERVAL      periodic sync (default 10m, 0 turns it off)
+  CODEWEFT_SYNC_CONCURRENCY   repositories indexed at once (default 2)
+  CODEWEFT_GITHUB_URL, CODEWEFT_GITHUB_API_URL   for GitHub Enterprise
+
+It also serves /status, /metrics (both need a token), /healthz and /readyz.
 `
 
 func main() {
@@ -91,6 +114,8 @@ func main() {
 		err = runWatch(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "server":
+		err = runServer(os.Args[2:])
 	case "version", "--version":
 		fmt.Println("codeweft", server.Version)
 	case "help", "-h", "--help":
@@ -633,6 +658,28 @@ func openWorkspace(path string) ([]server.Repo, error) {
 		repos = append(repos, server.Repo{Name: r.Name, Store: st})
 	}
 	return repos, nil
+}
+
+// runServer runs the hosted server, configured from the environment;
+// --addr and --data override CODEWEFT_ADDR and CODEWEFT_DATA_DIR.
+func runServer(args []string) error {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	addr := fs.String("addr", "", "listen address (default $CODEWEFT_ADDR or :8080)")
+	data := fs.String("data", "", "data directory (default $CODEWEFT_DATA_DIR or ./codeweft-data)")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	cfg, err := hosted.FromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if *addr != "" {
+		cfg.Addr = *addr
+	}
+	if *data != "" {
+		cfg.DataDir = *data
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return hosted.Serve(ctx, cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
 
 // serveConfig says which repository serve answers for and where its index is.

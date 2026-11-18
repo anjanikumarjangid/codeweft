@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
@@ -17,15 +18,60 @@ type Repo struct {
 
 // handlers implements the tools. st is the repository a tool works in once
 // it has chosen one, and repo its name ("" when one repository is served);
-// repos is every repository served.
+// repos is every repository served when the call started, taken from set.
+// labelled says results are labelled with their repository, as they are
+// whenever several repositories are, or may be, served.
 type handlers struct {
-	st    *store.Store
-	repo  string
+	st       *store.Store
+	repo     string
+	repos    []Repo
+	set      *RepoSet
+	labelled bool
+}
+
+// snapshot fixes the repositories a tool call works with.
+func (h handlers) snapshot() handlers {
+	h.repos = h.set.Repos()
+	if len(h.repos) > 0 {
+		h.st = h.repos[0].Store
+	}
+	return h
+}
+
+// workspace reports whether results are labelled with their repository.
+func (h handlers) workspace() bool { return h.labelled || len(h.repos) > 1 }
+
+// RepoSet is the repositories a server answers about. It is safe for
+// concurrent use: a hosted server adds repositories while tools run.
+type RepoSet struct {
+	mu    sync.RWMutex
 	repos []Repo
 }
 
-// workspace reports whether several repositories are served.
-func (h handlers) workspace() bool { return len(h.repos) > 1 }
+// NewRepoSet returns a set of the given repositories.
+func NewRepoSet(repos ...Repo) *RepoSet {
+	return &RepoSet{repos: append([]Repo(nil), repos...)}
+}
+
+// Repos returns the repositories, in the order they were added.
+func (s *RepoSet) Repos() []Repo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Repo(nil), s.repos...)
+}
+
+// Put adds a repository, or replaces the one of the same name.
+func (s *RepoSet) Put(r Repo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.repos {
+		if s.repos[i].Name == r.Name {
+			s.repos[i] = r
+			return
+		}
+	}
+	s.repos = append(s.repos, r)
+}
 
 // in returns the handlers working in one repository.
 func (h handlers) in(r Repo) handlers {
