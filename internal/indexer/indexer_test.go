@@ -29,10 +29,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 9 Go (one of them generated), 7 Java, 6 Python and 2 proto files;
+	// 10 Go (one of them generated), 8 Java, 7 Python and 2 proto files;
 	// test files are kept apart and not counted.
-	if res.Files != 24 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 24 (1), 0", res.Files, res.Generated, res.Skipped)
+	if res.Files != 27 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 27 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -76,8 +76,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 24 || syms != 160 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 24 and 160", files, syms)
+	if files != 27 || syms != 176 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 27 and 176", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -389,7 +389,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 27 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 30 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -412,7 +412,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 25 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 28 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -466,10 +466,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 24 default files + 2 Go and Java test files - 6 Python files under
+	// 27 default files + 2 Go and Java test files - 7 Python files under
 	// py/ (the Python test file is under py/ too).
-	if res.Files != 20 {
-		t.Fatalf("indexed %d files, want 20", res.Files)
+	if res.Files != 22 {
+		t.Fatalf("indexed %d files, want 22", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -490,8 +490,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 19 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 19 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 21 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 21 unchanged, 0 removed", res)
 	}
 }
 
@@ -986,8 +986,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 23 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 23 files, 1 skipped", res, err)
+	if err != nil || res.Files != 26 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 26 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1607,5 +1607,103 @@ func TestParseProto(t *testing.T) {
 	}
 	if fr.File.Package != "shop.orders.v1" || fr.File.Lang != "proto" {
 		t.Errorf("file: %+v", fr.File)
+	}
+}
+
+// TestKafkaLinks links Kafka producers to the consumers of their topics
+// across the fixture's three languages and five client libraries.
+func TestKafkaLinks(t *testing.T) {
+	st := indexSample(t)
+	rows, err := st.Contracts(store.ContractKafka)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ends := make([]links.End, len(rows))
+	for i, r := range rows {
+		ends[i] = links.End{ContractRow: r}
+	}
+	res := links.Match(ends)
+	var got []string
+	for _, l := range res.Links {
+		got = append(got, fmt.Sprintf("%s [%s]: %s -> %s at %s:%d (%s)", l.To.Name, l.To.Detail, l.From.Symbol, l.To.Symbol,
+			l.To.File, l.To.Line, l.Confidence))
+	}
+	want := []string{
+		// A topic read from configuration: the same property on both sides.
+		"${inventory.topic} [audit]: com.shop.orders.OrderEvents.requestRestock -> com.shop.orders.OrderEvents.audit at java/com/shop/orders/OrderEvents.java:29 (pattern)",
+		// kafka-go producer (package kafka from the path kafka-go) to a
+		// Spring listener and a kafka-python consumer, one per group.
+		"orders.placed [billing]: checkout.publishOrderPlaced -> com.shop.orders.OrderEvents.onOrderPlaced at java/com/shop/orders/OrderEvents.java:20 (exact)",
+		"orders.placed [inventory]: checkout.publishOrderPlaced -> py.inventory.events.consume_orders at py/inventory/events.py:8 (exact)",
+		// KafkaTemplate with a constant topic to a sarama consumer group,
+		// reported at its handler's ConsumeClaim.
+		"payments.settled []: com.shop.orders.OrderEvents.onOrderPlaced -> checkout.paymentHandler.ConsumeClaim at checkout/events.go:27 (exact)",
+		// confluent-kafka (Python, a self attribute) to confluent-kafka-go.
+		"stock.changed []: py.inventory.events.StockEvents.publish -> checkout.watchStock at checkout/events.go:37 (exact)",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(res.Unmatched) != 0 || len(res.Unreferring) != 0 {
+		t.Errorf("unmatched uses %+v, providers %+v", res.Unmatched, res.Unreferring)
+	}
+}
+
+// TestKafkaForms covers producer and consumer forms found in real code:
+// a topic list held in a variable, a KafkaTemplate passed to a lambda by
+// executeInTransaction, and sendDefault's configured topic.
+func TestKafkaForms(t *testing.T) {
+	contracts := func(fr *indexer.FileResult, err error) string {
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, c := range fr.Contracts {
+			if c.Kind == store.ContractKafka {
+				out = append(out, fmt.Sprintf("%s %s by %s exact=%v", c.Role, c.Name, c.Symbol, c.Exact))
+			}
+		}
+		return strings.Join(out, "; ")
+	}
+	goSrc := `package events
+
+import "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+
+func consume(c *kafka.Consumer) error {
+	topic := "go-test-topic"
+	topics := []string{topic, "audit"}
+	return c.SubscribeTopics(topics, nil)
+}
+
+func produce(p *kafka.Producer) error {
+	topic := "go-test-topic"
+	return p.Produce(&kafka.Message{TopicPartition: kafka.TopicPartition{Topic: &topic}}, nil)
+}
+`
+	want := "provides go-test-topic by events.consume exact=true; provides audit by events.consume exact=true; " +
+		"uses go-test-topic by events.produce exact=true"
+	if got := contracts(indexer.ParseGo("events/events.go", []byte(goSrc))); got != want {
+		t.Errorf("Go:\n got %s\nwant %s", got, want)
+	}
+	javaSrc := `package com.example;
+
+import org.springframework.kafka.core.KafkaTemplate;
+
+public class Sender {
+    private KafkaTemplate<Object, Object> template;
+
+    public void sendAll(java.util.List<String> foos) {
+        this.template.executeInTransaction(kafkaTemplate -> {
+            foos.forEach(foo -> kafkaTemplate.send("topic2", foo));
+            return null;
+        });
+        template.sendDefault("x");
+    }
+}
+`
+	want = "uses topic2 by com.example.Sender.sendAll exact=true; " +
+		"uses ${spring.kafka.template.default-topic} by com.example.Sender.sendAll exact=false"
+	if got := contracts(indexer.ParseJava("com/example/Sender.java", []byte(javaSrc))); got != want {
+		t.Errorf("Java:\n got %s\nwant %s", got, want)
 	}
 }

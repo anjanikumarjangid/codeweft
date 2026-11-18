@@ -327,6 +327,7 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	jf.stubs = map[string]string{}
 	defer func() { jf.stubs = savedStubs }()
 
+	jf.res.Contracts = append(jf.res.Contracts, jf.kafkaListener(n, qual)...)
 	fields := map[string]string{}
 	// Record components are fields with generated accessor methods.
 	if n.Type() == "record_declaration" {
@@ -353,6 +354,13 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	for _, m := range members {
 		if m.Type() == "field_declaration" || m.Type() == "constant_declaration" {
 			jf.stringConsts(m)
+			if ph := jf.valuePlaceholder(m); ph != "" {
+				for _, d := range namedChildren(m) {
+					if d.Type() == "variable_declarator" {
+						jf.consts[text(field(d, "name"), jf.src)] = ph
+					}
+				}
+			}
 			ref := jf.typeRef(field(m, "type"))
 			for _, d := range namedChildren(m) {
 				if d.Type() == "variable_declarator" {
@@ -389,6 +397,7 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				isInterface || hasModifier(m, jf.src, "public"))
 			sym := &jf.res.Symbols[len(jf.res.Symbols)-1]
 			sym.Arity = arity(field(m, "parameters"))
+			jf.res.Contracts = append(jf.res.Contracts, jf.kafkaListener(m, mq)...)
 			if temporalKind != "" && kind != "constructor" {
 				jf.res.Contracts = append(jf.res.Contracts, jf.temporalMethod(m, temporalKind, temporalPrefix, name, mname, mq)...)
 			}
@@ -506,6 +515,9 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 		case "lambda_expression", "class_body":
 			// Calls inside lambdas belong to the enclosing method; anonymous
 			// class bodies are skipped.
+			if n.Type() == "lambda_expression" {
+				jf.lambdaParam(n, locals, fields)
+			}
 			return n.Type() == "lambda_expression"
 		case "object_creation_expression":
 			t := field(n, "type")
@@ -542,6 +554,7 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 			if c, ok := jf.grpcCall(n, stubs, caller); ok {
 				jf.res.Contracts = append(jf.res.Contracts, c)
 			}
+			jf.res.Contracts = append(jf.res.Contracts, jf.kafkaCall(n, locals, fields, caller)...)
 			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {
