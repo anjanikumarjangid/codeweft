@@ -17,6 +17,7 @@ type EndpointFilter struct {
 type EndpointInfo struct {
 	Endpoint
 	HandlerLocation string `json:"handler_location,omitempty"`
+	Repo            string `json:"repo,omitempty"` // in a workspace, the repository serving the route
 }
 
 // ListEndpoints returns HTTP routes found in the code, ordered by path.

@@ -20,6 +20,7 @@ import (
 	"github.com/anjanikumarjangid/codewiki/internal/links"
 	"github.com/anjanikumarjangid/codewiki/internal/server"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
+	"github.com/anjanikumarjangid/codewiki/internal/workspace"
 )
 
 const usage = `codewiki: structured codebase context for AI coding agents
@@ -32,12 +33,13 @@ Usage:
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
   codewiki impl   [--db FILE] [--up] [--depth N] NAME
   codewiki tests  [--db FILE] [--depth N] [--json] NAME
-  codewiki links  [--db FILE] [--kind KIND] [--json] [QUERY]
+  codewiki links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
   codewiki file   [--db FILE] [--json] PATH
   codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
   codewiki overview [--db FILE] [--json]
   codewiki watch  [--db FILE] [--interval 2s] [PATH]
   codewiki serve  [--db FILE] [--root PATH] [--watch=false]
+  codewiki serve  --workspace FILE [--watch=false]
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
 look for .codewiki/index.db in the current directory. reindex, watch and
@@ -49,6 +51,11 @@ this machine's GOOS/GOARCH; --platform all indexes every file.
 serve needs no flags when started inside a repository: it finds the
 repository root (the nearest directory with .codewiki/ or .git), builds the
 index in the background if there is none, and keeps it up to date.
+
+A workspace serves several repositories together, so that agents can follow
+calls between services. The workspace file is JSON listing them, with paths
+relative to the file: {"repos": [{"name": "orders", "path": "../orders"}]}.
+Each repository keeps its own index at PATH/.codewiki/index.db.
 `
 
 func main() {
@@ -366,35 +373,57 @@ func runDeps(args []string) error {
 func runLinks(args []string) error {
 	fs := flag.NewFlagSet("links", flag.ExitOnError)
 	db := fs.String("db", defaultDB, "index file")
+	ws := fs.String("workspace", "", "workspace file: link the services of several repositories")
 	kind := fs.String("kind", "", "http, grpc, kafka, temporal-workflow or temporal-activity")
 	asJSON := fs.Bool("json", false, "print JSON")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck
-	st, err := openExisting(*db)
-	if err != nil {
-		return err
+	var repos []server.Repo
+	if *ws != "" {
+		var err error
+		if repos, err = openWorkspace(*ws); err != nil {
+			return err
+		}
+	} else {
+		st, err := openExisting(*db)
+		if err != nil {
+			return err
+		}
+		repos = []server.Repo{{Store: st}}
 	}
-	defer st.Close()
-	rows, err := st.Contracts(*kind)
-	if err != nil {
-		return err
-	}
-	ends := make([]links.End, len(rows))
-	for i, r := range rows {
-		ends[i] = links.End{ContractRow: r}
+	defer func() {
+		for _, r := range repos {
+			r.Store.Close()
+		}
+	}()
+	var ends []links.End
+	for _, r := range repos {
+		rows, err := r.Store.Contracts(*kind)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			ends = append(ends, links.End{Repo: r.Name, ContractRow: row})
+		}
 	}
 	res := links.Match(ends)
 	if *asJSON {
 		return printJSON(res)
 	}
 	q := strings.ToLower(strings.Join(fs.Args(), " "))
+	sym := func(e links.End) string {
+		if e.Repo != "" {
+			return "[" + e.Repo + "] " + e.Symbol
+		}
+		return e.Symbol
+	}
 	for _, l := range res.Links {
 		if q != "" && !strings.Contains(strings.ToLower(l.To.Name+" "+l.To.Symbol+" "+l.From.Symbol), q) {
 			continue
 		}
-		fmt.Printf("%-9s %-7s %-35s %s  <-  %s (%s)\n", l.To.Kind, l.To.Method, l.To.Name, l.To.Symbol, l.From.Symbol, l.Confidence)
+		fmt.Printf("%-9s %-7s %-35s %s  <-  %s (%s)\n", l.To.Kind, l.To.Method, l.To.Name, sym(l.To), sym(l.From), l.Confidence)
 	}
 	for _, u := range res.Unmatched {
-		fmt.Printf("unmatched %-7s %-35s used by %s at %s:%d\n", u.Method, u.Name, u.Symbol, u.File, u.Line)
+		fmt.Printf("unmatched %-7s %-35s used by %s at %s:%d\n", u.Method, u.Name, sym(u), u.File, u.Line)
 	}
 	return nil
 }
@@ -518,7 +547,14 @@ func runServe(args []string) error {
 	db := fs.String("db", "", "index file (default ROOT/"+defaultDB+")")
 	rootFlag := fs.String("root", "", "repository to serve (default: found from the current directory)")
 	watch := fs.Bool("watch", true, "keep the index up to date while serving (--watch=false to serve it as is)")
+	ws := fs.String("workspace", "", "workspace file listing several repositories to serve together")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	if *ws != "" {
+		if *db != "" || *rootFlag != "" {
+			return errors.New("serve: --workspace cannot be combined with --db or --root")
+		}
+		return serveWorkspace(*ws, *watch)
+	}
 	cfg, err := resolveServe(*db, *rootFlag)
 	if err != nil {
 		return err
@@ -533,6 +569,70 @@ func runServe(args []string) error {
 	ready := startIndexing(ctx, st, cfg, *watch, func(msg string) { fmt.Fprintln(os.Stderr, "codewiki:", msg) })
 	// stdout carries the MCP protocol; anything else must go to stderr.
 	return server.New(st, server.Options{Ready: ready}).Run(ctx, &mcp.StdioTransport{})
+}
+
+// serveWorkspace serves the repositories of a workspace file, building and
+// watching each one's index as serve does for one repository.
+func serveWorkspace(path string, watch bool) error {
+	ws, err := workspace.Load(path)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	var repos []server.Repo
+	var checks []func() error
+	defer func() {
+		for _, r := range repos {
+			r.Store.Close()
+		}
+	}()
+	for _, r := range ws {
+		if fi, err := os.Stat(r.Path); err != nil || !fi.IsDir() {
+			return fmt.Errorf("workspace repository %s: %s is not a directory", r.Name, r.Path)
+		}
+		db := filepath.Join(r.Path, defaultDB)
+		_, statErr := os.Stat(db)
+		st, err := store.Open(db)
+		if err != nil {
+			return fmt.Errorf("%s: %w", r.Name, err)
+		}
+		repos = append(repos, server.Repo{Name: r.Name, Store: st})
+		name := r.Name
+		checks = append(checks, startIndexing(ctx, st, serveConfig{root: r.Path, db: db, exists: statErr == nil}, watch,
+			func(msg string) { fmt.Fprintf(os.Stderr, "codewiki [%s]: %s\n", name, msg) }))
+	}
+	// Tools answer once every index can be queried: until then results
+	// would silently leave a repository out.
+	ready := func() error {
+		for _, c := range checks {
+			if err := c(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return server.NewWorkspace(repos, server.Options{Ready: ready}).Run(ctx, &mcp.StdioTransport{})
+}
+
+// openWorkspace opens the existing indexes of a workspace's repositories.
+func openWorkspace(path string) ([]server.Repo, error) {
+	ws, err := workspace.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	var repos []server.Repo
+	for _, r := range ws {
+		st, err := openExisting(filepath.Join(r.Path, defaultDB))
+		if err != nil {
+			for _, o := range repos {
+				o.Store.Close()
+			}
+			return nil, fmt.Errorf("%s: %w", r.Name, err)
+		}
+		repos = append(repos, server.Repo{Name: r.Name, Store: st})
+	}
+	return repos, nil
 }
 
 // serveConfig says which repository serve answers for and where its index is.

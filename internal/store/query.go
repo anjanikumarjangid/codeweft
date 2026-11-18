@@ -144,6 +144,7 @@ type Ref struct {
 	CallFile   string `json:"call_file"`          // file of the call site
 	External   bool   `json:"external,omitempty"`
 	Confidence string `json:"confidence"`
+	Repo       string `json:"repo,omitempty"` // in a workspace, the repository of the symbol
 }
 
 // Callees returns what the symbol calls, internal first.
