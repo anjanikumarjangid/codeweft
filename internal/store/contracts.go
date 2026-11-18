@@ -559,9 +559,11 @@ func (s *Store) classMethods(class string) ([]Symbol, error) {
 
 // methodsOf lists the methods declared on a type, filtered by cond.
 func (s *Store) methodsOf(t, cond string) ([]Symbol, error) {
+	// A range on qualified ("T." up to "T/", the next byte) uses its
+	// index; members of nested types (T.Inner.m) are then left out.
 	rows, err := s.db.Query(`SELECT s.qualified, s.name, s.kind, f.path, s.start_line FROM symbols s
-		JOIN files f ON f.id = s.file_id WHERE s.qualified = ? || '.' || s.name AND `+cond+`
-		ORDER BY s.start_line`, t)
+		JOIN files f ON f.id = s.file_id WHERE s.qualified > ? AND s.qualified < ? AND `+cond+`
+		ORDER BY s.start_line`, t+".", t+"/")
 	if err != nil {
 		return nil, err
 	}
@@ -571,6 +573,9 @@ func (s *Store) methodsOf(t, cond string) ([]Symbol, error) {
 		var m Symbol
 		if err := rows.Scan(&m.Qualified, &m.Name, &m.Kind, &m.File, &m.StartLine); err != nil {
 			return nil, err
+		}
+		if m.Qualified != t+"."+m.Name {
+			continue
 		}
 		out = append(out, m)
 	}
