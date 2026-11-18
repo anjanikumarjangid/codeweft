@@ -69,6 +69,18 @@ claude mcp add codeweft -- /abs/path/to/codeweft/bin/codeweft serve
 
 No index needs to exist beforehand. `serve` finds the repository root (the nearest directory above the working directory with a `.codeweft/` index or `.git`) and builds the index in the background on first start. Until the first build is done, tools reply that the index is still being built instead of returning empty results. After that it catches up on edits made while it was not running and keeps the index current as files change; pass `--watch=false` to serve the index as it is. The index is written to `.codeweft/`, which gets its own `.gitignore` so it never shows up in `git status`.
 
+#### Other MCP clients
+
+codeweft speaks standard MCP, so any client works. `serve` finds the repository from the directory the client starts it in; clients that start servers elsewhere need `--root`.
+
+| Client | Configuration |
+|---|---|
+| Claude Code | `claude mcp add codeweft -- npx -y codeweft serve` (from the repository) |
+| VS Code (`.vscode/mcp.json`) | `{"servers": {"codeweft": {"type": "stdio", "command": "npx", "args": ["-y", "codeweft", "serve", "--root", "${workspaceFolder}"]}}}` |
+| Cursor (`.cursor/mcp.json`) | `{"mcpServers": {"codeweft": {"command": "npx", "args": ["-y", "codeweft", "serve", "--root", "/abs/path/to/repo"]}}}` |
+| Claude Desktop (`claude_desktop_config.json`) | `{"mcpServers": {"codeweft": {"command": "npx", "args": ["-y", "codeweft", "serve", "--root", "/abs/path/to/repo"]}}}` |
+| A [self-hosted server](#self-hosted-server) | the URL `https://<host>/mcp` with the header `Authorization: Bearer <token>` (Streamable HTTP) |
+
 For a client that does not start servers inside the project, pass `--root /abs/path/to/repo` (or `--db FILE` for an index stored elsewhere). Then ask something like: *"Using codeweft, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
 
 ### Several repositories
@@ -369,6 +381,10 @@ What the numbers say:
 - **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (about 180 ms on the largest repositories). `get_service_links` takes 250 ms on Kubernetes, which has many HTTP client calls to match.
 - **Re-indexing** one changed file costs about the same as a run with no change (2.9 s on the standard library, 4.5 s on Kubernetes). Only the changed file is parsed, but the call graph, type hierarchy and test edges are rebuilt for the whole repository.
 - **Response sizes** stay at a few KB at the median. The largest are `get_file_summary` of a file with hundreds of declarations (184 KB for Kubernetes' largest file) and `get_dependency_graph` of the most-called functions (up to 60 KB). Both are on the [roadmap](#roadmap) to be capped like the other tools.
+
+## Contributing
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md), and [SECURITY.md](SECURITY.md) to report a vulnerability. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 

@@ -1,0 +1,35 @@
+name: Bug or wrong answer
+description: Something fails, or a tool returns something wrong or incomplete.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or tool call, what it returned, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: A public repository (and commit), or a few files that show it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `codeweft version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How you run it
+      options: [CLI, codeweft serve (stdio), codeweft server (self-hosted), container image, npx]
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and MCP client
+      placeholder: macOS arm64, Claude Code

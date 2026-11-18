@@ -1,0 +1,25 @@
+# Changelog
+
+All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+
+## Unreleased
+
+The first release. codeweft was developed as *codewiki* until this release.
+
+### Added
+
+- **Indexing** of Go (`go/ast`), Java, Python and Protocol Buffers (tree-sitter): symbols, imports, call sites, routes and service contracts, in a local SQLite + FTS5 index. Go files are those of one build configuration (`--platform`).
+- **Call graph** resolved from declarations without a type checker: expression typing for Go, Java and Python, method sets, overloads by arity; each edge marked `exact` or `name`. Measured against `go/types`, javac and jedi (see the README's Accuracy section).
+- **Type hierarchy**: Go method sets, Java and Python declared supertypes, interface method implementations.
+- **Tests**: which tests reach a function, through the code and test helpers.
+- **MCP tools** over stdio: `search_code`, `get_symbol`, `get_dependency_graph`, `get_implementations`, `find_tests`, `get_file_summary`, `get_architecture_overview`, `list_apis`, `get_service_links`. Every answer is capped and says what it left out.
+- **Service links** (`get_service_links`, `codeweft links`): HTTP routes and the client calls reaching them; gRPC methods and their callers, named from `.proto` files; Kafka topics, from producers to consumers; Temporal workflows and activities, with task queues. Across Go, Java and Python.
+- **Workspaces**: one server over several repositories (`serve --workspace`), with links across them.
+- **Self-hosted server** (`codeweft server`): clones repositories (or a GitHub organization), keeps them indexed from GitHub push webhooks and periodic syncs, and serves them over MCP Streamable HTTP with bearer tokens; `/status`, `/metrics`, `/healthz`, `/readyz`.
+- **Incremental re-indexing**: only changed files are parsed; an edit that keeps a file's declarations only resolves that file's calls again (about 0.7 s on the Go standard library).
+- **Distribution**: release binaries for Linux, macOS and Windows; container image on ghcr.io; Docker Compose and Helm; `npx codeweft`; Homebrew.
+- **Benchmarks** (`make bench`) on a pinned corpus, and accuracy tools in `scripts/accuracy`.
+
+### Changed
+
+- Licensed under the Apache License 2.0 (commits before the switch were MIT).

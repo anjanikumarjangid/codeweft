@@ -1,0 +1,16 @@
+name: Feature or support request
+description: A language, framework, kind of service link, or tool you would like.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you are trying to do
+      description: The question you want your agent to be able to answer, or the code it should understand.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: An example
+      description: A snippet or public repository using the framework or pattern.
