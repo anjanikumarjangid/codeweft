@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "6"
+const SchemaVersion = "10"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS files (
 	qual    TEXT NOT NULL,
 	doc     TEXT NOT NULL,
 	hash    TEXT NOT NULL,
-	test    INTEGER NOT NULL DEFAULT 0 -- 1: test-only file, its functions are in test_funcs
+	test    INTEGER NOT NULL DEFAULT 0, -- 1: test-only file, its functions are in test_funcs
+	generated INTEGER NOT NULL DEFAULT 0 -- 1: marked "Code generated ... DO NOT EDIT."
 );
 CREATE INDEX IF NOT EXISTS files_dir ON files(dir);
 CREATE TABLE IF NOT EXISTS symbols (
@@ -52,7 +53,9 @@ CREATE TABLE IF NOT EXISTS symbols (
 	start_line INTEGER NOT NULL,
 	end_line   INTEGER NOT NULL,
 	exported   INTEGER NOT NULL,
-	body       TEXT NOT NULL
+	body       TEXT NOT NULL,
+	result     TEXT NOT NULL DEFAULT '', -- Java/Python: declared result type reference
+	arity      TEXT NOT NULL DEFAULT '' -- Java: "2" parameters, "1+" with varargs, "" unknown
 );
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_qualified ON symbols(qualified);
@@ -65,11 +68,18 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE INDEX IF NOT EXISTS imports_file ON imports(file_id);
 CREATE TABLE IF NOT EXISTS fields (
 	file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-	owner    TEXT NOT NULL,
-	name     TEXT NOT NULL,
-	type_ref TEXT NOT NULL
+	owner     TEXT NOT NULL,
+	name      TEXT NOT NULL,
+	type_ref  TEXT NOT NULL,
+	type_expr TEXT NOT NULL DEFAULT '' -- Go: the field's type as written
 );
 CREATE INDEX IF NOT EXISTS fields_owner ON fields(owner, name);
+CREATE TABLE IF NOT EXISTS vars (
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	qualified TEXT NOT NULL,
+	expr      TEXT NOT NULL -- how its type can be found, see indexer/goexpr.go
+);
+CREATE INDEX IF NOT EXISTS vars_file ON vars(file_id);
 CREATE TABLE IF NOT EXISTS raw_calls (
 	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 	caller  TEXT NOT NULL,
@@ -77,7 +87,8 @@ CREATE TABLE IF NOT EXISTS raw_calls (
 	a       TEXT NOT NULL,
 	b       TEXT NOT NULL,
 	c       TEXT NOT NULL,
-	line    INTEGER NOT NULL
+	line    INTEGER NOT NULL,
+	args    INTEGER NOT NULL DEFAULT -1 -- number of arguments, -1 when not recorded
 );
 CREATE INDEX IF NOT EXISTS raw_calls_file ON raw_calls(file_id);
 CREATE TABLE IF NOT EXISTS endpoints (
@@ -144,7 +155,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -160,20 +171,28 @@ type Symbol struct {
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
 	Exported  bool   `json:"exported"`
+	Generated bool   `json:"generated,omitempty"` // declared in a generated file
 	Body      string `json:"body,omitempty"`
+	// Result is the declared result type of a Java or Python method, as a
+	// type reference the resolver can follow (not shown to clients).
+	Result string `json:"-"`
+	// Arity is a Java method's parameter count: "2", or "1+" with varargs,
+	// used to tell overloads declared in different classes apart.
+	Arity string `json:"-"`
 }
 
 // File is one indexed source file.
 type File struct {
-	ID      int64
-	Path    string // slash-separated, relative to the repository root
-	Dir     string // slash-separated directory, "." for the root
-	Lang    string
-	Package string // package or module name as declared in the source
-	Qual    string // prefix used for qualified symbol names in this file
-	Doc     string // package or module doc comment
-	Hash    string
-	Test    bool // a test-only file: no symbols, its functions go to test_funcs
+	ID        int64
+	Path      string // slash-separated, relative to the repository root
+	Dir       string // slash-separated directory, "." for the root
+	Lang      string
+	Package   string // package or module name as declared in the source
+	Qual      string // prefix used for qualified symbol names in this file
+	Doc       string // package or module doc comment
+	Hash      string
+	Test      bool // a test-only file: no symbols, its functions go to test_funcs
+	Generated bool // generated code, ranked after hand-written code in search
 }
 
 // TestFunc is a function or method declared in a test file.
@@ -193,9 +212,17 @@ type Import struct {
 // TypeRef. TypeRef is either a qualified type name, or "@importpath.Type"
 // for a type from another package, resolved later.
 type Field struct {
-	Owner   string
-	Name    string
-	TypeRef string
+	Owner    string
+	Name     string
+	TypeRef  string
+	TypeExpr string // Go: the field's type expression as written, e.g. "[]*Item"
+}
+
+// Var is a package-level variable and how its type can be found: an
+// encoded expression (see indexer/goexpr.go).
+type Var struct {
+	Qualified string
+	Expr      string
 }
 
 // Endpoint is an HTTP route found in the code.
@@ -232,6 +259,8 @@ const (
 	CallTypeName  = "typename"  // A short type name, B method (static calls)
 	CallMethod    = "method"    // B method name on a value of unknown type
 	CallTyped     = "typed"     // A type ref of the value, B method
+	CallSuper     = "super"     // A calling type, B method on a supertype ("" for its constructor)
+	CallExpr      = "expr"      // A encoded receiver expression (Go), B method
 )
 
 // RawCall is a call site as the parser saw it, before resolution.
@@ -241,6 +270,7 @@ type RawCall struct {
 	A, B   string
 	C      string
 	Line   int
+	Args   int // number of arguments (Java), -1 when not recorded
 }
 
 // Store wraps the SQLite connection.

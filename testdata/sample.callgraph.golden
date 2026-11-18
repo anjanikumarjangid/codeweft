@@ -1,7 +1,9 @@
-checkout.Checkout -> payments.NewPaymentService [exact] line 18
-checkout.Checkout -> payments.PaymentService.ProcessPayment [name] line 19
-checkout.Checkout -> checkout.newOrder [exact] line 23
-checkout.Checkout -> fmt.Errorf [external] line 21
+checkout.Checkout -> payments.NewPaymentService [exact] line 19
+checkout.Checkout -> payments.PaymentService.ProcessPayment [exact] line 20
+checkout.Checkout -> checkout.newOrder [exact] line 24
+checkout.Checkout -> fmt.Errorf [external] line 22
+checkout.audit -> payments.PaymentService.ProcessPayment [name] line 36
+checkout.audit -> example.com/servicelocator.Get [external] line 35
 checkout/cmd/server/main.main -> checkout.Routes [exact] line 13
 checkout/cmd/server/main.main -> net/http.NewServeMux [external] line 12
 checkout/cmd/server/main.main -> log.Fatal [external] line 14
@@ -22,6 +24,7 @@ com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRe
 com.shop.orders.InMemoryOrderRepository.save -> com.shop.orders.Order.id [exact] line 15
 com.shop.orders.InMemoryOrderRepository.save -> java.util.Map.put [external] line 15
 com.shop.orders.InMemoryOrderRepository.findById -> java.util.Map.get [external] line 19
+com.shop.orders.CountingOrderRepository.save -> com.shop.orders.InMemoryOrderRepository.save [exact] line 30
 com.shop.orders.OrderService.place -> com.shop.orders.Order.create [exact] line 20
 com.shop.orders.OrderService.place -> com.shop.billing.Billing.charge [exact] line 21
 com.shop.orders.OrderService.place -> com.shop.orders.Order.total [exact] line 21
@@ -34,6 +37,7 @@ py.inventory.api.reserve -> py.inventory.stock.StockService.reserve [exact] line
 py.inventory.api.__main__ -> fastapi.FastAPI [external] line 24
 py.inventory.api.__main__ -> fastapi.FastAPI.include_router [external] line 25
 py.inventory.models.ItemRepository.get -> py.inventory.models.Item [exact] line 17
+py.inventory.models.CachedItemRepository.get -> py.inventory.models.ItemRepository.get [exact] line 29
 py.inventory.stock.StockService.reserve -> py.inventory.models.ItemRepository.get [exact] line 15
 py.inventory.stock.StockService.reserve -> py.inventory.stock._enough [exact] line 16
 py.inventory.stock.StockService.reserve -> py.inventory.stock.StockService._log [exact] line 18
@@ -44,3 +48,4 @@ ratelimit.TokenBucket.Allow -> sync.Mutex.Unlock [external] line 23
 ratelimit.TokenBucket.refillLocked -> ratelimit.refill [exact] line 30
 ratelimit.TokenBucket.refillLocked -> time.Now [external] line 29
 ratelimit.refill -> time.Duration.Seconds [external] line 35
+ratelimit.GeneratedHelper -> ratelimit.refill [exact] line 6

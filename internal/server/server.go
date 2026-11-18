@@ -338,6 +338,7 @@ type SymbolSummary struct {
 	Signature string `json:"signature"`
 	Doc       string `json:"doc,omitempty"`
 	Location  string `json:"location"`
+	Generated bool   `json:"generated,omitempty"`
 }
 
 // SearchOutput is the structured result of search_code.
@@ -426,6 +427,7 @@ func summarize(sym store.Symbol) SymbolSummary {
 		Signature: sym.Signature,
 		Doc:       firstLine(sym.Doc),
 		Location:  fmt.Sprintf("%s:%d", sym.File, sym.StartLine),
+		Generated: sym.Generated,
 	}
 }
 
@@ -615,7 +617,11 @@ func formatSearch(query string, out SearchOutput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d result(s) for %q:\n", len(out.Results), query)
 	for i, r := range out.Results {
-		fmt.Fprintf(&b, "\n%d. %s (%s) at %s\n   %s\n", i+1, r.Qualified, r.Kind, r.Location, firstLine(r.Signature))
+		gen := ""
+		if r.Generated {
+			gen = ", generated code"
+		}
+		fmt.Fprintf(&b, "\n%d. %s (%s%s) at %s\n   %s\n", i+1, r.Qualified, r.Kind, gen, r.Location, firstLine(r.Signature))
 		if r.Doc != "" {
 			fmt.Fprintf(&b, "   %s\n", r.Doc)
 		}
@@ -650,7 +656,11 @@ func formatSymbols(name string, syms []SymbolDetail) string {
 		if i > 0 {
 			b.WriteString("\n---\n")
 		}
-		fmt.Fprintf(&b, "%s (%s)\n%s:%d-%d\n", s.Qualified, s.Kind, s.File, s.StartLine, s.EndLine)
+		gen := ""
+		if s.Generated {
+			gen = ", generated code"
+		}
+		fmt.Fprintf(&b, "%s (%s%s)\n%s:%d-%d\n", s.Qualified, s.Kind, gen, s.File, s.StartLine, s.EndLine)
 		if s.Doc != "" {
 			fmt.Fprintf(&b, "\n%s\n", s.Doc)
 		}

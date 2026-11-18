@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 )
 
 // Tx is a write batch used while indexing. Indexing a whole repository in one
@@ -45,7 +48,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM vars`, `DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {
@@ -93,8 +96,8 @@ func (t *Tx) DeleteFile(path string) error {
 
 // AddFile inserts a file and returns its id.
 func (t *Tx) AddFile(f File) (int64, error) {
-	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test)
+	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test, f.Generated)
 	if err != nil {
 		return 0, err
 	}
@@ -104,10 +107,10 @@ func (t *Tx) AddFile(f File) (int64, error) {
 // AddSymbol inserts a symbol and its full-text search row.
 func (t *Tx) AddSymbol(fileID int64, sym Symbol) error {
 	res, err := t.exec(`INSERT INTO symbols
-		(file_id, package, name, qualified, kind, signature, doc, start_line, end_line, exported, body)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(file_id, package, name, qualified, kind, signature, doc, start_line, end_line, exported, body, result, arity)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fileID, sym.Package, sym.Name, sym.Qualified, sym.Kind, sym.Signature, sym.Doc,
-		sym.StartLine, sym.EndLine, sym.Exported, sym.Body)
+		sym.StartLine, sym.EndLine, sym.Exported, sym.Body, sym.Result, sym.Arity)
 	if err != nil {
 		return err
 	}
@@ -128,8 +131,14 @@ func (t *Tx) AddImport(fileID int64, imp Import) error {
 
 // AddField records a struct or class field with its type.
 func (t *Tx) AddField(fileID int64, f Field) error {
-	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref) VALUES(?, ?, ?, ?)`,
-		fileID, f.Owner, f.Name, f.TypeRef)
+	_, err := t.exec(`INSERT INTO fields(file_id, owner, name, type_ref, type_expr) VALUES(?, ?, ?, ?, ?)`,
+		fileID, f.Owner, f.Name, f.TypeRef, f.TypeExpr)
+	return err
+}
+
+// AddVar records a package-level variable.
+func (t *Tx) AddVar(fileID int64, v Var) error {
+	_, err := t.exec(`INSERT INTO vars(file_id, qualified, expr) VALUES(?, ?, ?)`, fileID, v.Qualified, v.Expr)
 	return err
 }
 
@@ -156,21 +165,23 @@ func (t *Tx) AddEndpoint(fileID int64, e Endpoint) error {
 
 // AddRawCall records an unresolved call site.
 func (t *Tx) AddRawCall(fileID int64, c RawCall) error {
-	_, err := t.exec(`INSERT INTO raw_calls(file_id, caller, form, a, b, c, line) VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		fileID, c.Caller, c.Form, c.A, c.B, c.C, c.Line)
+	_, err := t.exec(`INSERT INTO raw_calls(file_id, caller, form, a, b, c, line, args) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		fileID, c.Caller, c.Form, c.A, c.B, c.C, c.Line, c.Args)
 	return err
 }
 
 // ResolveInput is everything the resolver needs, loaded in bulk.
 type ResolveInput struct {
-	Module    string               // Go module path, "" if none
-	Symbols   map[string]int64     // qualified name -> id
-	Qualified map[int64]string     // id -> qualified name
-	Kinds     map[int64]string     // id -> kind
-	Methods   map[string][]int64   // short method name -> ids
-	Types     map[string][]string  // short type name -> qualified names
-	DirQual   map[string]string    // directory -> qualifier (Go packages)
-	Fields    map[[2]string]string // (owner, field) -> type ref
+	Module    string                // Go module path, "" if none
+	Symbols   map[string]int64      // qualified name -> id
+	Qualified map[int64]string      // id -> qualified name
+	Kinds     map[int64]string      // id -> kind
+	Results   map[int64]string      // id -> declared result type reference (Java, Python)
+	Overloads map[string][]Overload // qualified name -> every declaration with it
+	Methods   map[string][]int64    // short method name -> ids
+	Types     map[string][]string   // short type name -> qualified names
+	DirQual   map[string]string     // directory -> qualifier (Go packages)
+	Fields    map[[2]string]string  // (owner, field) -> type ref
 	Calls     []RawCall
 	CallFiles []string         // file path per call, parallel to Calls
 	TestFuncs map[string]int64 // qualified name -> test_funcs id
@@ -193,17 +204,23 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		Fields:    map[[2]string]string{},
 		TestFuncs: map[string]int64{},
 		ReExports: map[string]string{},
+		Results:   map[int64]string{},
+		Overloads: map[string][]Overload{},
 	}
-	rows, err := t.tx.Query(`SELECT id, name, qualified, kind FROM symbols ORDER BY id`)
+	rows, err := t.tx.Query(`SELECT id, name, qualified, kind, result, arity FROM symbols ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id int64
-		var name, q, kind string
-		if err := rows.Scan(&id, &name, &q, &kind); err != nil {
+		var name, q, kind, result, arity string
+		if err := rows.Scan(&id, &name, &q, &kind, &result, &arity); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		in.Overloads[q] = append(in.Overloads[q], Overload{ID: id, Arity: arity})
+		if result != "" {
+			in.Results[id] = result
 		}
 		if _, dup := in.Symbols[q]; !dup {
 			in.Symbols[q] = id
@@ -214,7 +231,11 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		case "method", "interface method", "constructor":
 			in.Methods[name] = append(in.Methods[name], id)
 		case "struct", "interface", "type", "class", "enum", "record":
-			in.Types[name] = append(in.Types[name], q)
+			// The same type can be declared twice under one name (Guava
+			// keeps android/ and guava/ copies); that is not ambiguity.
+			if !slices.Contains(in.Types[name], q) {
+				in.Types[name] = append(in.Types[name], q)
+			}
 		}
 	}
 	rows.Close()
@@ -288,7 +309,7 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		return nil, err
 	}
 
-	rows, err = t.tx.Query(`SELECT f.path, r.caller, r.form, r.a, r.b, r.c, r.line
+	rows, err = t.tx.Query(`SELECT f.path, r.caller, r.form, r.a, r.b, r.c, r.line, r.args
 		FROM raw_calls r JOIN files f ON f.id = r.file_id ORDER BY r.rowid`)
 	if err != nil {
 		return nil, err
@@ -297,13 +318,33 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 	for rows.Next() {
 		var c RawCall
 		var p string
-		if err := rows.Scan(&p, &c.Caller, &c.Form, &c.A, &c.B, &c.C, &c.Line); err != nil {
+		if err := rows.Scan(&p, &c.Caller, &c.Form, &c.A, &c.B, &c.C, &c.Line, &c.Args); err != nil {
 			return nil, err
 		}
 		in.Calls = append(in.Calls, c)
 		in.CallFiles = append(in.CallFiles, p)
 	}
 	return in, rows.Err()
+}
+
+// Overload is one declaration of a qualified name, with its arity.
+type Overload struct {
+	ID    int64
+	Arity string
+}
+
+// Fits reports whether a call with args arguments (-1: unknown) can call
+// this declaration.
+func (o Overload) Fits(args int) bool {
+	if args < 0 || o.Arity == "" {
+		return true
+	}
+	if n, ok := strings.CutSuffix(o.Arity, "+"); ok {
+		min, err := strconv.Atoi(n)
+		return err != nil || args >= min
+	}
+	n, err := strconv.Atoi(o.Arity)
+	return err != nil || args == n
 }
 
 // Edge is a resolved (or external) call.

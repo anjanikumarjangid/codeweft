@@ -2,4 +2,5 @@
 
 package ratelimit
 
-func GeneratedHelper() {}
+// GeneratedHelper is generated code calling hand-written code.
+func GeneratedHelper() float64 { return refill(1, 2, 0) }

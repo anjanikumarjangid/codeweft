@@ -144,22 +144,40 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			kind, qualified := "func", qual+"."+d.Name.Name
-			recvVar, recvType := "", ""
 			if d.Recv != nil && len(d.Recv.List) > 0 {
 				kind = "method"
-				recvType = qual + "." + receiverName(d.Recv.List[0].Type)
-				qualified = recvType + "." + d.Name.Name
-				if len(d.Recv.List[0].Names) > 0 {
-					recvVar = d.Recv.List[0].Names[0].Name
-				}
+				qualified = qual + "." + receiverName(d.Recv.List[0].Type) + "." + d.Name.Name
 			}
 			add(d.Name.Name, qualified, kind, funcSignature(fset, d), d.Doc.Text(), d)
 			if d.Body != nil {
-				vars := goVarTypes(d, typeRef)
-				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, recvVar, recvType, aliases, vars)...)
+				enc := &goEncoder{fset: fset, src: src, aliases: aliases,
+					locals: goLocals(d), visiting: map[goLocalKey]bool{}, typeParams: goTypeParams(fset, d)}
+				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
 			}
 
 		case *ast.GenDecl:
+			if d.Tok == token.VAR {
+				// Package-level variables: how their type can be found.
+				enc := &goEncoder{fset: fset, src: src, aliases: aliases, locals: map[string][]goLocal{}, visiting: map[goLocalKey]bool{}}
+				for _, spec := range d.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for i, n := range vs.Names {
+						var e string
+						switch {
+						case vs.Type != nil:
+							e = enc.encodeJSON(&ast.CompositeLit{Type: vs.Type})
+						case len(vs.Values) == len(vs.Names):
+							e = enc.encodeJSON(vs.Values[i])
+						case len(vs.Values) == 1 && i == 0:
+							e = enc.encodeJSON(vs.Values[0])
+						}
+						if e != "" && n.Name != "_" {
+							res.Vars = append(res.Vars, store.Var{Qualified: qual + "." + n.Name, Expr: e})
+						}
+					}
+				}
+				continue
+			}
 			if d.Tok != token.TYPE {
 				continue
 			}
@@ -181,18 +199,19 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				case *ast.StructType:
 					for _, fld := range t.Fields.List {
 						ref := typeRef(fld.Type)
-						if ref == "" {
-							continue
-						}
 						names := fld.Names
 						if len(names) == 0 { // embedded field: named after its type
+							if ref == "" {
+								continue
+							}
 							names = []*ast.Ident{{Name: ref[strings.LastIndex(ref, ".")+1:]}}
 							if ref := embeddedRef(fld.Type, typeRef); ref != "" {
 								res.Supertypes = append(res.Supertypes, store.Supertype{Owner: owner, Kind: store.SuperEmbeds, TypeRef: ref})
 							}
 						}
 						for _, n := range names {
-							res.Fields = append(res.Fields, store.Field{Owner: owner, Name: n.Name, TypeRef: ref})
+							res.Fields = append(res.Fields, store.Field{Owner: owner, Name: n.Name, TypeRef: ref,
+								TypeExpr: printNode(fset, fld.Type)})
 						}
 					}
 				case *ast.InterfaceType:
@@ -243,69 +262,9 @@ func embeddedRef(e ast.Expr, typeRef func(ast.Expr) string) string {
 	return typeRef(e)
 }
 
-// goVarTypes records the declared type of local names where the syntax
-// states it: parameters, `var x T`, and `x := T{...}` / `x := &T{...}`.
-// Scopes are ignored; shadowing is rare enough not to matter here.
-func goVarTypes(d *ast.FuncDecl, typeRef func(ast.Expr) string) map[string]string {
-	vars := map[string]string{}
-	addFields := func(fl *ast.FieldList) {
-		if fl == nil {
-			return
-		}
-		for _, f := range fl.List {
-			if ref := typeRef(f.Type); ref != "" {
-				for _, n := range f.Names {
-					vars[n.Name] = ref
-				}
-			}
-		}
-	}
-	addFields(d.Type.Params)
-	litType := func(e ast.Expr) ast.Expr {
-		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
-			e = u.X
-		}
-		if cl, ok := e.(*ast.CompositeLit); ok {
-			return cl.Type
-		}
-		return nil
-	}
-	ast.Inspect(d.Body, func(n ast.Node) bool {
-		switch t := n.(type) {
-		case *ast.ValueSpec:
-			if t.Type != nil {
-				if ref := typeRef(t.Type); ref != "" {
-					for _, name := range t.Names {
-						vars[name.Name] = ref
-					}
-				}
-			}
-		case *ast.AssignStmt:
-			if t.Tok != token.DEFINE || len(t.Lhs) != len(t.Rhs) {
-				return true
-			}
-			for i, lhs := range t.Lhs {
-				id, ok := lhs.(*ast.Ident)
-				if !ok {
-					continue
-				}
-				if te := litType(t.Rhs[i]); te != nil {
-					if ref := typeRef(te); ref != "" {
-						vars[id.Name] = ref
-					}
-				}
-			}
-		case *ast.FuncLit:
-			addFields(t.Type.Params)
-		}
-		return true
-	})
-	return vars
-}
-
 // goCalls collects call sites inside a function body, including calls inside
 // closures, which are attributed to the enclosing function.
-func goCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual, recvVar, recvType string, aliases, vars map[string]string) []store.RawCall {
+func goCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual string, aliases map[string]string, enc *goEncoder) []store.RawCall {
 	var out []store.RawCall
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -337,29 +296,12 @@ func goCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual, recvVar, re
 			rc.Form, rc.A = store.CallQualified, qual+"."+t.Name
 		case *ast.SelectorExpr:
 			name := t.Sel.Name
-			switch x := t.X.(type) {
-			case *ast.Ident:
-				switch {
-				case recvVar != "" && x.Name == recvVar:
-					rc.Form, rc.A, rc.B = store.CallQualified, recvType+"."+name, name
-				case vars[x.Name] != "":
-					rc.Form, rc.A, rc.B = store.CallTyped, vars[x.Name], name
-				case aliases[x.Name] != "":
-					rc.Form, rc.A, rc.B = store.CallImport, aliases[x.Name], name
-				default:
-					rc.Form, rc.B = store.CallMethod, name
-				}
-			case *ast.SelectorExpr:
-				id, ok := x.X.(*ast.Ident)
-				switch {
-				case ok && recvVar != "" && id.Name == recvVar:
-					rc.Form, rc.A, rc.B, rc.C = store.CallField, recvType, x.Sel.Name, name
-				case ok && vars[id.Name] != "":
-					rc.Form, rc.A, rc.B, rc.C = store.CallField, vars[id.Name], x.Sel.Name, name
-				default:
-					rc.Form, rc.B = store.CallMethod, name
-				}
-			default:
+			if id, ok := t.X.(*ast.Ident); ok && enc.isPackage(id.Name, id.Pos()) {
+				rc.Form, rc.A, rc.B = store.CallImport, aliases[id.Name], name
+			} else if x := enc.encodeJSON(t.X); x != "" {
+				// A method on a value: its type is worked out by the resolver.
+				rc.Form, rc.A, rc.B = store.CallExpr, x, name
+			} else {
 				rc.Form, rc.B = store.CallMethod, name
 			}
 		default:

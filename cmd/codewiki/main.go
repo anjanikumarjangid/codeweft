@@ -24,10 +24,10 @@ import (
 const usage = `codewiki: structured codebase context for AI coding agents
 
 Usage:
-  codewiki index  [--db FILE] [--include-tests] [--exclude dir1,dir2] PATH
+  codewiki index  [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] PATH
   codewiki query  [--db FILE] [--kind KIND] [--limit N] [--json] TEXT...
   codewiki symbol [--db FILE] [--json] NAME
-  codewiki reindex [--db FILE] [--include-tests] [--exclude dir1,dir2] [PATH]
+  codewiki reindex [--db FILE] [--include-tests] [--skip-generated] [--platform GOOS/GOARCH|all] [--exclude dir1,dir2] [PATH]
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
   codewiki impl   [--db FILE] [--up] [--depth N] NAME
   codewiki tests  [--db FILE] [--depth N] [--json] NAME
@@ -39,8 +39,10 @@ Usage:
 
 By default the index is stored at PATH/.codewiki/index.db, and other commands
 look for .codewiki/index.db in the current directory. reindex, watch and
-serve --watch reuse the --include-tests and --exclude settings the index was
-built with; flags passed to reindex override them.
+serve --watch reuse the --include-tests, --skip-generated, --platform and
+--exclude settings the index was built with; flags passed to reindex
+override them. Go files are indexed for one build configuration, by default
+this machine's GOOS/GOARCH; --platform all indexes every file.
 
 serve needs no flags when started inside a repository: it finds the
 repository root (the nearest directory with .codewiki/ or .git), builds the
@@ -97,6 +99,8 @@ func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	db := fs.String("db", "", "index file (default PATH/"+defaultDB+")")
 	tests := fs.Bool("include-tests", false, "also index test code as ordinary, searchable code")
+	skipGen := fs.Bool("skip-generated", false, `leave out files marked "Code generated ... DO NOT EDIT."`)
+	platform := fs.String("platform", "", "Go build configuration to index, GOOS/GOARCH or all (default: this machine's)")
 	exclude := fs.String("exclude", "", "comma-separated directory names to skip")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck // ExitOnError
 	if fs.NArg() != 1 {
@@ -113,14 +117,14 @@ func runIndex(args []string) error {
 	defer st.Close()
 	ensureGitignore(filepath.Dir(*db))
 
-	opts := indexer.Options{IncludeTests: *tests, Exclude: splitList(*exclude)}
+	opts := indexer.Options{IncludeTests: *tests, SkipGenerated: *skipGen, Platform: *platform, Exclude: splitList(*exclude)}
 	start := time.Now()
 	res, err := indexer.Index(root, st, opts)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "indexed %d files, %d symbols, %d call edges (%d skipped) in %s\nindex: %s\n",
-		res.Files, res.Symbols, res.Edges, res.Skipped, time.Since(start).Round(time.Millisecond), *db)
+	fmt.Fprintf(os.Stderr, "indexed %d files (%d generated), %d symbols, %d call edges (%d skipped, %d Go files for other platforms) in %s\nindex: %s\n",
+		res.Files, res.Generated, res.Symbols, res.Edges, res.Skipped, res.OtherPlatform, time.Since(start).Round(time.Millisecond), *db)
 	return nil
 }
 
@@ -204,6 +208,8 @@ func runReindex(args []string) error {
 	fs := flag.NewFlagSet("reindex", flag.ExitOnError)
 	db := fs.String("db", defaultDB, "index file")
 	tests := fs.Bool("include-tests", false, "also index test code as ordinary, searchable code")
+	skipGen := fs.Bool("skip-generated", false, `leave out files marked "Code generated ... DO NOT EDIT."`)
+	platform := fs.String("platform", "", "Go build configuration to index, GOOS/GOARCH or all")
 	exclude := fs.String("exclude", "", "comma-separated directory names to skip")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck
 	st, err := openExisting(*db)
@@ -227,6 +233,10 @@ func runReindex(args []string) error {
 		switch f.Name {
 		case "include-tests":
 			opts.IncludeTests = *tests
+		case "skip-generated":
+			opts.SkipGenerated = *skipGen
+		case "platform":
+			opts.Platform = *platform
 		case "exclude":
 			opts.Exclude = splitList(*exclude)
 		}

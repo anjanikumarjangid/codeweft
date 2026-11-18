@@ -6,6 +6,8 @@ import (
 	"go/types"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
@@ -27,11 +29,7 @@ import (
 // An interface that embeds an interface from outside the repository has a
 // method set the index cannot see in full, so no type is said to implement
 // it: the relation would be a guess.
-func resolveTypes(tx *store.Tx, r resolver) error {
-	in, err := tx.LoadTypeInput()
-	if err != nil {
-		return err
-	}
+func resolveTypes(tx *store.Tx, r resolver, in *store.TypeInput) error {
 	var edges []store.TypeEdge
 	embeds := map[string][]string{} // Go type -> resolved embedded types ("" when unknown)
 	for _, st := range in.Supertypes {
@@ -71,6 +69,7 @@ func resolveTypes(tx *store.Tx, r resolver) error {
 type promoted struct {
 	shape string
 	depth int
+	pkg   string // package of the type that declares the method
 }
 
 // methodSet is the methods of a Go type by name. complete is false when an
@@ -92,7 +91,7 @@ func goImplementations(in *store.TypeInput, embeds map[string][]string, ids map[
 		ms := methodSet{methods: map[string]promoted{}, complete: true}
 		iface := in.GoTypes[t].Kind == "interface"
 		for name, d := range in.GoMethods[t] {
-			ms.methods[name] = promoted{shape: names.shape(d, name, iface)}
+			ms.methods[name] = promoted{shape: names.shape(d, name, iface), pkg: t[:strings.LastIndex(t, ".")]}
 		}
 		// Promoted methods follow Go's selector rule: the shallowest
 		// embedding wins, and two at the same depth cancel each other out
@@ -112,7 +111,7 @@ func goImplementations(in *store.TypeInput, embeds map[string][]string, ids map[
 			default:
 				sub := setOf(e, visiting)
 				for name, m := range sub.methods {
-					found[name] = append(found[name], promoted{shape: m.shape, depth: m.depth + 1})
+					found[name] = append(found[name], promoted{shape: m.shape, depth: m.depth + 1, pkg: m.pkg})
 				}
 				if !sub.complete {
 					ms.complete = false
@@ -181,6 +180,12 @@ func goImplementations(in *store.TypeInput, embeds map[string][]string, ids map[
 			have := sets[t].methods
 			for name, m := range want.methods {
 				if m.shape == "" || have[name].shape != m.shape {
+					continue candidates
+				}
+				// An unexported method name is only the same method when it
+				// is declared in the same package as the interface's; a type
+				// elsewhere can still have it, promoted from an embedded type.
+				if r, _ := utf8.DecodeRuneInString(name); !unicode.IsUpper(r) && have[name].pkg != m.pkg {
 					continue candidates
 				}
 			}

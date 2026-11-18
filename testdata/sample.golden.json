@@ -8,8 +8,8 @@
     "kind": "struct",
     "signature": "type Order struct",
     "doc": "Order is a paid cart.",
-    "start_line": 11,
-    "end_line": 14,
+    "start_line": 12,
+    "end_line": 15,
     "exported": true
   },
   {
@@ -21,8 +21,8 @@
     "kind": "func",
     "signature": "func Checkout(gw payments.Gateway, customerID string, cents int64) (*Order, error)",
     "doc": "Checkout charges the customer for the cart total and creates an order.",
-    "start_line": 17,
-    "end_line": 24,
+    "start_line": 18,
+    "end_line": 25,
     "exported": true
   },
   {
@@ -33,8 +33,59 @@
     "qualified": "checkout.newOrder",
     "kind": "func",
     "signature": "func newOrder(chargeID string) *Order",
-    "start_line": 26,
-    "end_line": 28,
+    "start_line": 27,
+    "end_line": 29,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "audit",
+    "qualified": "checkout.audit",
+    "kind": "func",
+    "signature": "func audit()",
+    "doc": "audit charges through a service found by a package outside the\nrepository. The service's type is not stated anywhere the index can see,\nso the call is linked by the method's unique name.",
+    "start_line": 34,
+    "end_line": 37,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "localSettler",
+    "qualified": "checkout.localSettler",
+    "kind": "struct",
+    "signature": "type localSettler struct",
+    "doc": "localSettler has a settle method, but cannot implement payments.settler:\nthat interface's method is unexported.",
+    "start_line": 41,
+    "end_line": 41,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "settle",
+    "qualified": "checkout.localSettler.settle",
+    "kind": "method",
+    "signature": "func (localSettler) settle(chargeID string) error",
+    "start_line": 43,
+    "end_line": 43,
+    "exported": false
+  },
+  {
+    "file": "checkout/checkout.go",
+    "lang": "go",
+    "package": "checkout",
+    "name": "wrappedGateway",
+    "qualified": "checkout.wrappedGateway",
+    "kind": "struct",
+    "signature": "type wrappedGateway struct",
+    "doc": "wrappedGateway embeds a payments type, so it has StripeGateway's\nunexported settle method, promoted, and does implement payments.settler.",
+    "start_line": 47,
+    "end_line": 49,
     "exported": false
   },
   {
@@ -785,6 +836,43 @@
     "exported": true
   },
   {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settler",
+    "qualified": "payments.settler",
+    "kind": "interface",
+    "signature": "type settler interface {\n\tsettle(chargeID string) error\n}",
+    "doc": "settler has an unexported method: only types in package payments\ncan implement it.",
+    "start_line": 106,
+    "end_line": 108,
+    "exported": false
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settle",
+    "qualified": "payments.settler.settle",
+    "kind": "interface method",
+    "signature": "settle(chargeID string) error",
+    "start_line": 107,
+    "end_line": 107,
+    "exported": false
+  },
+  {
+    "file": "payments/service.go",
+    "lang": "go",
+    "package": "payments",
+    "name": "settle",
+    "qualified": "payments.StripeGateway.settle",
+    "kind": "method",
+    "signature": "func (g *StripeGateway) settle(chargeID string) error",
+    "start_line": 110,
+    "end_line": 110,
+    "exported": false
+  },
+  {
     "file": "py/inventory/api.py",
     "lang": "python",
     "package": "py.inventory.api",
@@ -1036,5 +1124,19 @@
     "start_line": 34,
     "end_line": 36,
     "exported": false
+  },
+  {
+    "file": "ratelimit/zz_generated.go",
+    "lang": "go",
+    "package": "ratelimit",
+    "name": "GeneratedHelper",
+    "qualified": "ratelimit.GeneratedHelper",
+    "kind": "func",
+    "signature": "func GeneratedHelper() float64",
+    "doc": "GeneratedHelper is generated code calling hand-written code.",
+    "start_line": 6,
+    "end_line": 6,
+    "exported": true,
+    "generated": true
   }
 ]

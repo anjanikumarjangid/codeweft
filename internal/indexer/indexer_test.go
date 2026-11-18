@@ -28,10 +28,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 5 Go, 5 Java and 4 Python files; the generated Go file is skipped and
-	// the _test.go file ignored.
-	if res.Files != 14 || res.Skipped != 1 {
-		t.Fatalf("got %d files, %d skipped; want 14 and 1", res.Files, res.Skipped)
+	// 6 Go (one of them generated), 5 Java and 4 Python files; test files
+	// are kept apart and not counted.
+	if res.Files != 15 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 15 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 14 || syms != 82 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 82", files, syms)
+	if files != 15 || syms != 90 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 90", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -254,16 +254,21 @@ func TestImplementations(t *testing.T) {
 		// *StripeGateway; FakeGateway.Refund() has the wrong parameters; the
 		// interface that embeds Gateway extends it.
 		{"Gateway implementations", names(st.Subtypes(one("payments.Gateway").ID, 5)),
-			"payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
+			"checkout.wrappedGateway[method set,1] payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
 		// DoubleGateway's Void is ambiguous (two embeddings at depth 1).
 		{"VoidingGateway implementations", names(st.Subtypes(one("payments.VoidingGateway").ID, 5)),
-			"payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+			"checkout.wrappedGateway[method set,1] payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		// Overlapping embedded interfaces: the method set is their union.
 		{"AuditedGateway implementations", names(st.Subtypes(one("payments.AuditedGateway").ID, 5)),
-			"payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+			"checkout.wrappedGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		{"embedding is not subtyping", names(st.Subtypes(one("payments.StripeGateway").ID, 5)), ""},
 		{"LoggingGateway supertypes", names(st.Supertypes(one("payments.LoggingGateway").ID, 1)),
-			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1]"},
+			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1] payments.settler[method set,1]"},
+		// An unexported method is only the interface's own when declared in
+		// its package: checkout.localSettler's settle is not, while
+		// checkout.wrappedGateway gets payments' settle by embedding.
+		{"settler implementations", names(st.Subtypes(one("payments.settler").ID, 5)),
+			"checkout.wrappedGateway[method set,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
 		// The predeclared error interface contributes Error() string.
 		{"CodedError implementations", names(st.Subtypes(one("payments.CodedError").ID, 5)),
 			"payments.DeclineError[method set,1]"},
@@ -303,8 +308,11 @@ func TestCallersAndGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers) != 1 || callers[0].Qualified != "checkout.Checkout" {
-		t.Fatalf("callers of ProcessPayment = %+v, want checkout.Checkout", callers)
+	// Checkout's call is exact (svc's type comes from NewPaymentService's
+	// result); audit's goes through a function value, matched by name.
+	if len(callers) != 2 || callers[0].Qualified != "checkout.Checkout" || callers[0].Confidence != "exact" ||
+		callers[1].Qualified != "checkout.audit" || callers[1].Confidence != "name" {
+		t.Fatalf("callers of ProcessPayment = %+v, want checkout.Checkout (exact) and checkout.audit (name)", callers)
 	}
 
 	// Checkout -> ProcessPayment -> Gateway.Charge, two levels deep.
@@ -380,7 +388,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 17 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 18 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -403,7 +411,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 15 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 16 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -457,10 +465,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 14 default files + 2 Go and Java test files - 4 Python files under
+	// 15 default files + 2 Go and Java test files - 4 Python files under
 	// py/ (the Python test file is under py/ too).
-	if res.Files != 12 {
-		t.Fatalf("indexed %d files, want 12", res.Files)
+	if res.Files != 13 {
+		t.Fatalf("indexed %d files, want 13", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -481,8 +489,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 11 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 11 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 12 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 12 unchanged, 0 removed", res)
 	}
 }
 
@@ -845,5 +853,486 @@ func TestBuildOutputDirs(t *testing.T) {
 	}
 	if got := index(indexer.Options{Exclude: []string{"build"}}); got["go/build/build.go"] {
 		t.Error("--exclude build should skip go/build too")
+	}
+}
+
+// TestSuperAndModulePathCalls covers calls the resolver used to drop or
+// guess: super calls in Java and Python, and Python calls through a
+// dotted module path.
+func TestSuperAndModulePathCalls(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("j/Base.java", `package j;
+class Base {
+    Base(int x) {}
+    void close() {}
+}
+interface Named {
+    default String name() { return "n"; }
+}
+class Middle extends Base {
+    Middle() { super(1); }
+}
+class Leaf extends Middle implements Named {
+    Leaf() { this(2); }
+    Leaf(int y) { super(); }
+    void close() { super.close(); }
+    public String name() { return Named.super.name(); }
+    public String toString() { return super.toString(); }
+}
+class Repo extends org.springframework.data.Repository {
+    void save() { super.save(); }
+}
+class Outer {
+    static class Inner {
+        void open() {}
+    }
+}
+class Sub extends Outer.Inner {
+    void open() { super.open(); }
+}
+`)
+	write("p/base.py", "class Base:\n    def get(self):\n        return 1\n\n\nclass Child(Base):\n    def get(self):\n        return super(Child, self).get()\n")
+	write("pkg/__init__.py", "from .api import get\n")
+	write("pkg/api.py", "def get():\n    return None\n")
+	write("pkg/models.py", "class Response:\n    pass\n")
+	write("app.py", "import os\nimport pkg\nimport pkg.models\n\n\nclass Paths:\n    def join(self):\n        pass\n\n\ndef main():\n    pkg.models.Response()\n    os.path.join('a', 'b')\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		var out []string
+		for _, s := range syms { // overloaded constructors share a name
+			refs, err := st.Callees(s.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range refs {
+				out = append(out, r.Qualified+"["+r.Confidence+"]")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// super.close() on Leaf finds Base.close two levels up.
+		{"j.Leaf.close", "j.Base.close[exact]"},
+		// Named.super.name() calls the interface's default method.
+		{"j.Leaf.name", "j.Named.name[exact]"},
+		// super.toString() looks in the superclass chain only, never in
+		// the class's own interfaces (Named has no toString anyway), and
+		// that chain ends at Object, which is not indexed: no edge.
+		{"j.Leaf.toString", ""},
+		// super(1) calls Base's constructor; Leaf's constructors call
+		// this(2), and super() into Middle's constructor.
+		{"j.Middle.Middle", "j.Base.Base[exact]"},
+		{"j.Leaf.Leaf", "j.Leaf.Leaf[exact] j.Middle.Middle[exact]"},
+		// A nested superclass written as Outer.Inner.
+		{"j.Sub.open", "j.Outer.Inner.open[exact]"},
+		// A supertype outside the repository: an external reference.
+		{"j.Repo.save", "org.springframework.data.Repository.save[external]"},
+		// Python's super(Cls, self) form.
+		{"p.base.Child.get", "p.base.Base.get[exact]"},
+		// A module path rooted at an import resolves, and os.path.join is
+		// external instead of matching the repository's only join method.
+		{"app.main", "pkg.models.Response[exact] os.path.join[external]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}
+
+// TestGeneratedCode checks that generated files are indexed, flagged and
+// ranked after hand-written code, and left out with SkipGenerated.
+func TestGeneratedCode(t *testing.T) {
+	st := indexSample(t)
+	hits, err := st.Search("helper", store.SearchOptions{})
+	if err != nil || len(hits) == 0 {
+		t.Fatalf("search: %v %v", hits, err)
+	}
+	last := hits[len(hits)-1]
+	if last.Qualified != "ratelimit.GeneratedHelper" || !last.Generated {
+		t.Errorf("generated code should come last and be flagged: %+v", hits)
+	}
+	for _, h := range hits[:len(hits)-1] {
+		if h.Generated {
+			t.Errorf("%s flagged as generated", h.Qualified)
+		}
+	}
+
+	st2, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
+	if err != nil || res.Files != 14 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 14 files, 1 skipped", res, err)
+	}
+	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
+		t.Error("generated symbol indexed with SkipGenerated")
+	}
+}
+
+// TestPlatform checks that Go files are indexed for one build
+// configuration, so declarations of the same name for different platforms
+// are not merged.
+func TestPlatform(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, rel), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("conn.go", "package m\n\n// Conn is a connection.\ntype Conn interface{ Close() error }\n\nfunc use(c Conn) { c.Close() }\n")
+	write("conn_linux.go", "package m\n\nfunc open() string { return linuxName() }\n\nfunc linuxName() string { return \"l\" }\n")
+	write("conn_windows.go", "package m\n\nfunc open() string { return windowsName() }\n\nfunc windowsName() string { return \"w\" }\n")
+	write("stub.go", "//go:build nethttpomit\n\npackage m\n\n// Conn is a stub with the interface's name.\ntype Conn struct{}\n")
+	callees := func(platform string) string {
+		t.Helper()
+		st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if _, err := indexer.Index(repo, st, indexer.Options{Platform: platform}); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, name := range []string{"m.open", "m.use"} {
+			syms, _ := st.Lookup(name)
+			for _, s := range syms {
+				refs, _ := st.Callees(s.ID, false)
+				for _, r := range refs {
+					out = append(out, s.Qualified+"->"+r.Qualified)
+				}
+			}
+		}
+		conn, _ := st.Lookup("m.Conn")
+		for _, c := range conn {
+			out = append(out, "Conn:"+c.Kind)
+		}
+		return strings.Join(out, " ")
+	}
+	// The stub's build tag is never set, so Conn stays an interface.
+	if got := callees("linux/amd64"); got != "m.open->m.linuxName m.use->m.Conn.Close Conn:interface" {
+		t.Errorf("linux/amd64: %s", got)
+	}
+	if got := callees("windows/amd64"); got != "m.open->m.windowsName m.use->m.Conn.Close Conn:interface" {
+		t.Errorf("windows/amd64: %s", got)
+	}
+	// "all" merges both platforms' open, and the stub.
+	if got := callees("all"); !strings.Contains(got, "m.open->m.linuxName") || !strings.Contains(got, "m.open->m.windowsName") || !strings.Contains(got, "Conn:struct") {
+		t.Errorf("all: %s", got)
+	}
+	if _, err := indexer.Index(repo, nil, indexer.Options{Platform: "linux"}); err == nil || !strings.Contains(err.Error(), "GOOS/GOARCH") {
+		t.Errorf("invalid platform: %v", err)
+	}
+}
+
+// TestGoExpressionTypes covers receivers whose type the index works out
+// from declarations: anonymous struct and interface types, generic type
+// parameters, and locals that shadow a package.
+func TestGoExpressionTypes(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("lock/lock.go", "package lock\n\n// Mutex locks.\ntype Mutex struct{}\n\nfunc (m *Mutex) Lock() {}\n\n// Counter counts.\ntype Counter struct{}\n\nfunc (c *Counter) Add(n int) int { return n }\n")
+	write("app/app.go", `package app
+
+import (
+	"example.com/m/lock"
+)
+
+// Point is implemented by curve points.
+type Point[P any] interface {
+	Add(p P) P
+	Bytes() []byte
+}
+
+// Curve works on points of type P.
+type Curve[P Point[P]] struct{ base P }
+
+func (c *Curve[P]) Double(p P) []byte {
+	return p.Add(p).Bytes()
+}
+
+func Sum[P Point[P]](a, b P) []byte {
+	return a.Add(b).Bytes()
+}
+
+var registry struct {
+	lock.Mutex
+	stats struct{ calls lock.Counter }
+}
+
+func Register() {
+	registry.Lock()
+	registry.stats.calls.Add(1)
+	var r interface{ lock.Mutex }
+	_ = r
+}
+
+func Shadow() {
+	lock := lock.Counter{}
+	lock.Add(2)
+}
+
+func (c *Curve[P]) newPoint() P { return c.base }
+
+func (c *Curve[P]) Fresh() []byte {
+	return c.newPoint().Bytes()
+}
+
+// Node is a syntax tree node.
+type Node interface{ Pos() int }
+
+// Ident is a name.
+type Ident struct{}
+
+func (Ident) Pos() int    { return 1 }
+func (Ident) Name() string { return "x" }
+
+// Lit is a literal.
+type Lit struct{}
+
+func (Lit) Pos() int { return 2 }
+
+func Visit(n Node) {
+	switch x := n.(type) {
+	case Ident:
+		x.Name()
+	case Lit, nil:
+		x.Pos()
+	}
+}
+
+// List visits its items.
+type List []Ident
+
+func (l List) Names() {
+	for _, l := range l {
+		l.Name()
+	}
+}
+`)
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{Platform: "linux/amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		refs, err := st.Callees(syms[0].ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range refs {
+			out = append(out, r.Qualified+"["+r.Confidence+"]")
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// A type parameter has its constraint's methods; Add returns P, so
+		// .Bytes() is looked up on the constraint again, never as an
+		// external "app.P.Bytes".
+		{"app.Curve.Double", "app.Point.Bytes[exact] app.Point.Add[exact]"},
+		{"app.Sum", "app.Point.Bytes[exact] app.Point.Add[exact]"},
+		// An anonymous struct: a method of its embedded type, and a field
+		// chain through a nested anonymous struct.
+		{"app.Register", "lock.Mutex.Lock[exact] lock.Counter.Add[exact]"},
+		// The local named lock is defined by this statement: on its right,
+		// lock is still the package.
+		{"app.Shadow", "lock.Counter.Add[exact]"},
+		// A generic receiver's method returning P: P's constraint.
+		{"app.Curve.Fresh", "app.Point.Bytes[exact] app.Curve.newPoint[exact]"},
+		// A type switch: x is Ident in its case, and n's type (Node) in a
+		// case listing several types.
+		{"app.Visit", "app.Ident.Name[exact] app.Node.Pos[exact]"},
+		// The loop variable l shadows the receiver l inside the loop.
+		{"app.List.Names", "app.Ident.Name[exact]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}
+
+// TestStdModuleQualifiers checks that, in a tree declaring module std
+// (GOROOT/src), an import of a package whose name differs from its
+// directory (math/rand/v2 holds package rand) resolves.
+func TestStdModuleQualifiers(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module std\n\ngo 1.24\n")
+	write("math/rand/v2/rand.go", "package rand\n\n// Uint64 returns a number.\nfunc Uint64() uint64 { return 4 }\n")
+	write("app/app.go", "package app\n\nimport \"math/rand/v2\"\n\nfunc Roll() uint64 { return rand.Uint64() }\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{Platform: "linux/amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	roll, _ := st.Lookup("app.Roll")
+	refs, err := st.Callees(roll[0].ID, true)
+	if err != nil || len(refs) != 1 || refs[0].Qualified != "math/rand/v2/rand.Uint64" || refs[0].External {
+		t.Errorf("app.Roll callees = %+v, %v; want the internal math/rand/v2/rand.Uint64", refs, err)
+	}
+}
+
+// TestJavaScopes covers how Java resolves names the way javac does:
+// inherited and enclosing-class methods called without a receiver, nested
+// types named without their outer class, member types inherited from a
+// supertype, type variables, java.lang, and implicit super() calls.
+func TestJavaScopes(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "j"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package j;
+class Base {
+    Base() {}
+    int size() { return 0; }
+    static class Entry { void touch() {} }
+}
+class Outer {
+    static void check() {}
+    class Inner extends Base {
+        Inner() { }
+        int count() { check(); return size(); }
+        void entry() { new Entry().touch(); }
+    }
+    static class Form { Form() {} }
+    Object writeReplace() { return new Form(); }
+}
+class Box<T extends Base> {
+    T item;
+    int total(T t) { return t.size(); }
+    String name() { return String.valueOf(1); }
+}
+class Hasher {
+    Hasher putBytes(byte[] b) { return this; }
+}
+class Murmur extends Hasher {
+    Hasher putBytes(byte[] b, int off, int len) { return this; }
+    Hasher putString(String s) { return putBytes(s.getBytes()); }
+}
+class Uses {
+    Base base() { return new Base(); }
+    int chain() { return base().size(); }
+    void fail(java.util.List<Base> items) {
+        try { chain(); } catch (IllegalStateException e) { e.getMessage(); }
+        for (Base b : items) { b.size(); }
+        items.get(0).size();
+        getClass().getSimpleName();
+        Runnable r = new Runnable() { public void run() {} };
+    }
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "j", "All.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		var out []string
+		for _, s := range syms {
+			refs, err := st.Callees(s.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range refs {
+				out = append(out, r.Qualified+"["+r.Confidence+"]")
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// check() is the enclosing class's; size() is inherited from Base.
+		{"j.Outer.Inner.count", "j.Outer.check[exact] j.Base.size[exact]"},
+		// Entry is a member type Inner inherits from Base; the method on
+		// the new object is found from the object's type.
+		{"j.Outer.Inner.entry", "j.Base.Entry.touch[exact] j.Base.Entry[exact]"},
+		// Inner's constructor calls Base's implicitly.
+		{"j.Outer.Inner.Inner", "j.Base.Base[exact]"},
+		// Form is Outer's nested class, named without Outer.
+		{"j.Outer.writeReplace", "j.Outer.Form.Form[exact]"},
+		// T is bounded by Base; String is java.lang.String.
+		{"j.Box.total", "j.Base.size[exact]"},
+		{"j.Box.name", "java.lang.String.valueOf[external]"},
+		// putBytes(x) with one argument is the superclass's overload.
+		{"j.Murmur.putString", "j.Hasher.putBytes[exact] java.lang.String.getBytes[external]"},
+		// base() returns Base, so .size() is Base.size.
+		{"j.Uses.chain", "j.Base.size[exact] j.Uses.base[exact]"},
+		// A catch parameter and a for-each variable have their declared
+		// types; items.get(0) is a value of an outside type, so its size()
+		// is not guessed; getClass() is Object's; new Runnable() { ... }
+		// calls nothing of the interface.
+		{"j.Uses.fail", "j.Uses.chain[exact] j.Base.size[exact] java.lang.IllegalStateException.getMessage[external] " +
+			"java.util.List.get[external] java.lang.Class.getSimpleName[external] java.lang.Object.getClass[external]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
 	}
 }
