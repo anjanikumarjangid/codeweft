@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (9 files), java (7 files), python (6 files), proto (2 files)",
+		"Languages: go (10 files), java (8 files), python (7 files), proto (2 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",
@@ -477,7 +477,13 @@ func TestServiceLinks(t *testing.T) {
 	if got := callText(t, cs, "search_code", map[string]any{"query": "GetStock", "kind": "rpc"}); !strings.Contains(got, "shop.inventory.v1.InventoryService.GetStock (rpc) at proto/inventory.proto:11") {
 		t.Errorf("search_code rpc:\n%s", got)
 	}
-	if got := callText(t, cs, "get_service_links", map[string]any{"kind": "kafka"}); !strings.Contains(got, "No service links found") {
-		t.Errorf("no kafka contracts in the fixture:\n%s", got)
+	got = callText(t, cs, "get_service_links", map[string]any{"kind": "kafka", "query": "orders.placed"})
+	for _, want := range []string{
+		"orders.placed (kafka, consumer group billing), provided by com.shop.orders.OrderEvents.onOrderPlaced at java/com/shop/orders/OrderEvents.java:20",
+		"  <- checkout.publishOrderPlaced at checkout/events.go:16 (orders.placed)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("get_service_links kafka: missing %q in:\n%s", want, got)
+		}
 	}
 }

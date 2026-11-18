@@ -1184,14 +1184,16 @@ func endName(e links.End) string {
 	return n
 }
 
-// queueNote names a Temporal contract's task queue, or the full name of a
-// gRPC service.
+// queueNote names a Temporal contract's task queue, the full name of a
+// gRPC service, or a Kafka consumer's group.
 func queueNote(e links.End) string {
 	switch {
 	case e.Detail == "" || e.Kind == store.ContractHTTP:
 		return ""
 	case e.Kind == store.ContractGRPC:
 		return ", service " + e.Detail
+	case e.Kind == store.ContractKafka:
+		return ", consumer group " + e.Detail
 	}
 	return ", task queue " + e.Detail
 }

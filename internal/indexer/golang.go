@@ -46,7 +46,8 @@ func goQual(dir, pkg string) string {
 }
 
 // goImportName guesses the local name of an unaliased import:
-// "github.com/x/yaml.v3" -> yaml, "github.com/x/pgx/v5" -> pgx, "go-redis" -> redis.
+// "github.com/x/yaml.v3" -> yaml, "github.com/x/pgx/v5" -> pgx, "go-redis" -> redis,
+// "kafka-go" -> kafka.
 func goImportName(p string) string {
 	parts := strings.Split(p, "/")
 	name := parts[len(parts)-1]
@@ -56,7 +57,7 @@ func goImportName(p string) string {
 	if i := strings.Index(name, ".v"); i > 0 && isDigits(name[i+2:]) {
 		name = name[:i]
 	}
-	name = strings.TrimPrefix(name, "go-")
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "go-"), "-go")
 	return strings.ReplaceAll(name, "-", "_")
 }
 
@@ -135,6 +136,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				res.Contracts = append(res.Contracts, goHTTPClientCalls(fset, d.Body, qualified, aliases, consts, enc)...)
 				res.Contracts = append(res.Contracts, goTemporalCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
 				res.Contracts = append(res.Contracts, goGRPCCalls(fset, d.Body, qualified, qual, aliases, enc, clientFields)...)
+				res.Contracts = append(res.Contracts, goKafkaCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
 			}
 			if c, ok := goWorkflowDef(fset, d, qualified, aliases); ok {
 				res.Contracts = append(res.Contracts, c)

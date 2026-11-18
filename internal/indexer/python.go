@@ -36,6 +36,7 @@ type pyFile struct {
 	prefixes map[string]string // router/blueprint variable -> URL prefix
 	consts   map[string]string // module-level string constants: BASE = "/api"
 	stubs    map[string]string // self attributes of the class being parsed holding a gRPC stub
+	kafka    map[string]string // self attributes of the class being parsed holding a Kafka client
 	res      *FileResult
 }
 
@@ -242,9 +243,9 @@ func (pf *pyFile) class(def, outer *sitter.Node, prefix string) {
 			pf.res.Supertypes = append(pf.res.Supertypes, store.Supertype{Owner: qual, Kind: store.SuperExtends, TypeRef: ref})
 		}
 	}
-	saved := pf.stubs
-	pf.stubs = pf.grpcClassStubs(body)
-	defer func() { pf.stubs = saved }()
+	saved, savedKafka := pf.stubs, pf.kafka
+	pf.stubs, pf.kafka = pf.grpcClassStubs(body), pf.kafkaClassClients(body)
+	defer func() { pf.stubs, pf.kafka = saved, savedKafka }()
 	if servicer := pf.grpcServicer(def); servicer != "" {
 		// Its methods, and those of the classes extending it.
 		pf.res.Contracts = append(pf.res.Contracts, store.Contract{Kind: store.ContractGRPC, Role: store.RoleProvides,
@@ -342,6 +343,7 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	locals := map[string]string{}
 	bound := pyBound(def, body, pf.src) // parameters and assigned names
 	grpcStubs := map[string]string{}    // local variables holding a gRPC stub
+	kafkaClients := map[string]string{} // local variables holding a Kafka client
 	exprs := map[string]any{}           // x = <call or attribute>: how x's type can be found
 	for _, p := range namedChildren(field(def, "parameters")) {
 		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
@@ -381,6 +383,9 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			if svc := pf.grpcStubCall(right); svc != "" && left != nil && left.Type() == "identifier" {
 				grpcStubs[text(left, pf.src)] = svc
 			}
+			if kind, group := pf.kafkaClient(right); kind != "" && left != nil && left.Type() == "identifier" {
+				kafkaClients[text(left, pf.src)] = kind + group
+			}
 			ref := pf.annotationRef(field(n, "type"))
 			if ref == "" {
 				ref = classRef(right)
@@ -418,6 +423,7 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			if c, ok := pf.grpcCall(n, caller, grpcStubs); ok {
 				pf.res.Contracts = append(pf.res.Contracts, c)
 			}
+			pf.res.Contracts = append(pf.res.Contracts, pf.kafkaCall(n, caller, kafkaClients)...)
 		}
 		return true
 	})
