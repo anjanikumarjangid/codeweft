@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
+	"github.com/anjanikumarjangid/codewiki/internal/links"
 	"github.com/anjanikumarjangid/codewiki/internal/server"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
@@ -31,6 +32,7 @@ Usage:
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
   codewiki impl   [--db FILE] [--up] [--depth N] NAME
   codewiki tests  [--db FILE] [--depth N] [--json] NAME
+  codewiki links  [--db FILE] [--kind KIND] [--json] [QUERY]
   codewiki file   [--db FILE] [--json] PATH
   codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
   codewiki overview [--db FILE] [--json]
@@ -64,6 +66,8 @@ func main() {
 		err = runSymbol(os.Args[2:])
 	case "deps":
 		err = runDeps(os.Args[2:])
+	case "links":
+		err = runLinks(os.Args[2:])
 	case "tests":
 		err = runTests(os.Args[2:])
 	case "impl":
@@ -354,6 +358,44 @@ func runDeps(args []string) error {
 		}
 	}
 	walk(root.Children, "  ")
+	return nil
+}
+
+// runLinks prints the service links: routes and the calls reaching them,
+// topics and their producers and consumers, workflows and their starters.
+func runLinks(args []string) error {
+	fs := flag.NewFlagSet("links", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	kind := fs.String("kind", "", "http, grpc, kafka, temporal-workflow or temporal-activity")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	rows, err := st.Contracts(*kind)
+	if err != nil {
+		return err
+	}
+	ends := make([]links.End, len(rows))
+	for i, r := range rows {
+		ends[i] = links.End{ContractRow: r}
+	}
+	res := links.Match(ends)
+	if *asJSON {
+		return printJSON(res)
+	}
+	q := strings.ToLower(strings.Join(fs.Args(), " "))
+	for _, l := range res.Links {
+		if q != "" && !strings.Contains(strings.ToLower(l.To.Name+" "+l.To.Symbol+" "+l.From.Symbol), q) {
+			continue
+		}
+		fmt.Printf("%-9s %-7s %-35s %s  <-  %s (%s)\n", l.To.Kind, l.To.Method, l.To.Name, l.To.Symbol, l.From.Symbol, l.Confidence)
+	}
+	for _, u := range res.Unmatched {
+		fmt.Printf("unmatched %-7s %-35s used by %s at %s:%d\n", u.Method, u.Name, u.Symbol, u.File, u.Line)
+	}
 	return nil
 }
 

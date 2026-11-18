@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/anjanikumarjangid/codewiki/internal/links"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
@@ -26,6 +27,7 @@ var (
 	maxFileLinks  = 20  // related files listed by get_file_summary
 	maxImpls      = 50  // types or methods listed by get_implementations
 	maxTests      = 30  // tests listed by find_tests
+	maxLinks      = 60  // links listed by get_service_links
 	maxSymTests   = 5   // tests listed inline by get_symbol
 )
 
@@ -106,6 +108,14 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"Python from declared extends/implements and base classes. Pass a type from outside the " +
 			"repository, such as 'java.io.Serializable', to list the repository types that implement it.",
 	}, h.implementations)
+	addTool(s, opts.Ready, &mcp.Tool{
+		Name: "get_service_links",
+		Description: "How services talk to each other: HTTP routes and the client calls that reach them, " +
+			"Kafka topics and their producers and consumers, gRPC methods and their callers, Temporal workflows " +
+			"and activities and the code that starts them. Pass a route, topic, workflow or function name " +
+			"(any part of it) to narrow the list, and kind to pick one: http, grpc, kafka, temporal-workflow, " +
+			"temporal-activity. Also lists calls whose provider is not indexed.",
+	}, h.serviceLinks)
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "find_tests",
 		Description: "Tests that exercise a function, method or type: tests that call it directly, call " +
@@ -954,4 +964,100 @@ func formatExternal(name string, refs []store.Ref) string {
 		fmt.Fprintf(&b, "- %s %s at %s:%d\n", r.Qualified, r.Confidence, r.CallFile, r.CallLine)
 	}
 	return b.String()
+}
+
+// LinksInput is the input of get_service_links.
+type LinksInput struct {
+	Query string `json:"query,omitempty" jsonschema:"optional: part of a route, topic, workflow, activity or function name"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional: http, grpc, kafka, temporal-workflow or temporal-activity"`
+}
+
+// LinksOutput is the structured result of get_service_links.
+type LinksOutput struct {
+	Links     []links.Link `json:"links"`
+	Unmatched []links.End  `json:"unmatched_uses"`
+	More      int          `json:"more,omitempty"` // links left out by the limit
+}
+
+func (h handlers) serviceLinks(ctx context.Context, req *mcp.CallToolRequest, in LinksInput) (*mcp.CallToolResult, LinksOutput, error) {
+	out := LinksOutput{Links: []links.Link{}, Unmatched: []links.End{}}
+	rows, err := h.st.Contracts(strings.TrimSpace(in.Kind))
+	if err != nil {
+		return nil, out, err
+	}
+	ends := make([]links.End, len(rows))
+	for i, r := range rows {
+		ends[i] = links.End{ContractRow: r}
+	}
+	res := links.Match(ends)
+	q := strings.ToLower(strings.TrimSpace(in.Query))
+	hit := func(e links.End) bool {
+		return q == "" || strings.Contains(strings.ToLower(e.Name), q) || strings.Contains(strings.ToLower(e.Symbol), q) ||
+			strings.Contains(strings.ToLower(e.Detail), q)
+	}
+	for _, l := range res.Links {
+		if hit(l.From) || hit(l.To) {
+			out.Links = append(out.Links, l)
+		}
+	}
+	for _, u := range res.Unmatched {
+		if hit(u) {
+			out.Unmatched = append(out.Unmatched, u)
+		}
+	}
+	if len(out.Links) > maxLinks {
+		out.More, out.Links = len(out.Links)-maxLinks, out.Links[:maxLinks]
+	}
+	if len(out.Unmatched) > maxLinks {
+		out.Unmatched = out.Unmatched[:maxLinks]
+	}
+	return text(formatServiceLinks(out)), out, nil
+}
+
+func endName(e links.End) string {
+	n := e.Name
+	if e.Method != "" {
+		n = e.Method + " " + n
+	}
+	return n
+}
+
+func endWhere(e links.End) string {
+	repo := ""
+	if e.Repo != "" {
+		repo = "[" + e.Repo + "] "
+	}
+	return fmt.Sprintf("%s%s at %s:%d", repo, e.Symbol, e.File, e.Line)
+}
+
+// formatServiceLinks renders links grouped by what provides them.
+func formatServiceLinks(out LinksOutput) string {
+	var b strings.Builder
+	if len(out.Links) == 0 && len(out.Unmatched) == 0 {
+		return "No service links found. Routes, Kafka topics, gRPC methods and Temporal workflows are linked to " +
+			"the code using them when both sides are indexed."
+	}
+	last := ""
+	for _, l := range out.Links {
+		key := l.To.Kind + "|" + endName(l.To) + "|" + l.To.Symbol
+		if key != last {
+			fmt.Fprintf(&b, "\n%s (%s), provided by %s\n", endName(l.To), l.To.Kind, endWhere(l.To))
+			last = key
+		}
+		how := ""
+		if l.Confidence != "exact" {
+			how = fmt.Sprintf(", matched as a pattern: %s", l.From.Detail)
+		}
+		fmt.Fprintf(&b, "  <- %s (%s%s)\n", endWhere(l.From), endName(l.From), how)
+	}
+	if out.More > 0 {
+		fmt.Fprintf(&b, "... and %d more links; pass query or kind to narrow them down\n", out.More)
+	}
+	if len(out.Unmatched) > 0 {
+		fmt.Fprintf(&b, "\nUsed, but not provided by anything indexed:\n")
+		for _, u := range out.Unmatched {
+			fmt.Fprintf(&b, "- %s (%s) by %s\n", endName(u), u.Kind, endWhere(u))
+		}
+	}
+	return strings.TrimPrefix(b.String(), "\n")
 }

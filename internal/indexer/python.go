@@ -3,6 +3,7 @@ package indexer
 import (
 	"encoding/json"
 	"path"
+	"regexp"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -33,6 +34,7 @@ type pyFile struct {
 	pkg      string            // package the module lives in, for relative imports
 	imports  map[string]string // local name -> dotted target
 	prefixes map[string]string // router/blueprint variable -> URL prefix
+	consts   map[string]string // module-level string constants: BASE = "/api"
 	res      *FileResult
 }
 
@@ -46,7 +48,8 @@ func ParsePython(rel string, src []byte) (*FileResult, error) {
 	defer done()
 
 	mod := pythonModule(rel)
-	pf := &pyFile{src: src, rel: rel, module: mod, imports: map[string]string{}, prefixes: map[string]string{}}
+	pf := &pyFile{src: src, rel: rel, module: mod, imports: map[string]string{}, prefixes: map[string]string{},
+		consts: map[string]string{}}
 	pf.pkg = mod
 	if path.Base(rel) != "__init__.py" {
 		if i := strings.LastIndex(mod, "."); i >= 0 {
@@ -71,6 +74,7 @@ func ParsePython(rel string, src []byte) (*FileResult, error) {
 	for _, n := range namedChildren(root) {
 		pf.routerPrefix(n)
 		pf.mainGuard(n)
+		pf.stringConst(n)
 	}
 	for _, n := range namedChildren(root) {
 		def := unwrapDecorated(n)
@@ -385,6 +389,9 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			}
 		case "call":
 			pf.call(n, caller, class, locals, exprs)
+			if c, ok := pf.httpClientCall(n, caller, locals); ok {
+				pf.res.Contracts = append(pf.res.Contracts, c)
+			}
 		}
 		return true
 	})
@@ -543,4 +550,134 @@ func (pf *pyFile) pyExpr(n *sitter.Node, class string, locals map[string]string,
 		}
 	}
 	return nil
+}
+
+// stringConst records a module-level string constant: BASE = "/api".
+func (pf *pyFile) stringConst(n *sitter.Node) {
+	if n.Type() != "expression_statement" {
+		return
+	}
+	a := n.NamedChild(0)
+	if a == nil || a.Type() != "assignment" {
+		return
+	}
+	left, right := field(a, "left"), field(a, "right")
+	if left == nil || right == nil || left.Type() != "identifier" {
+		return
+	}
+	if v := pf.template(right); !strings.Contains(v, "*") {
+		pf.consts[text(left, pf.src)] = v
+	}
+}
+
+// pyPercentVerb matches a %-formatting directive such as %s or %(id)d.
+var pyPercentVerb = regexp.MustCompile(`%(\([^)]*\))?[-+# 0-9.]*[a-zA-Z]`)
+
+// pyBraces matches a str.format replacement field such as {} or {id}.
+var pyBraces = regexp.MustCompile(`\{[^{}]*\}`)
+
+// template evaluates a Python string expression as far as the source
+// allows, writing "*" for each part it cannot see: literals, f-strings
+// (each {...} a "*"), +, % formatting, str.format and module constants.
+func (pf *pyFile) template(n *sitter.Node) string {
+	if n == nil {
+		return "*"
+	}
+	switch n.Type() {
+	case "string":
+		var b strings.Builder
+		for _, c := range namedChildren(n) {
+			switch c.Type() {
+			case "string_content":
+				b.WriteString(text(c, pf.src))
+			case "interpolation":
+				b.WriteString("*")
+			}
+		}
+		return b.String()
+	case "concatenated_string":
+		var b strings.Builder
+		for _, c := range namedChildren(n) {
+			b.WriteString(pf.template(c))
+		}
+		return b.String()
+	case "parenthesized_expression":
+		if kids := namedChildren(n); len(kids) == 1 {
+			return pf.template(kids[0])
+		}
+	case "binary_operator":
+		switch op := field(n, "operator"); {
+		case op == nil:
+		case text(op, pf.src) == "+":
+			return pf.template(field(n, "left")) + pf.template(field(n, "right"))
+		case text(op, pf.src) == "%":
+			return pyPercentVerb.ReplaceAllString(pf.template(field(n, "left")), "*")
+		}
+	case "identifier":
+		if v, ok := pf.consts[text(n, pf.src)]; ok {
+			return v
+		}
+	case "call":
+		if fn := field(n, "function"); fn != nil && fn.Type() == "attribute" && text(field(fn, "attribute"), pf.src) == "format" {
+			return pyBraces.ReplaceAllString(pf.template(field(fn, "object")), "*")
+		}
+	}
+	return "*"
+}
+
+// httpClientCall recognizes an HTTP request made with requests or httpx:
+// requests.get(url), httpx.post(url), session.get(url) on a requests
+// Session or httpx Client, and request(method, url).
+func (pf *pyFile) httpClientCall(n *sitter.Node, caller string, locals map[string]string) (store.Contract, bool) {
+	fn := field(n, "function")
+	if fn == nil || fn.Type() != "attribute" {
+		return store.Contract{}, false
+	}
+	obj, verb := field(fn, "object"), text(field(fn, "attribute"), pf.src)
+	if obj == nil || obj.Type() != "identifier" {
+		return store.Contract{}, false
+	}
+	o := text(obj, pf.src)
+	lib := pf.imports[o]
+	if ref := locals[o]; strings.HasPrefix(ref, "@requests.") || strings.HasPrefix(ref, "@httpx.") {
+		lib = strings.SplitN(ref[1:], ".", 2)[0]
+	}
+	if lib != "requests" && lib != "httpx" {
+		return store.Contract{}, false
+	}
+	var positional []*sitter.Node
+	url := ""
+	for _, a := range namedChildren(field(n, "arguments")) {
+		if a.Type() == "keyword_argument" {
+			if text(field(a, "name"), pf.src) == "url" {
+				url = pf.template(field(a, "value"))
+			}
+			continue
+		}
+		positional = append(positional, a)
+	}
+	method := strings.ToUpper(verb)
+	switch verb {
+	case "get", "post", "put", "patch", "delete", "head", "options":
+		if url == "" && len(positional) > 0 {
+			url = pf.template(positional[0])
+		}
+	case "request":
+		if len(positional) == 0 {
+			return store.Contract{}, false
+		}
+		method = strings.ToUpper(pf.template(positional[0]))
+		if strings.Contains(method, "*") {
+			method = ""
+		}
+		if url == "" && len(positional) > 1 {
+			url = pf.template(positional[1])
+		}
+	default:
+		return store.Contract{}, false
+	}
+	if url == "" {
+		return store.Contract{}, false
+	}
+	return httpUse(method, url, caller, line(n))
 }

@@ -13,6 +13,8 @@ checkout.handleCheckout -> net/http.ResponseWriter.WriteHeader [external] line 2
 checkout.Handler.getOrder -> checkout.newOrder [exact] line 28
 checkout.Handler.getOrder -> encoding/json.NewEncoder [external] line 28
 checkout.Handler.getOrder -> net/http.Request.PathValue [external] line 28
+checkout.stockLevel -> net/http.Get [external] line 36
+checkout.reserveRequest -> net/http.NewRequest [external] line 41
 com.shop.billing.Billing.charge -> com.shop.billing.Billing.validate [exact] line 10
 com.shop.billing.Billing.charge -> com.shop.billing.Billing.charge [exact] line 15
 com.shop.billing.Billing.charge -> java.util.Objects.requireNonNull [external] line 9
@@ -21,6 +23,7 @@ com.shop.orders.Order.total -> java.util.List.size [external] line 15
 com.shop.orders.OrderController.place -> com.shop.orders.OrderService.place [exact] line 21
 com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRequest.customerId [exact] line 21
 com.shop.orders.OrderController.place -> com.shop.orders.OrderController.PlaceRequest.items [exact] line 21
+com.shop.orders.CheckoutOrders.find -> org.springframework.web.client.RestTemplate.getForObject [external] line 47
 com.shop.orders.InMemoryOrderRepository.save -> com.shop.orders.Order.id [exact] line 15
 com.shop.orders.InMemoryOrderRepository.save -> java.util.Map.put [external] line 15
 com.shop.orders.InMemoryOrderRepository.findById -> java.util.Map.get [external] line 19
@@ -36,6 +39,7 @@ payments.PaymentService.ProcessPayment -> errors.New [external] line 28
 py.inventory.api.reserve -> py.inventory.stock.StockService.reserve [exact] line 18
 py.inventory.api.__main__ -> fastapi.FastAPI [external] line 24
 py.inventory.api.__main__ -> fastapi.FastAPI.include_router [external] line 25
+py.inventory.api.place_order -> requests.post [external] line 36
 py.inventory.models.ItemRepository.get -> py.inventory.models.Item [exact] line 17
 py.inventory.models.CachedItemRepository.get -> py.inventory.models.ItemRepository.get [exact] line 29
 py.inventory.stock.StockService.reserve -> py.inventory.models.ItemRepository.get [exact] line 15

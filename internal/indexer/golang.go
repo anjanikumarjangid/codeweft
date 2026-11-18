@@ -140,6 +140,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		}
 	}
 
+	consts := goStringConsts(f)
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
@@ -153,6 +154,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				enc := &goEncoder{fset: fset, src: src, aliases: aliases,
 					locals: goLocals(d), visiting: map[goLocalKey]bool{}, typeParams: goTypeParams(fset, d)}
 				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
+				res.Contracts = append(res.Contracts, goHTTPClientCalls(fset, d.Body, qualified, aliases, consts, enc)...)
 			}
 
 		case *ast.GenDecl:

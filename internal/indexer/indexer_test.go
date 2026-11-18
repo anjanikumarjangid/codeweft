@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anjanikumarjangid/codewiki/internal/indexer"
+	"github.com/anjanikumarjangid/codewiki/internal/links"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
@@ -75,8 +76,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 15 || syms != 90 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 90", files, syms)
+	if files != 15 || syms != 97 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 97", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -1407,5 +1408,42 @@ class Session:
 		if got := callees(c.name); got != c.want {
 			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
 		}
+	}
+}
+
+// TestHTTPLinks checks the HTTP contracts of the fixture: routes in Go,
+// Java and Python, and client calls between them (net/http, Feign,
+// RestTemplate, requests), linked by path pattern and method.
+func TestHTTPLinks(t *testing.T) {
+	st := indexSample(t)
+	rows, err := st.Contracts(store.ContractHTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ends := make([]links.End, len(rows))
+	for i, r := range rows {
+		ends[i] = links.End{ContractRow: r}
+	}
+	res := links.Match(ends)
+	var got []string
+	for _, l := range res.Links {
+		got = append(got, fmt.Sprintf("%s %s: %s -> %s [%s]", l.To.Method, l.To.Name, l.From.Symbol, l.To.Symbol, l.Confidence))
+	}
+	want := []string{
+		"POST /api/v1/checkout: com.shop.orders.CheckoutClient.checkout -> checkout.handleCheckout [exact]",
+		"GET /api/v1/orders/*: com.shop.orders.CheckoutOrders.find -> checkout.Handler.getOrder [pattern]",
+		"GET /inventory/stock/*: checkout.stockLevel -> py.inventory.api.get_stock [pattern]",
+		"POST /inventory/stock/*/reserve: checkout.reserveRequest -> py.inventory.api.reserve [pattern]",
+		"POST /orders: py.inventory.api.place_order -> com.shop.orders.OrderController.place [pattern]",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(res.Unmatched) != 0 {
+		t.Errorf("unmatched uses: %+v", res.Unmatched)
+	}
+	// GET /orders/{id} in Java is not called by anything in the fixture.
+	if len(res.Unreferring) != 1 || res.Unreferring[0].Symbol != "com.shop.orders.OrderController.get" {
+		t.Errorf("unused routes: %+v", res.Unreferring)
 	}
 }
