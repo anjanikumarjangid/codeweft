@@ -28,6 +28,16 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 
 ## Quick start
 
+### Install
+
+```bash
+npx -y codeweft version                       # npm: runs the prebuilt binary for your platform
+brew install anjanikumarjangid/codeweft/codeweft   # Homebrew (macOS, Linux)
+docker pull ghcr.io/anjanikumarjangid/codeweft    # the self-hosted server
+```
+
+With npm there is nothing else to install: `claude mcp add codeweft -- npx -y codeweft serve` from inside a repository is enough.
+
 ### Download
 
 Each [release](https://github.com/anjanikumarjangid/codeweft/releases) has archives for Linux (amd64, arm64; statically linked, so they run on any distribution), macOS (Apple silicon, Intel) and Windows (amd64), and a `checksums.txt` with their SHA-256 sums. Unpack one and put `codeweft` on your `PATH`. macOS may refuse to run a binary downloaded with a browser until you remove the quarantine flag: `xattr -d com.apple.quarantine codeweft`.
