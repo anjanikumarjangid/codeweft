@@ -29,6 +29,9 @@ var (
 	maxTests      = 30  // tests listed by find_tests
 	maxLinks      = 60  // links listed by get_service_links
 	maxSymTests   = 5   // tests listed inline by get_symbol
+	maxFileDecls  = 100 // declarations listed by get_file_summary per call
+	maxGraphNodes = 120 // nodes listed by get_dependency_graph
+	maxGraphFan   = 20  // callers or callees listed under one node of the graph
 )
 
 // Tests are found up to testCallers calls away through the repository's
@@ -302,8 +305,9 @@ func FormatOverview(o *store.Overview) string {
 
 // FileInput is the input of get_file_summary.
 type FileInput struct {
-	Path string `json:"path" jsonschema:"repository-relative file path, or a unique suffix of one"`
-	Repo string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
+	Path   string `json:"path" jsonschema:"repository-relative file path, or a unique suffix of one"`
+	Offset int    `json:"offset,omitempty" jsonschema:"for a file with more than 100 declarations: the number of declarations to skip, to list the next ones"`
+	Repo   string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // FileOutput is the structured result of get_file_summary. Related files
@@ -315,6 +319,12 @@ type FileOutput struct {
 	MoreUsedBy    int                `json:"more_used_by,omitempty"`
 	Candidates    []string           `json:"candidates,omitempty"`
 	Repo          string             `json:"repo,omitempty"` // in a workspace, the file's repository
+	// Declarations are listed 100 at a time, in source order: Offset is the
+	// number skipped, TotalSymbols the file's count, MoreSymbols how many
+	// follow the ones listed.
+	Offset       int `json:"offset,omitempty"`
+	TotalSymbols int `json:"total_symbols"`
+	MoreSymbols  int `json:"more_symbols,omitempty"`
 }
 
 func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, FileOutput, error) {
@@ -349,7 +359,12 @@ func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, FileOutput{}, err
 	}
-	out := FileOutput{Summary: fs, Repo: in1.repo}
+	out := FileOutput{Summary: fs, Repo: in1.repo, TotalSymbols: len(fs.Symbols)}
+	out.Offset = min(max(in.Offset, 0), len(fs.Symbols))
+	fs.Symbols = fs.Symbols[out.Offset:]
+	if n := len(fs.Symbols); n > maxFileDecls {
+		fs.Symbols, out.MoreSymbols = fs.Symbols[:maxFileDecls], n-maxFileDecls
+	}
 	if n := len(fs.DependsOn); n > maxFileLinks {
 		fs.DependsOn, out.MoreDependsOn = fs.DependsOn[:maxFileLinks], n-maxFileLinks
 	}
@@ -369,12 +384,19 @@ func formatFile(out FileOutput) string {
 	if len(fs.Imports) > 0 {
 		fmt.Fprintf(&b, "\nImports: %s\n", strings.Join(fs.Imports, ", "))
 	}
-	fmt.Fprintf(&b, "\nDeclarations (%d):\n", len(fs.Symbols))
+	if len(fs.Symbols) == out.TotalSymbols {
+		fmt.Fprintf(&b, "\nDeclarations (%d):\n", out.TotalSymbols)
+	} else {
+		fmt.Fprintf(&b, "\nDeclarations %d-%d of %d:\n", out.Offset+1, out.Offset+len(fs.Symbols), out.TotalSymbols)
+	}
 	for _, d := range fs.Symbols {
 		fmt.Fprintf(&b, "- line %d: %s\n", d.Line, firstLine(d.Signature))
 		if d.Doc != "" {
 			fmt.Fprintf(&b, "    %s\n", d.Doc)
 		}
+	}
+	if out.MoreSymbols > 0 {
+		fmt.Fprintf(&b, "- ... and %d more: call get_file_summary again with offset %d\n", out.MoreSymbols, out.Offset+len(fs.Symbols))
 	}
 	link := func(title string, ls []store.FileLink, more int) {
 		if len(ls) == 0 {
@@ -634,6 +656,18 @@ type GraphOutput struct {
 	Edges     []GraphEdge `json:"edges"`
 	External  []store.Ref `json:"external_callers,omitempty"`
 	Repo      string      `json:"repo,omitempty"` // in a workspace, the repository of the graph
+	// Omitted counts the callers or callees left out to keep the answer
+	// small: each node lists at most 20, and the graph at most 120 nodes.
+	Omitted int `json:"omitted,omitempty"`
+}
+
+// omitted totals the callers or callees left out of a graph.
+func omitted(n *store.GraphNode) int {
+	total := n.More
+	for _, c := range n.Children {
+		total += omitted(c)
+	}
+	return total
 }
 
 func flatten(root *store.GraphNode, dir string) []GraphEdge {
@@ -715,11 +749,11 @@ func (h handlers) dependencyGraph(ctx context.Context, req *mcp.CallToolRequest,
 		}
 		return text(b.String()), GraphOutput{Edges: []GraphEdge{}}, nil
 	}
-	root, n, err := h.st.Graph(syms[0], dir, depth, in.IncludeExternal, 300)
+	root, n, err := h.st.Graph(syms[0], dir, depth, in.IncludeExternal, maxGraphNodes, maxGraphFan)
 	if err != nil {
 		return nil, GraphOutput{}, err
 	}
-	out := GraphOutput{Root: root.Qualified, Direction: dir, Edges: flatten(root, dir), Repo: h.repo}
+	out := GraphOutput{Root: root.Qualified, Direction: dir, Edges: flatten(root, dir), Repo: h.repo, Omitted: omitted(root)}
 	return text(label(h.repo, formatGraph(root, dir, depth, n))), out, nil
 }
 
@@ -1077,6 +1111,16 @@ func formatGraph(root *store.GraphNode, dir string, depth, n int) string {
 		verb = "is called by"
 	}
 	fmt.Fprintf(&b, "%s %s (%d node(s), depth %d):\n\n%s (%s) at %s\n", root.Qualified, verb, n, depth, root.Qualified, root.Kind, root.Location)
+	// more notes the callers or callees left out under a node.
+	more := func(n *store.GraphNode, indent string) {
+		switch {
+		case n.More == 0:
+		case n == root:
+			fmt.Fprintf(&b, "%s- ... and %d more, not listed\n", indent, n.More)
+		default:
+			fmt.Fprintf(&b, "%s- ... and %d more (call get_dependency_graph on %s)\n", indent, n.More, n.Qualified)
+		}
+	}
 	var walk func(nodes []*store.GraphNode, indent string)
 	walk = func(nodes []*store.GraphNode, indent string) {
 		for _, c := range nodes {
@@ -1093,9 +1137,11 @@ func formatGraph(root *store.GraphNode, dir string, depth, n int) string {
 			}
 			fmt.Fprintf(&b, "%s- %s [%s]%s\n", indent, c.Qualified, loc, suffix)
 			walk(c.Children, indent+"  ")
+			more(c, indent+"  ")
 		}
 	}
 	walk(root.Children, "  ")
+	more(root, "  ")
 	if n == 0 {
 		b.WriteString("  (no edges found)\n")
 	}

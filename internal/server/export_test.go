@@ -15,3 +15,11 @@ func SetMaxImpls(n int) (restore func()) {
 	maxImpls = n
 	return func() { maxImpls = old }
 }
+
+// SetPageLimits lowers the get_file_summary and get_dependency_graph limits
+// for a test.
+func SetPageLimits(fileDecls, graphNodes, graphFan int) (restore func()) {
+	d, n, f := maxFileDecls, maxGraphNodes, maxGraphFan
+	maxFileDecls, maxGraphNodes, maxGraphFan = fileDecls, graphNodes, graphFan
+	return func() { maxFileDecls, maxGraphNodes, maxGraphFan = d, n, f }
+}

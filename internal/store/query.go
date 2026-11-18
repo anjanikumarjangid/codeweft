@@ -226,12 +226,18 @@ type GraphNode struct {
 	Ref
 	Children []*GraphNode `json:"children,omitempty"`
 	Repeated bool         `json:"repeated,omitempty"` // already expanded elsewhere
+	// More counts the callers or callees left out: beyond maxChildren for
+	// this node, or once the graph reached maxNodes.
+	More int `json:"more,omitempty"`
 }
 
 // Graph expands callers or callees of a symbol breadth-first up to depth.
 // Each symbol is expanded once; later occurrences are marked Repeated, which
-// also keeps recursion and cycles finite.
-func (s *Store) Graph(root Symbol, direction string, depth int, includeExternal bool, maxNodes int) (*GraphNode, int, error) {
+// also keeps recursion and cycles finite. A node lists at most maxChildren
+// callers or callees (internal ones first), and the graph stops growing at
+// maxNodes; what is left out is counted in each node's More, so a function
+// called from thousands of places cannot flood the answer.
+func (s *Store) Graph(root Symbol, direction string, depth int, includeExternal bool, maxNodes, maxChildren int) (*GraphNode, int, error) {
 	if depth <= 0 {
 		depth = 2
 	}
@@ -259,9 +265,10 @@ func (s *Store) Graph(root Symbol, direction string, depth int, includeExternal 
 			if err != nil {
 				return nil, 0, err
 			}
-			for _, r := range refs {
-				if count >= maxNodes {
-					return top, count, nil
+			for i, r := range refs {
+				if count >= maxNodes || (maxChildren > 0 && i >= maxChildren) {
+					n.More = len(refs) - i
+					break
 				}
 				child := &GraphNode{Ref: r}
 				if r.ID != 0 && expanded[r.ID] {

@@ -344,7 +344,7 @@ func runDeps(args []string) error {
 	if *callers {
 		dir = "callers"
 	}
-	root, _, err := st.Graph(syms[0], dir, *depth, *external, 500)
+	root, _, err := st.Graph(syms[0], dir, *depth, *external, 500, 0)
 	if err != nil {
 		return err
 	}

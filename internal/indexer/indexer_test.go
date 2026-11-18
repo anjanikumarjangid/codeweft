@@ -321,7 +321,7 @@ func TestCallersAndGraph(t *testing.T) {
 	if err != nil || len(root) != 1 {
 		t.Fatal(err)
 	}
-	g, n, err := st.Graph(root[0], "callees", 2, false, 0)
+	g, n, err := st.Graph(root[0], "callees", 2, false, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

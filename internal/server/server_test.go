@@ -487,3 +487,57 @@ func TestServiceLinks(t *testing.T) {
 		}
 	}
 }
+
+// TestLargeAnswersAreCapped lowers the limits to check that a file with
+// many declarations is listed a page at a time, and that a graph lists a
+// few callers or callees per node and says how many it left out.
+func TestLargeAnswersAreCapped(t *testing.T) {
+	defer server.SetPageLimits(3, 5, 2)()
+	cs := connect(t)
+
+	got := callText(t, cs, "get_file_summary", map[string]any{"path": "payments/service.go"})
+	for _, want := range []string{"Declarations 1-3 of ", "call get_file_summary again with offset 3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("first page: missing %q in:\n%s", want, got)
+		}
+	}
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_file_summary",
+		Arguments: map[string]any{"path": "payments/service.go", "offset": 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page server.FileOutput
+	b, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(b, &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Offset != 3 || len(page.Summary.Symbols) == 0 || len(page.Summary.Symbols) > 3 ||
+		page.Offset+len(page.Summary.Symbols)+page.MoreSymbols != page.TotalSymbols {
+		t.Errorf("second page: offset %d, %d listed, %d more, %d total", page.Offset, len(page.Summary.Symbols), page.MoreSymbols, page.TotalSymbols)
+	}
+
+	got = callText(t, cs, "get_dependency_graph", map[string]any{"symbol": "checkout.Checkout", "depth": 3})
+	if !strings.Contains(got, "more") {
+		t.Errorf("graph does not say what it left out:\n%s", got)
+	}
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_dependency_graph",
+		Arguments: map[string]any{"symbol": "checkout.Checkout", "depth": 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g server.GraphOutput
+	b, _ = json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(b, &g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Edges) > 5 || g.Omitted == 0 {
+		t.Errorf("graph: %d edges (limit 5), %d omitted", len(g.Edges), g.Omitted)
+	}
+	perNode := map[string]int{}
+	for _, e := range g.Edges {
+		perNode[e.From]++
+		if perNode[e.From] > 2 {
+			t.Errorf("more than 2 callees listed under %s", e.From)
+		}
+	}
+}
