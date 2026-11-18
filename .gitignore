@@ -5,3 +5,5 @@ bin/
 *.db-shm
 *.test
 *.out
+bench-results.json
+bench-results.md
