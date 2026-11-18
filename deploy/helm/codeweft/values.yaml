@@ -1,0 +1,50 @@
+image:
+  repository: ghcr.io/anjanikumarjangid/codeweft
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+# Repositories to serve: owner/name, Git URLs, separated by spaces.
+repos: ""
+# Or (also) every repository of a GitHub organization or user.
+githubOrg: ""
+includeForks: false
+syncInterval: 10m
+syncConcurrency: 2
+# For GitHub Enterprise Server.
+githubURL: ""
+githubAPIURL: ""
+
+# Secrets: name an existing Secret with the keys GITHUB_TOKEN,
+# GITHUB_WEBHOOK_SECRET and CODEWEFT_API_TOKENS, or set them below to
+# have the chart create one.
+existingSecret: ""
+githubToken: ""
+webhookSecret: ""
+apiTokens: ""        # comma-separated
+# Serve without tokens: only when something in front authenticates clients.
+allowUnauthenticated: false
+
+persistence:
+  size: 10Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: codeweft.example.com
+  tls: []            # e.g. [{secretName: codeweft-tls, hosts: [codeweft.example.com]}]
+
+resources:
+  requests: {cpu: 500m, memory: 512Mi}
+  limits: {memory: 2Gi}
+
+extraEnv: []         # more environment variables: [{name: ..., value: ...}]
+nodeSelector: {}
+tolerations: []
+affinity: {}

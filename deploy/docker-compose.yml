@@ -1,0 +1,21 @@
+# codeweft server with Docker Compose.
+#
+#   cp deploy/.env.example deploy/.env    # then fill it in
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Point clients at http://<host>:8080/mcp with "Authorization: Bearer <token>",
+# and GitHub webhooks at http://<host>:8080/webhooks/github. Put a TLS
+# terminating proxy (Caddy, nginx, a cloud load balancer) in front of it
+# before exposing it to the internet.
+services:
+  codeweft:
+    image: ghcr.io/anjanikumarjangid/codeweft:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - codeweft-data:/data
+
+volumes:
+  codeweft-data:

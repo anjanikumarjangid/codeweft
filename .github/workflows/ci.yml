@@ -20,3 +20,18 @@ jobs:
         run: |
           ./bin/codeweft index .
           ./bin/codeweft query search code | grep -q "internal/"
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render the Helm chart
+        run: |
+          helm lint deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t
+          helm template t deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t > /dev/null
+          helm template t deploy/helm/codeweft --set githubOrg=acme --set existingSecret=s \
+            --set ingress.enabled=true > /dev/null
+          # Without tokens or repositories, rendering must fail.
+          ! helm template t deploy/helm/codeweft --set repos=acme/orders 2>/dev/null
+          ! helm template t deploy/helm/codeweft --set apiTokens=t 2>/dev/null

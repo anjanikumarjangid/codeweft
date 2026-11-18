@@ -1,0 +1,11 @@
+apiVersion: v2
+name: codeweft
+description: Self-hostable MCP server giving AI coding agents structured context about your code and services
+type: application
+version: 0.1.0
+appVersion: "0.7.0"
+license: Apache-2.0
+home: https://github.com/anjanikumarjangid/codeweft
+sources:
+  - https://github.com/anjanikumarjangid/codeweft
+keywords: [mcp, code-intelligence, ai-agents]

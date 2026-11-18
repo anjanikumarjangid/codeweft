@@ -87,6 +87,16 @@ export CODEWEFT_API_TOKENS=...       # what clients send as their bearer token
 codeweft server --addr :8080 --data /var/lib/codeweft
 ```
 
+Or run the container image (Linux, amd64 and arm64), which has everything it needs:
+
+```bash
+docker run -d -p 8080:8080 -v codeweft-data:/data \
+  -e CODEWEFT_REPOS="acme/orders acme/payments" -e GITHUB_TOKEN -e GITHUB_WEBHOOK_SECRET -e CODEWEFT_API_TOKENS \
+  ghcr.io/anjanikumarjangid/codeweft:latest
+```
+
+[`deploy/docker-compose.yml`](deploy/docker-compose.yml) runs it with Docker Compose, and [`deploy/helm/codeweft`](deploy/helm/codeweft) on Kubernetes (`helm install codeweft deploy/helm/codeweft --set repos="acme/orders acme/payments" --set existingSecret=codeweft`, with the secrets in that Secret). Put it behind TLS before exposing it.
+
 Then, in each developer's `.mcp.json` (Claude Code; other clients take the same URL and header):
 
 ```json

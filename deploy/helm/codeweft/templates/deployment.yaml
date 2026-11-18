@@ -1,0 +1,88 @@
+{{- if and (not .Values.repos) (not .Values.githubOrg) }}
+{{- fail "set repos or githubOrg" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "codeweft.fullname" . }}
+  labels: {{- include "codeweft.labels" . | nindent 4 }}
+spec:
+  # One replica: the index is SQLite on a ReadWriteOnce volume, written by
+  # this process only. Recreate so two pods never share the volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "codeweft.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "codeweft.selector" . | nindent 8 }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: codeweft
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [server]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - {name: CODEWEFT_DATA_DIR, value: /data}
+            # The root filesystem is read-only: git's home and SQLite's
+            # temporary files go to an emptyDir.
+            - {name: HOME, value: /tmp}
+            - {name: TMPDIR, value: /tmp}
+            - {name: CODEWEFT_ADDR, value: ":8080"}
+            - {name: CODEWEFT_REPOS, value: {{ .Values.repos | quote }}}
+            - {name: CODEWEFT_GITHUB_ORG, value: {{ .Values.githubOrg | quote }}}
+            - {name: CODEWEFT_GITHUB_INCLUDE_FORKS, value: {{ .Values.includeForks | quote }}}
+            - {name: CODEWEFT_SYNC_INTERVAL, value: {{ .Values.syncInterval | quote }}}
+            - {name: CODEWEFT_SYNC_CONCURRENCY, value: {{ .Values.syncConcurrency | quote }}}
+            - {name: CODEWEFT_ALLOW_UNAUTHENTICATED, value: {{ .Values.allowUnauthenticated | quote }}}
+            {{- with .Values.githubURL }}
+            - {name: CODEWEFT_GITHUB_URL, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.githubAPIURL }}
+            - {name: CODEWEFT_GITHUB_API_URL, value: {{ . | quote }}}
+            {{- end }}
+            {{- range $key := list "GITHUB_TOKEN" "GITHUB_WEBHOOK_SECRET" "CODEWEFT_API_TOKENS" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef: {name: {{ include "codeweft.secretName" $ }}, key: {{ $key }}, optional: true}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "codeweft.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

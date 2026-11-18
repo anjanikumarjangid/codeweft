@@ -1,0 +1,8 @@
+.git
+bin
+.codeweft
+codeweft-data
+*.db
+*.db-wal
+*.db-shm
+bench-results.*

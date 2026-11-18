@@ -1,0 +1,6 @@
+codeweft is starting: it clones and indexes the repositories in the background.
+
+MCP endpoint:     {{ if .Values.ingress.enabled }}https://{{ .Values.ingress.host }}{{ else }}http://{{ include "codeweft.fullname" . }}.{{ .Release.Namespace }}.svc{{ end }}/mcp
+GitHub webhook:   {{ if .Values.ingress.enabled }}https://{{ .Values.ingress.host }}{{ else }}<your public URL>{{ end }}/webhooks/github  (push events, the webhook secret)
+Progress:         kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "codeweft.fullname" . }} 8080:{{ .Values.service.port }}
+                  curl -H "Authorization: Bearer <token>" localhost:8080/status
