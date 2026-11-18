@@ -68,6 +68,13 @@ var languages = []language{
 		generated: isGeneratedHeader,
 		parse:     ParsePython,
 	},
+	{
+		name:      "proto",
+		exts:      []string{".proto"},
+		isTest:    func(string) bool { return false },
+		generated: isGeneratedHeader,
+		parse:     ParseProto,
+	},
 }
 
 func languageFor(path string) *language {

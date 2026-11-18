@@ -355,7 +355,14 @@ func (r resolver) byMethodName(name string) (int64, string, string) {
 		// repository's only method of that name: no guess.
 		return 0, "", ""
 	}
-	ids := r.in.Methods[name]
+	// Only methods of the caller's language: a Go call on a client of
+	// unknown type is not a call of a Python method of the same name.
+	var ids []int64
+	for _, id := range r.in.Methods[name] {
+		if r.in.Langs[id] == r.lang {
+			ids = append(ids, id)
+		}
+	}
 	if len(ids) == 0 {
 		return 0, "", ""
 	}

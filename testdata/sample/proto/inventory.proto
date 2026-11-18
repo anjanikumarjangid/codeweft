@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+// Inventory API served by the Python inventory service.
+package shop.inventory.v1;
+
+option go_package = "example.com/sample/gen/inventoryv1";
+
+// InventoryService answers stock questions.
+service InventoryService {
+  // GetStock returns an item's stock level.
+  rpc GetStock(GetStockRequest) returns (Stock);
+  // Reserve holds items for an order.
+  rpc Reserve(ReserveRequest) returns (Stock);
+}
+
+message GetStockRequest {
+  string sku = 1;
+}
+
+message ReserveRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message Stock {
+  string sku = 1;
+  int32 available = 2;
+}

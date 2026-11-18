@@ -95,9 +95,15 @@ func (s *Store) Contracts(kind string) ([]ContractRow, error) {
 // Markers in a provider's Symbol for contracts the store expands once
 // every type is indexed.
 const (
-	// StructActivities + a type reference: every exported method of a Go
-	// struct registered as Temporal activities, named with Name as prefix.
-	StructActivities = "struct:"
+	// StructMethods + a type reference: every exported method of a Go
+	// struct, named with Name as prefix: a struct registered as Temporal
+	// activities, or a gRPC server (Name "OrderService/").
+	StructMethods = "struct:"
+	// ClassMethods + a class's qualified name: the public methods of a
+	// class and of every class extending it, named with Name as prefix (a
+	// Java method's first letter upper-cased): a gRPC servicer whose
+	// methods may be written in a subclass.
+	ClassMethods = "class:"
 	// ImplementationOf + a type reference: a Java class registered with a
 	// Temporal worker; its workflow is named after the interfaces it
 	// implements, its activities after its public methods.
@@ -174,12 +180,22 @@ func (s *Store) resolveContracts(in []ContractRow) ([]ContractRow, error) {
 			continue
 		}
 		switch {
-		case strings.HasPrefix(c.Symbol, StructActivities):
-			t, ok := s.typeByRef(strings.TrimPrefix(c.Symbol, StructActivities))
+		case strings.HasPrefix(c.Symbol, StructMethods):
+			t, ok := s.typeByRef(strings.TrimPrefix(c.Symbol, StructMethods))
 			if !ok {
 				continue
 			}
 			ms, err := s.methodsOf(t, `s.exported = 1 AND s.kind = 'method'`)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range ms {
+				d := c
+				d.Name, d.Symbol, d.File, d.Line = c.Name+m.Name, m.Qualified, m.File, m.StartLine
+				add(d)
+			}
+		case strings.HasPrefix(c.Symbol, ClassMethods):
+			ms, err := s.classMethods(strings.TrimPrefix(c.Symbol, ClassMethods))
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +298,61 @@ func (s *Store) resolveContracts(in []ContractRow) ([]ContractRow, error) {
 			kept = append(kept, d)
 		}
 	}
-	return kept, nil
+	return s.checkGRPC(kept)
+}
+
+// checkGRPC names gRPC contracts after the services of the indexed .proto
+// files. A service declared once gets its full name (shop.orders.v1.OrderService)
+// as Detail, and its providers keep only the methods it declares (a server
+// struct has helpers besides its RPC methods). A client call found without
+// a grpc import is kept only when a .proto declares its service.
+func (s *Store) checkGRPC(in []ContractRow) ([]ContractRow, error) {
+	services := map[string][]string{} // short name -> qualified services
+	rpcs := map[string]bool{}         // qualified service . method
+	rows, err := s.db.Query(`SELECT s.qualified, s.name, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
+		WHERE f.lang = 'proto' AND s.kind IN ('service', 'rpc')`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var q, name, kind string
+		if err := rows.Scan(&q, &name, &kind); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if kind == "service" {
+			services[name] = append(services[name], q)
+		} else {
+			rpcs[q] = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := in[:0]
+	for _, c := range in {
+		if c.Kind != ContractGRPC {
+			out = append(out, c)
+			continue
+		}
+		svc, method, _ := strings.Cut(c.Name, "/")
+		qs := uniq(services[svc])
+		if len(qs) == 1 {
+			c.Detail = qs[0]
+			if c.Role == RoleProvides && !rpcs[qs[0]+"."+method] {
+				continue // a helper method of the server, not an RPC
+			}
+		}
+		if c.Role == RoleUses && !c.Exact {
+			if len(qs) == 0 {
+				continue // a NewXClient of something else than gRPC
+			}
+			c.Exact = true
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 func uniq(ss []string) []string {
@@ -444,6 +514,47 @@ func (s *Store) typeByRef(ref string) (string, bool) {
 	_ = s.db.QueryRow(`SELECT COUNT(DISTINCT qualified), MIN(qualified) FROM symbols WHERE name = ?
 		AND kind IN ('struct', 'type', 'class', 'record', 'enum', 'interface')`, short).Scan(&n, &only)
 	return only, n == 1
+}
+
+// classMethods lists the public methods of a class and of the classes
+// extending it, nearest first, with Java names upper-cased.
+func (s *Store) classMethods(class string) ([]Symbol, error) {
+	var id int64
+	var lang string
+	err := s.db.QueryRow(`SELECT s.id, f.lang FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.qualified = ?
+		ORDER BY s.id LIMIT 1`, class).Scan(&id, &lang)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	classes := []string{class}
+	subs, err := s.Subtypes(id, 5)
+	if err != nil {
+		return nil, err
+	}
+	for _, sub := range subs {
+		classes = append(classes, sub.Qualified)
+	}
+	cond := `s.kind = 'method' AND s.name NOT LIKE '\_%' ESCAPE '\'`
+	if lang == "java" {
+		cond = `s.kind = 'method' AND s.exported = 1`
+	}
+	var out []Symbol
+	for _, c := range classes {
+		ms, err := s.methodsOf(c, cond)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			if lang == "java" {
+				m.Name = capitalize(m.Name)
+			}
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // methodsOf lists the methods declared on a type, filtered by cond.

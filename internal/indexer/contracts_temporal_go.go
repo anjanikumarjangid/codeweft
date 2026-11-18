@@ -230,7 +230,7 @@ func goTemporalCalls(fset *token.FileSet, body *ast.BlockStmt, caller, qual stri
 				if t := goStructValue(args[0], enc, 0); t != nil {
 					if ref := goTypeRef(t, qual, aliases); ref != "" {
 						out = append(out, store.Contract{Kind: kind, Role: store.RoleProvides, Name: custom,
-							Symbol: store.StructActivities + ref, Line: line, Detail: queue, Exact: true})
+							Symbol: store.StructMethods + ref, Line: line, Detail: queue, Exact: true})
 					}
 					return true
 				}

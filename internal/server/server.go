@@ -396,8 +396,8 @@ func formatFile(out FileOutput) string {
 // SearchInput is the input of search_code.
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"words to search for in symbol names, signatures and doc comments, e.g. 'rate limiter' or 'ParseConfig'"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type, class, record, enum, constructor"`
-	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java or python"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type, class, record, enum, constructor; for .proto files service, rpc, message"`
+	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java, python or proto"`
 	Path  string `json:"path,omitempty" jsonschema:"optional: only files under this directory, e.g. 'internal/store'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum results, default 10, max 50"`
 	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
@@ -1184,10 +1184,14 @@ func endName(e links.End) string {
 	return n
 }
 
-// queueNote names a Temporal contract's task queue.
+// queueNote names a Temporal contract's task queue, or the full name of a
+// gRPC service.
 func queueNote(e links.End) string {
-	if e.Detail == "" || e.Kind == store.ContractHTTP {
+	switch {
+	case e.Detail == "" || e.Kind == store.ContractHTTP:
 		return ""
+	case e.Kind == store.ContractGRPC:
+		return ", service " + e.Detail
 	}
 	return ", task queue " + e.Detail
 }

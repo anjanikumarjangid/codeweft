@@ -29,10 +29,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 8 Go (one of them generated), 6 Java and 5 Python files; test files
-	// are kept apart and not counted.
-	if res.Files != 19 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 19 (1), 0", res.Files, res.Generated, res.Skipped)
+	// 9 Go (one of them generated), 7 Java, 6 Python and 2 proto files;
+	// test files are kept apart and not counted.
+	if res.Files != 24 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 24 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -76,8 +76,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 19 || syms != 124 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 19 and 124", files, syms)
+	if files != 24 || syms != 160 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 24 and 160", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestSearch(t *testing.T) {
 		{"payment", "", "payments.PaymentService"},
 		{"process payment", "", "payments.PaymentService.ProcessPayment"},
 		// prefix matching
-		{"refun", "", "payments.Gateway.Refund"},
+		{"refun", "interface method", "payments.Gateway.Refund"},
 		// doc comments are searchable
 		{"rate limiter", "", "ratelimit.TokenBucket"},
 		// kind filter
@@ -389,7 +389,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 22 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 27 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -412,7 +412,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 20 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 25 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -466,10 +466,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 19 default files + 2 Go and Java test files - 5 Python files under
+	// 24 default files + 2 Go and Java test files - 6 Python files under
 	// py/ (the Python test file is under py/ too).
-	if res.Files != 16 {
-		t.Fatalf("indexed %d files, want 16", res.Files)
+	if res.Files != 20 {
+		t.Fatalf("indexed %d files, want 20", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -490,8 +490,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 15 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 15 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 19 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 19 unchanged, 0 removed", res)
 	}
 }
 
@@ -599,7 +599,7 @@ func TestEndpointsAndOverview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(o.Languages) != 3 || o.Endpoints != 6 {
+	if len(o.Languages) != 4 || o.Endpoints != 6 {
 		t.Errorf("overview languages=%v endpoints=%d", o.Languages, o.Endpoints)
 	}
 	entries := map[string]bool{}
@@ -986,8 +986,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 18 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 18 files, 1 skipped", res, err)
+	if err != nil || res.Files != 23 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 23 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1520,5 +1520,92 @@ func TestPythonLocalImport(t *testing.T) {
 		if c.Qualified == "py.inventory.notify.RestockWorkflow.run" {
 			t.Errorf("uvicorn.run linked to %s", c.Qualified)
 		}
+	}
+}
+
+// TestGRPCLinks links gRPC clients to servers across the fixture's three
+// languages, with the services' full names from the .proto files.
+func TestGRPCLinks(t *testing.T) {
+	st := indexSample(t)
+	rows, err := st.Contracts(store.ContractGRPC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ends := make([]links.End, len(rows))
+	for i, r := range rows {
+		ends[i] = links.End{ContractRow: r}
+	}
+	res := links.Match(ends)
+	var got []string
+	for _, l := range res.Links {
+		got = append(got, fmt.Sprintf("%s [%s]: %s -> %s at %s:%d", l.To.Name, l.To.Detail, l.From.Symbol, l.To.Symbol, l.To.File, l.To.Line))
+	}
+	want := []string{
+		"InventoryService/GetStock [shop.inventory.v1.InventoryService]: checkout.available -> py.inventory.grpc_api.InventoryServicer.GetStock at py/inventory/grpc_api.py:10",
+		"InventoryService/GetStock [shop.inventory.v1.InventoryService]: com.shop.orders.RefundServer.refund -> py.inventory.grpc_api.InventoryServicer.GetStock at py/inventory/grpc_api.py:10",
+		"InventoryService/Reserve [shop.inventory.v1.InventoryService]: checkout.stockClient.hold -> py.inventory.grpc_api.InventoryServicer.Reserve at py/inventory/grpc_api.py:13",
+		"InventoryService/Reserve [shop.inventory.v1.InventoryService]: com.shop.orders.RefundServer.restock -> py.inventory.grpc_api.InventoryServicer.Reserve at py/inventory/grpc_api.py:13",
+		"OrderService/GetOrder [shop.orders.v1.OrderService]: py.inventory.grpc_api.OrdersClient.order -> checkout.orderServer.GetOrder at checkout/grpc.go:18",
+		"RefundService/Refund [shop.orders.v1.RefundService]: py.inventory.grpc_api.refund -> com.shop.orders.RefundServer.refund at java/com/shop/orders/RefundServer.java:20",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(res.Unmatched) != 0 {
+		t.Errorf("unmatched uses: %+v", res.Unmatched)
+	}
+	// Close is a method of the Go server but not an RPC, _audit is private,
+	// and withDeadlineAfter configures a Java stub: none is a contract.
+	if len(res.Unreferring) != 1 || res.Unreferring[0].Symbol != "checkout.orderServer.ListOrders" {
+		t.Errorf("providers without uses: %+v", res.Unreferring)
+	}
+
+	// A Go call on a client of unknown type is never matched by name to a
+	// method of another language (here the Python servicer's GetStock).
+	syms, err := st.Lookup("checkout.available")
+	if err != nil || len(syms) != 1 {
+		t.Fatalf("lookup: %v %v", syms, err)
+	}
+	callees, err := st.Callees(syms[0].ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range callees {
+		if strings.HasPrefix(c.Qualified, "py.") {
+			t.Errorf("Go call linked to %s", c.Qualified)
+		}
+	}
+}
+
+func TestParseProto(t *testing.T) {
+	src, err := os.ReadFile("../../testdata/sample/proto/orders.proto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr, err := indexer.ParseProto("proto/orders.proto", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range fr.Symbols {
+		got = append(got, fmt.Sprintf("%s %s %q %q", s.Kind, s.Qualified, s.Signature, s.Doc))
+	}
+	want := []string{
+		`service shop.orders.v1.OrderService "service OrderService" "OrderService reads orders; served by checkout (Go)."`,
+		`rpc shop.orders.v1.OrderService.GetOrder "rpc GetOrder(GetOrderRequest) returns (Order)" ""`,
+		`rpc shop.orders.v1.OrderService.ListOrders "rpc ListOrders(ListOrdersRequest) returns (stream Order)" ""`,
+		`service shop.orders.v1.RefundService "service RefundService" "RefundService refunds orders; served by the Java orders service."`,
+		`rpc shop.orders.v1.RefundService.Refund "rpc Refund(RefundRequest) returns (Order)" ""`,
+		`message shop.orders.v1.GetOrderRequest "message GetOrderRequest" ""`,
+		`message shop.orders.v1.ListOrdersRequest "message ListOrdersRequest" ""`,
+		`message shop.orders.v1.RefundRequest "message RefundRequest" ""`,
+		`message shop.orders.v1.Order "message Order" ""`,
+		`message shop.orders.v1.Order.Line "message Line" "Line is one item of the order."`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("symbols:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if fr.File.Package != "shop.orders.v1" || fr.File.Lang != "proto" {
+		t.Errorf("file: %+v", fr.File)
 	}
 }
