@@ -4,6 +4,8 @@
 Usage:
   python3 compare.py calls      INDEX.db TRUTHDIR   (after: go run ./calls TRUTHDIR)
   python3 compare.py implements INDEX.db TRUTHDIR   (after: go run ./implements TRUTHDIR)
+  python3 compare.py java       INDEX.db TRUTH.txt  (after: java CallTruth SRC > TRUTH.txt)
+  python3 compare.py python     INDEX.db TRUTH.txt  (after: python truth.py ROOT > TRUTH.txt)
 
 Only edges inside the type-checked universe are scored: go/types sees the
 files of one GOOS/GOARCH, while codewiki indexes every platform's files.
@@ -91,7 +93,66 @@ def implements(db, truthdir):
         print("  wrong:", p)
 
 
+def java(db, truth_file):
+    truth = [tuple(l.split()) for l in lines(truth_file)]
+    # Every class calls Object's (or Enum's, Record's) constructor implicitly.
+    synthetic = {"java.lang.Object.Object", "java.lang.Enum.Enum", "java.lang.Record.Record"}
+    truth = [(a, b) for a, b in truth if b not in synthetic]
+    kinds = dict(db.execute("SELECT qualified, kind FROM symbols"))
+
+    def norm(callee):  # new X() of a class without a constructor: codewiki links X
+        if callee not in kinds:
+            owner, _, name = callee.rpartition(".")
+            if owner.rsplit(".", 1)[-1] == name and kinds.get(owner) in ("class", "enum", "record"):
+                return owner
+        return callee
+
+    internal = {(a, norm(b)) for a, b in truth if a in kinds and norm(b) in kinds}
+    external = {(a, b) for a, b in truth if a in kinds and norm(b) not in kinds}
+    ours, ours_ext = {}, set()
+    for a, b, ref, conf in db.execute("""SELECT s.qualified, t.qualified, e.to_ref, e.confidence FROM edges e
+            JOIN symbols s ON s.id = e.from_id LEFT JOIN symbols t ON t.id = e.to_id"""):
+        if b:
+            ours.setdefault((a, b), conf)
+        else:
+            ours_ext.add((a, ref))
+    callers = {a for a, _ in truth}
+    scored = {k: v for k, v in ours.items() if k[0] in callers}
+    correct = {k for k in scored if k in internal}
+    print(f"truth: {len(internal)} internal and {len(external)} external distinct call edges")
+    print("precision:", pct(len(correct), len(scored)))
+    for conf in ("exact", "name"):
+        s = {k for k, v in scored.items() if v == conf}
+        print(f"  {conf} edges:", pct(len(s & correct), len(s)))
+    print("recall:", pct(len(correct), len(internal)))
+    print("calls outside the repository found as external references:", pct(len(external & ours_ext), len(external)))
+
+
+def python(db, truth_file):
+    truth = [tuple(l.split()) for l in lines(truth_file)]
+    symbols = {q for (q,) in db.execute("SELECT qualified FROM symbols")}
+    internal = {(a, b) for a, b in truth if a in symbols and b in symbols}
+    ours = {}
+    for a, b, conf in db.execute("""SELECT s.qualified, t.qualified, e.confidence FROM edges e
+            JOIN symbols s ON s.id = e.from_id JOIN symbols t ON t.id = e.to_id"""):
+        ours.setdefault((a, b), conf)
+    callers = {a for a, _ in truth}
+    scored = {k: v for k, v in ours.items() if k[0] in callers}
+    agree = {k for k in scored if k in internal}
+    print(f"jedi: {len(internal)} internal distinct call edges")
+    print("codewiki edges jedi also infers:", pct(len(agree), len(scored)))
+    for conf in ("exact", "name"):
+        s = {k for k, v in scored.items() if v == conf}
+        print(f"  {conf} edges:", pct(len(s & agree), len(s)))
+    print("jedi edges codewiki also finds:", pct(len(agree), len(internal)))
+    for a, b in sorted(set(scored) - agree):
+        print(f"  only codewiki: {a} -> {b} [{scored[(a, b)]}]")
+    for a, b in sorted(internal - agree):
+        print(f"  only jedi: {a} -> {b}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] not in ("calls", "implements"):
+    modes = {"calls": calls, "implements": implements, "java": java, "python": python}
+    if len(sys.argv) != 4 or sys.argv[1] not in modes:
         sys.exit(__doc__)
-    {"calls": calls, "implements": implements}[sys.argv[1]](sqlite3.connect(sys.argv[2]), sys.argv[3])
+    modes[sys.argv[1]](sqlite3.connect(sys.argv[2]), sys.argv[3])

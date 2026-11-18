@@ -1336,3 +1336,76 @@ class Uses {
 		}
 	}
 }
+
+// TestPythonTypes covers Python receivers typed from return annotations,
+// assignments, module functions and class names.
+func TestPythonTypes(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app/adapters.py", "class BaseAdapter:\n    def __init__(self):\n        pass\n\n    def send(self, req):\n        pass\n\n\nclass HTTPAdapter(BaseAdapter):\n    def __init__(self):\n        BaseAdapter.__init__(self)\n")
+	write("app/sessions.py", `from .adapters import BaseAdapter, HTTPAdapter
+
+
+def default_adapter() -> BaseAdapter:
+    return HTTPAdapter()
+
+
+class Session:
+    def get_adapter(self, url) -> BaseAdapter:
+        return HTTPAdapter()
+
+    def send(self, req):
+        adapter = self.get_adapter(req)
+        adapter.send(req)
+        data = {}
+        data.update(req)
+
+    def send_default(self, req):
+        default_adapter().send(req)
+`)
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	callees := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		refs, err := st.Callees(syms[0].ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range refs {
+			out = append(out, r.Qualified+"["+r.Confidence+"]")
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// get_adapter() and default_adapter() return BaseAdapter; a dict's
+		// update is not guessed to be anything of the repository.
+		{"app.sessions.Session.send", "app.sessions.Session.get_adapter[exact] app.adapters.BaseAdapter.send[exact]"},
+		{"app.sessions.Session.send_default", "app.adapters.BaseAdapter.send[exact] app.sessions.default_adapter[exact]"},
+		// BaseAdapter.__init__(self) through the class name.
+		{"app.adapters.HTTPAdapter.__init__", "app.adapters.BaseAdapter.__init__[exact]"},
+	} {
+		if got := callees(c.name); got != c.want {
+			t.Errorf("callees of %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}

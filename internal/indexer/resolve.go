@@ -473,7 +473,7 @@ func langOf(path string) string {
 func (r resolver) callIn(c store.RawCall, path string) (int64, string, string) {
 	r.lang = langOf(path)
 	if c.Form == store.CallExpr {
-		if strings.HasSuffix(path, ".java") {
+		if r.lang != "go" { // Java and Python: the same expression form
 			return r.javaExprCall(c)
 		}
 		return r.exprCall(c, path)
@@ -617,6 +617,10 @@ func (r resolver) javaType(node any, depth int) (q string, external, known bool)
 			return "", false, false
 		}
 		if id, _ := r.method(owner, str(2), -1); id != 0 {
+			return fromRef(r.in.Results[id])
+		}
+	case "F": // a module-level function (Python): its declared result
+		if id, _, _ := r.exact(str(1)); id != 0 {
 			return fromRef(r.in.Results[id])
 		}
 	case "C":
