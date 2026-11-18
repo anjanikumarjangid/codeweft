@@ -165,7 +165,7 @@ Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. For th
 
 ### Incremental re-index
 
-`codewiki reindex` hashes every file, re-parses only those whose content changed, removes deleted ones, and then rebuilds the call graph from the stored call sites. Edges *into* a changed file stay correct even though the files calling it were not re-parsed.
+`codewiki reindex` hashes every file, re-parses only those whose content changed and removes deleted ones. Most edits change only function bodies, and each file also records a *shape*: a hash of what call resolution reads from it (its declarations and their signatures, imports, fields, variables and supertypes), not its bodies, docs or line numbers. When every changed file keeps its shape and no file was added or removed, no call elsewhere can resolve differently. The changed files are then updated in place, keeping their symbols' ids, so the edges pointing at them stay valid, and only their own calls are resolved again. Any other edit rebuilds the call graph, the test edges and the type hierarchy from all stored call sites, so edges *into* a changed file stay correct even though the files calling it were not re-parsed; only the edges that differ are written. A test checks, edit by edit, that both paths give exactly the index a full build gives.
 
 `codewiki watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
 
@@ -195,7 +195,7 @@ Name matching between a call and a method never crosses languages: a Go call on 
 
 ### Output size
 
-Every tool result lands in the agent's context window, so results are capped and always say what was left out and how to get it: `get_symbol` shows the first 200 lines of source and the file range of the rest, and at most 15 callers and callees; an ambiguous name lists up to 30 candidates with the total count; `get_file_summary` lists the 20 most-connected related files in each direction. Every tool is annotated as read-only.
+Every tool result lands in the agent's context window, so results are capped and always say what was left out and how to get it: `get_symbol` shows the first 200 lines of source and the file range of the rest, and at most 15 callers and callees; an ambiguous name lists up to 30 candidates with the total count; `get_file_summary` lists 100 declarations at a time (an `offset` argument gives the next ones) and the 20 most-connected related files in each direction; `get_dependency_graph` lists at most 20 callers or callees under a node and 120 nodes in all, and says under each node how many it left out. Every tool is annotated as read-only.
 
 On the Go standard library, `get_symbol String` went from 12.1 KB of text (the full source of 20 of its matches) to 4.1 KB (a list of candidates), and the longest function (`cmd/internal/obj/arm64.ctxt7.asmout`, 2,457 lines) from 60 KB to 6.5 KB.
 
