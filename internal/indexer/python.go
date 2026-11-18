@@ -217,6 +217,20 @@ func (pf *pyFile) class(def, outer *sitter.Node, prefix string) {
 	qual := prefix + "." + name
 	body := field(def, "body")
 	pf.add(outer, name, qual, "class", strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
+	// Base classes: `class A(B, mod.C, Generic[T], metaclass=M)` records B,
+	// mod.C and Generic. Keyword arguments such as metaclass are not bases.
+	for _, b := range namedChildren(field(def, "superclasses")) {
+		switch b.Type() {
+		case "subscript":
+			b = field(b, "value")
+		case "identifier", "attribute":
+		default:
+			continue
+		}
+		if ref := pf.nameRef(text(b, pf.src)); ref != "" {
+			pf.res.Supertypes = append(pf.res.Supertypes, store.Supertype{Owner: qual, Kind: store.SuperExtends, TypeRef: ref})
+		}
+	}
 	for _, m := range namedChildren(body) {
 		d := unwrapDecorated(m)
 		switch d.Type() {

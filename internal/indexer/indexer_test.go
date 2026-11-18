@@ -75,8 +75,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 14 || syms != 55 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 55", files, syms)
+	if files != 14 || syms != 82 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 14 and 82", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -188,6 +188,111 @@ func TestCallGraphGolden(t *testing.T) {
 	}
 }
 
+// TestTypeHierarchyGolden compares every direct supertype relation in the
+// fixture against a checked-in expectation.
+func TestTypeHierarchyGolden(t *testing.T) {
+	st := indexSample(t)
+	syms, err := st.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, s := range syms {
+		sups, err := st.Supertypes(s.ID, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range sups {
+			ext := ""
+			if u.External {
+				ext = " (external)"
+			}
+			lines = append(lines, fmt.Sprintf("%s -> %s [%s]%s", s.Qualified, u.Qualified, u.How, ext))
+		}
+	}
+	got := strings.Join(lines, "\n") + "\n"
+	golden := "../../testdata/sample.types.golden"
+	if *update {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("%v (run with -update to create it)", err)
+	}
+	if got != string(want) {
+		t.Errorf("type hierarchy differs from %s:\n%s", golden, got)
+	}
+}
+
+// TestImplementations spells out the cases the type hierarchy must get
+// right, independently of the golden file.
+func TestImplementations(t *testing.T) {
+	st := indexSample(t)
+	one := func(name string) store.Symbol {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		return syms[0]
+	}
+	names := func(links []store.TypeLink, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, l := range links {
+			out = append(out, fmt.Sprintf("%s[%s,%d]", l.Qualified, l.How, l.Depth))
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, got, want string }{
+		// Go: by method set. LoggingGateway gets its methods from the embedded
+		// *StripeGateway; FakeGateway.Refund() has the wrong parameters; the
+		// interface that embeds Gateway extends it.
+		{"Gateway implementations", names(st.Subtypes(one("payments.Gateway").ID, 5)),
+			"payments.AuditedGateway[extends,1] payments.DoubleGateway[method set,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1] payments.VoidingGateway[extends,1]"},
+		// DoubleGateway's Void is ambiguous (two embeddings at depth 1).
+		{"VoidingGateway implementations", names(st.Subtypes(one("payments.VoidingGateway").ID, 5)),
+			"payments.AuditedGateway[extends,1] payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+		// Overlapping embedded interfaces: the method set is their union.
+		{"AuditedGateway implementations", names(st.Subtypes(one("payments.AuditedGateway").ID, 5)),
+			"payments.LoggingGateway[method set,1] payments.StripeGateway[method set,1]"},
+		{"embedding is not subtyping", names(st.Subtypes(one("payments.StripeGateway").ID, 5)), ""},
+		{"LoggingGateway supertypes", names(st.Supertypes(one("payments.LoggingGateway").ID, 1)),
+			"payments.AuditedGateway[method set,1] payments.Gateway[method set,1] payments.StripeGateway[embeds,1] payments.VoidingGateway[method set,1]"},
+		// The predeclared error interface contributes Error() string.
+		{"CodedError implementations", names(st.Subtypes(one("payments.CodedError").ID, 5)),
+			"payments.DeclineError[method set,1]"},
+		// Java: declared, followed through the class hierarchy.
+		{"OrderRepository implementations", names(st.Subtypes(one("com.shop.orders.OrderRepository").ID, 5)),
+			"com.shop.orders.InMemoryOrderRepository[implements,1] com.shop.orders.CountingOrderRepository[extends,2]"},
+		{"CountingOrderRepository supertypes", names(st.Supertypes(one("com.shop.orders.CountingOrderRepository").ID, 5)),
+			"com.shop.orders.InMemoryOrderRepository[extends,1] com.shop.orders.OrderRepository[implements,2] java.io.Serializable[implements,1]"},
+		{"implementers of an external interface", names(st.ExternalSubtypes("Serializable")),
+			"com.shop.orders.CountingOrderRepository[implements,1]"},
+		// Python: base classes.
+		{"ItemRepository subclasses", names(st.Subtypes(one("py.inventory.models.ItemRepository").ID, 5)),
+			"py.inventory.models.CachedItemRepository[extends,1]"},
+		// Methods: implementations and overrides, and the reverse.
+		{"Gateway.Charge implementations", names(st.MethodImplementations(one("payments.Gateway.Charge"), 5)),
+			"payments.StripeGateway.Charge[implements,1]"},
+		{"OrderRepository.save implementations", names(st.MethodImplementations(one("com.shop.orders.OrderRepository.save"), 5)),
+			"com.shop.orders.InMemoryOrderRepository.save[implements,1] com.shop.orders.CountingOrderRepository.save[implements,2]"},
+		{"ItemRepository.get overrides", names(st.MethodImplementations(one("py.inventory.models.ItemRepository.get"), 5)),
+			"py.inventory.models.CachedItemRepository.get[overrides,1]"},
+		{"CountingOrderRepository.save supers", names(st.MethodSupers(one("com.shop.orders.CountingOrderRepository.save"), 5)),
+			"com.shop.orders.InMemoryOrderRepository.save[overrides,1] com.shop.orders.OrderRepository.save[implements,2]"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s:\n got: %s\nwant: %s", c.name, c.got, c.want)
+		}
+	}
+}
+
 func TestCallersAndGraph(t *testing.T) {
 	st := indexSample(t)
 	target, err := st.Lookup("payments.PaymentService.ProcessPayment")
@@ -275,7 +380,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 14 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 17 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -298,7 +403,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 12 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 15 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -352,9 +457,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 14 default files + 1 test file - 4 Python files under py/.
-	if res.Files != 11 {
-		t.Fatalf("indexed %d files, want 11", res.Files)
+	// 14 default files + 2 Go and Java test files - 4 Python files under
+	// py/ (the Python test file is under py/ too).
+	if res.Files != 12 {
+		t.Fatalf("indexed %d files, want 12", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -375,8 +481,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 10 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 10 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 11 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 11 unchanged, 0 removed", res)
 	}
 }
 
@@ -493,5 +599,251 @@ func TestEndpointsAndOverview(t *testing.T) {
 	}
 	if !entries["checkout/cmd/server/main.main"] || !entries["py.inventory.api.__main__"] {
 		t.Errorf("entry points = %+v", o.EntryPoints)
+	}
+}
+
+// TestReindexUpdatesTypeHierarchy checks that the type hierarchy follows
+// an incremental re-index: a changed signature removes an implementation,
+// and relations declared in unchanged files stay.
+func TestReindexUpdatesTypeHierarchy(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	implements := func(sub, super string) bool {
+		t.Helper()
+		syms, err := st.Lookup(super)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", super, syms, err)
+		}
+		subs, err := st.Subtypes(syms[0].ID, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range subs {
+			if s.Qualified == sub {
+				return true
+			}
+		}
+		return false
+	}
+	if !implements("payments.StripeGateway", "payments.Gateway") {
+		t.Fatal("StripeGateway should implement Gateway before the change")
+	}
+
+	svc := filepath.Join(repo, "payments", "service.go")
+	data, _ := os.ReadFile(svc)
+	changed := strings.Replace(string(data), "func (g *StripeGateway) Refund(chargeID string) error", "func (g *StripeGateway) Refund(chargeID int) error", 1)
+	if changed == string(data) {
+		t.Fatal("fixture changed: StripeGateway.Refund not found")
+	}
+	if err := os.WriteFile(svc, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := indexer.Reindex(repo, st, indexer.Options{})
+	if err != nil || res.Files != 1 {
+		t.Fatalf("reindex: %+v, %v", res, err)
+	}
+	if implements("payments.StripeGateway", "payments.Gateway") {
+		t.Error("StripeGateway.Refund(int) no longer matches Gateway, but the implementation is still listed")
+	}
+	if !implements("com.shop.orders.CountingOrderRepository", "com.shop.orders.OrderRepository") {
+		t.Error("a relation declared in an unchanged file was lost")
+	}
+}
+
+// TestTestsFor checks which tests are found to exercise a symbol: directly,
+// through the repository's own callers, and through helpers in test files.
+func TestTestsFor(t *testing.T) {
+	st := indexSample(t)
+	tests := func(name string) string {
+		t.Helper()
+		syms, err := st.Lookup(name)
+		if err != nil || len(syms) == 0 {
+			t.Fatalf("lookup %s: %v %v", name, syms, err)
+		}
+		refs, total, err := st.TestsFor(syms[0].ID, 3, 3, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != len(refs) {
+			t.Errorf("%s: total %d, listed %d", name, total, len(refs))
+		}
+		var out []string
+		for _, r := range refs {
+			out = append(out, fmt.Sprintf("%s[%d via %s]", r.Qualified, r.Distance, r.Via))
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct{ name, want string }{
+		// Direct, and through the test helper allowTwice.
+		{"ratelimit.TokenBucket.Allow", "ratelimit.TestAllow[1 via ratelimit.TokenBucket.Allow] ratelimit.TestBurst[2 via ratelimit.TokenBucket.Allow]"},
+		// Direct, and through Allow -> refillLocked -> refill in the code
+		// under test. Testable is not a test.
+		{"ratelimit.refill", "ratelimit.TestRefill[1 via ratelimit.refill] ratelimit.TestAllow[3 via ratelimit.TokenBucket.Allow] ratelimit.TestBurst[4 via ratelimit.TokenBucket.Allow]"},
+		// Java: through OrderService.place, and through the newService helper
+		// for the constructor.
+		{"com.shop.billing.Billing.charge", "com.shop.orders.OrderServiceTest.placeCreatesAnOrder[2 via com.shop.orders.OrderService.place]"},
+		{"com.shop.orders.OrderService.OrderService", "com.shop.orders.OrderServiceTest.placeCreatesAnOrder[2 via com.shop.orders.OrderService.OrderService]"},
+		// Python: a module-level test and a test method in a class.
+		{"py.inventory.stock.StockService.reserve", "py.inventory.test_stock.test_reserve_fails_without_stock[1 via py.inventory.stock.StockService.reserve]"},
+		// reserve -> ItemRepository.get -> Item: the reserve test counts too.
+		{"py.inventory.models.Item", "py.inventory.test_stock.TestItem.test_item_keeps_count[1 via py.inventory.models.Item] py.inventory.test_stock.test_reserve_fails_without_stock[3 via py.inventory.stock.StockService.reserve]"},
+		{"payments.Gateway.Charge", ""},
+	} {
+		if got := tests(c.name); got != c.want {
+			t.Errorf("tests for %s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+	// Test code stays out of search and lookup.
+	if hits, _ := st.Search("allowTwice", store.SearchOptions{}); len(hits) != 0 {
+		t.Errorf("test helper is searchable: %v", hits[0].Qualified)
+	}
+	if syms, _ := st.Lookup("TestAllow"); len(syms) != 0 {
+		t.Error("test function is a symbol")
+	}
+}
+
+// TestIncludeTestsSwitch checks that re-indexing with --include-tests makes
+// unchanged test files searchable, and that switching back hides them.
+func TestIncludeTestsSwitch(t *testing.T) {
+	repo := copyTree(t, "../../testdata/sample")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	searchable := func() bool {
+		hits, _ := st.Search("allowTwice", store.SearchOptions{})
+		return len(hits) > 0
+	}
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if searchable() {
+		t.Fatal("test helper searchable without --include-tests")
+	}
+	res, err := indexer.Reindex(repo, st, indexer.Options{IncludeTests: true})
+	if err != nil || res.Files != 3 {
+		t.Fatalf("switching to --include-tests should re-index the 3 test files: %+v %v", res, err)
+	}
+	if !searchable() {
+		t.Error("test helper not searchable with --include-tests")
+	}
+	syms, _ := st.Lookup("ratelimit.TokenBucket.Allow")
+	if refs, _, _ := st.TestsFor(syms[0].ID, 3, 3, 50); len(refs) != 2 {
+		t.Errorf("tests for Allow with --include-tests: %+v", refs)
+	}
+	if _, err := indexer.Reindex(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if searchable() {
+		t.Error("test helper still searchable after switching back")
+	}
+}
+
+// TestPythonReExports checks that a call through a package that re-exports
+// a name (requests.get, defined as requests.api.get and imported into
+// requests/__init__.py) resolves to the definition, from code and tests.
+func TestPythonReExports(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("pkg/__init__.py", "from .api import get\n")
+	write("pkg/api.py", "def get(url):\n    return request('GET', url)\n\n\ndef request(method, url):\n    return None\n")
+	write("app.py", "import pkg\n\n\ndef main():\n    pkg.get('x')\n")
+	write("tests/test_api.py", "import pkg\n\n\ndef test_get():\n    pkg.get('x')\n")
+	st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := indexer.Index(repo, st, indexer.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := st.Lookup("app.main")
+	callees, err := st.Callees(main[0].ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range callees {
+		got = append(got, c.Qualified+"["+c.Confidence+"]")
+	}
+	if strings.Join(got, " ") != "pkg.api.get[exact]" {
+		t.Errorf("app.main callees = %v; want the exact pkg.api.get", got)
+	}
+	req, _ := st.Lookup("pkg.api.request")
+	tests, _, err := st.TestsFor(req[0].ID, 3, 3, 10)
+	if err != nil || len(tests) != 1 || tests[0].Qualified != "tests.test_api.test_get" || tests[0].Distance != 2 {
+		t.Errorf("tests for pkg.api.request = %+v, %v; want tests.test_api.test_get at distance 2", tests, err)
+	}
+}
+
+// TestBuildOutputDirs checks that directories named like build output are
+// skipped, unless they are Go packages (as Go's own go/build is), and that
+// --exclude still skips them.
+func TestBuildOutputDirs(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, src string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("go/build/build.go", "package build\n\n// Import finds a package.\nfunc Import() {}\n")
+	write("app/build/generated/Gen.java", "package gen;\n\nclass Gen {}\n")
+	write("lib/dist/bundle.py", "def bundled():\n    pass\n")
+	write("target/classes/A.java", "package a;\n\nclass A {}\n")
+
+	index := func(opts indexer.Options) map[string]bool {
+		t.Helper()
+		st, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if _, err := indexer.Index(repo, st, opts); err != nil {
+			t.Fatal(err)
+		}
+		all, err := st.All()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, s := range all {
+			got[s.File] = true
+		}
+		return got
+	}
+	got := index(indexer.Options{})
+	if !got["go/build/build.go"] {
+		t.Error("a Go package in a directory named build was skipped")
+	}
+	for _, f := range []string{"app/build/generated/Gen.java", "lib/dist/bundle.py", "target/classes/A.java"} {
+		if got[f] {
+			t.Errorf("build output %s was indexed", f)
+		}
+	}
+	if got := index(indexer.Options{Exclude: []string{"build"}}); got["go/build/build.go"] {
+		t.Error("--exclude build should skip go/build too")
 	}
 }

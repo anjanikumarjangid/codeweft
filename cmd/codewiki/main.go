@@ -29,6 +29,8 @@ Usage:
   codewiki symbol [--db FILE] [--json] NAME
   codewiki reindex [--db FILE] [--include-tests] [--exclude dir1,dir2] [PATH]
   codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
+  codewiki impl   [--db FILE] [--up] [--depth N] NAME
+  codewiki tests  [--db FILE] [--depth N] [--json] NAME
   codewiki file   [--db FILE] [--json] PATH
   codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
   codewiki overview [--db FILE] [--json]
@@ -60,6 +62,10 @@ func main() {
 		err = runSymbol(os.Args[2:])
 	case "deps":
 		err = runDeps(os.Args[2:])
+	case "tests":
+		err = runTests(os.Args[2:])
+	case "impl":
+		err = runImpl(os.Args[2:])
 	case "reindex":
 		err = runReindex(os.Args[2:])
 	case "file":
@@ -90,7 +96,7 @@ const defaultDB = ".codewiki/index.db"
 func runIndex(args []string) error {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	db := fs.String("db", "", "index file (default PATH/"+defaultDB+")")
-	tests := fs.Bool("include-tests", false, "also index *_test.go files")
+	tests := fs.Bool("include-tests", false, "also index test code as ordinary, searchable code")
 	exclude := fs.String("exclude", "", "comma-separated directory names to skip")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck // ExitOnError
 	if fs.NArg() != 1 {
@@ -197,7 +203,7 @@ func runSymbol(args []string) error {
 func runReindex(args []string) error {
 	fs := flag.NewFlagSet("reindex", flag.ExitOnError)
 	db := fs.String("db", defaultDB, "index file")
-	tests := fs.Bool("include-tests", false, "also index test files")
+	tests := fs.Bool("include-tests", false, "also index test code as ordinary, searchable code")
 	exclude := fs.String("exclude", "", "comma-separated directory names to skip")
 	fs.Parse(interspersed(fs, args)) //nolint:errcheck
 	st, err := openExisting(*db)
@@ -338,6 +344,120 @@ func runDeps(args []string) error {
 		}
 	}
 	walk(root.Children, "  ")
+	return nil
+}
+
+// runTests prints the tests that exercise NAME, nearest first.
+func runTests(args []string) error {
+	fs := flag.NewFlagSet("tests", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	depth := fs.Int("depth", 3, "calls to follow up through the repository's code")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	if fs.NArg() != 1 {
+		return errors.New("tests needs exactly one NAME")
+	}
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	syms, err := st.Lookup(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if len(syms) > 1 && store.SameName(syms) {
+		syms = syms[:1]
+	}
+	if len(syms) != 1 {
+		if len(syms) == 0 {
+			return fmt.Errorf("no symbol named %q", fs.Arg(0))
+		}
+		for _, s := range syms {
+			fmt.Println(s.Qualified)
+		}
+		return fmt.Errorf("%q is ambiguous; use one of the qualified names above", fs.Arg(0))
+	}
+	tests, total, err := st.TestsFor(syms[0].ID, *depth, 3, 1000)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(tests)
+	}
+	for _, t := range tests {
+		fmt.Printf("%-60s %d  via %s  %s\n", t.Qualified, t.Distance, t.Via, t.Location)
+	}
+	fmt.Fprintf(os.Stderr, "%d test(s)\n", total)
+	return nil
+}
+
+// runImpl prints what implements, extends or overrides NAME, or with --up,
+// what NAME implements, extends or overrides.
+func runImpl(args []string) error {
+	fs := flag.NewFlagSet("impl", flag.ExitOnError)
+	db := fs.String("db", defaultDB, "index file")
+	up := fs.Bool("up", false, "show what NAME extends, implements or overrides")
+	depth := fs.Int("depth", 5, "levels to follow")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(interspersed(fs, args)) //nolint:errcheck
+	if fs.NArg() != 1 {
+		return errors.New("impl needs exactly one NAME")
+	}
+	st, err := openExisting(*db)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	syms, err := st.Lookup(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if len(syms) > 1 && store.SameName(syms) {
+		syms = syms[:1]
+	}
+	var links []store.TypeLink
+	switch {
+	case len(syms) == 0 && !*up:
+		links, err = st.ExternalSubtypes(fs.Arg(0))
+	case len(syms) == 0:
+		return fmt.Errorf("no symbol named %q", fs.Arg(0))
+	case len(syms) > 1:
+		for _, s := range syms {
+			fmt.Println(s.Qualified)
+		}
+		return fmt.Errorf("%q is ambiguous; use one of the qualified names above", fs.Arg(0))
+	default:
+		s := syms[0]
+		switch {
+		case s.Kind == "method" || s.Kind == "interface method":
+			if *up {
+				links, err = st.MethodSupers(s, *depth)
+			} else {
+				links, err = st.MethodImplementations(s, *depth)
+			}
+		case *up:
+			links, err = st.Supertypes(s.ID, *depth)
+		default:
+			links, err = st.Subtypes(s.ID, *depth)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(links)
+	}
+	for _, l := range links {
+		loc := l.Location
+		if l.External {
+			loc = "external"
+		}
+		fmt.Printf("%s%-50s %-11s %s\n", strings.Repeat("  ", max(l.Depth-1, 0)), l.Qualified, l.How, loc)
+	}
+	if len(links) == 0 {
+		fmt.Println("nothing found")
+	}
 	return nil
 }
 

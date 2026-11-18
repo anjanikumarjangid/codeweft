@@ -32,8 +32,18 @@ func resolve(tx *store.Tx, module string) (int, error) {
 	}
 	r := resolver{in}
 	var edges []store.Edge
+	var testEdges []store.TestEdge
 	resolved := 0
 	for _, c := range in.Calls {
+		// Calls made in tests: into the repository's code, or into another
+		// test function such as a helper.
+		if from, ok := in.TestFuncs[c.Caller]; ok {
+			if toID, _, _ := r.call(c); toID != 0 {
+				testEdges = append(testEdges, store.TestEdge{FromTest: from, ToID: toID, Line: c.Line})
+			} else if to := r.testCallee(c); to != 0 && to != from {
+				testEdges = append(testEdges, store.TestEdge{FromTest: from, ToTest: to, Line: c.Line})
+			}
+		}
 		from, ok := in.Symbols[c.Caller]
 		if !ok {
 			continue
@@ -47,14 +57,43 @@ func resolve(tx *store.Tx, module string) (int, error) {
 		}
 		edges = append(edges, store.Edge{FromID: from, ToID: toID, ToRef: ref, Line: c.Line, Confidence: conf})
 	}
-	return resolved, tx.ReplaceEdges(edges)
+	if err := tx.ReplaceEdges(edges); err != nil {
+		return 0, err
+	}
+	if err := tx.ReplaceTestEdges(testEdges); err != nil {
+		return 0, err
+	}
+	return resolved, resolveTypes(tx, r)
 }
 
 type resolver struct{ in *store.ResolveInput }
 
+// testCallee resolves a call made in a test to another function declared
+// in a test file, such as a setup helper. Only exact names are used: the
+// same package, or a method on the caller's receiver.
+func (r resolver) testCallee(c store.RawCall) int64 {
+	switch c.Form {
+	case store.CallQualified:
+		return r.in.TestFuncs[c.A]
+	case store.CallImport:
+		return r.in.TestFuncs[c.A+"."+c.B] // Java/Python modules
+	}
+	return 0
+}
+
 func (r resolver) exact(q string) (int64, string, string) {
-	if id, ok := r.in.Symbols[q]; ok {
-		return id, q, "exact"
+	// A Python name may reach its definition through modules that import
+	// and re-export it, as packages do in __init__.py: requests.get is
+	// requests.api.get. Follow at most a few such hops.
+	for hops := 0; hops < 4; hops++ {
+		if id, ok := r.in.Symbols[q]; ok {
+			return id, q, "exact"
+		}
+		next, ok := r.in.ReExports[q]
+		if !ok || next == q {
+			break
+		}
+		q = next
 	}
 	return 0, "", ""
 }

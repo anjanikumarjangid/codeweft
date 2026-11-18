@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "4"
+const SchemaVersion = "6"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS files (
 	package TEXT NOT NULL,
 	qual    TEXT NOT NULL,
 	doc     TEXT NOT NULL,
-	hash    TEXT NOT NULL
+	hash    TEXT NOT NULL,
+	test    INTEGER NOT NULL DEFAULT 0 -- 1: test-only file, its functions are in test_funcs
 );
 CREATE INDEX IF NOT EXISTS files_dir ON files(dir);
 CREATE TABLE IF NOT EXISTS symbols (
@@ -88,6 +89,38 @@ CREATE TABLE IF NOT EXISTS endpoints (
 	line      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS endpoints_file ON endpoints(file_id);
+CREATE TABLE IF NOT EXISTS supertypes (
+	file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	owner    TEXT NOT NULL,
+	kind     TEXT NOT NULL,
+	type_ref TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS supertypes_file ON supertypes(file_id);
+CREATE TABLE IF NOT EXISTS type_edges (
+	sub_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+	super_id  INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+	super_ref TEXT NOT NULL,
+	how       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS type_edges_sub ON type_edges(sub_id);
+CREATE INDEX IF NOT EXISTS type_edges_super ON type_edges(super_id);
+CREATE INDEX IF NOT EXISTS type_edges_ref ON type_edges(super_ref);
+CREATE TABLE IF NOT EXISTS test_funcs (
+	id        INTEGER PRIMARY KEY,
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	qualified TEXT NOT NULL,
+	line      INTEGER NOT NULL,
+	entry     INTEGER NOT NULL -- 1: a test the runner calls (TestXxx, @Test, test_xxx)
+);
+CREATE INDEX IF NOT EXISTS test_funcs_file ON test_funcs(file_id);
+CREATE TABLE IF NOT EXISTS test_edges (
+	from_test INTEGER NOT NULL REFERENCES test_funcs(id) ON DELETE CASCADE,
+	to_id     INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+	to_test   INTEGER REFERENCES test_funcs(id) ON DELETE CASCADE,
+	line      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS test_edges_to ON test_edges(to_id);
+CREATE INDEX IF NOT EXISTS test_edges_to_test ON test_edges(to_test);
 CREATE TABLE IF NOT EXISTS edges (
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
@@ -111,7 +144,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {
@@ -140,6 +173,14 @@ type File struct {
 	Qual    string // prefix used for qualified symbol names in this file
 	Doc     string // package or module doc comment
 	Hash    string
+	Test    bool // a test-only file: no symbols, its functions go to test_funcs
+}
+
+// TestFunc is a function or method declared in a test file.
+type TestFunc struct {
+	Qualified string
+	Line      int
+	Entry     bool // a test the test runner calls, not a helper
 }
 
 // Import is one import statement.
@@ -166,6 +207,22 @@ type Endpoint struct {
 	File      string `json:"file"`
 	Line      int    `json:"line"`
 }
+
+// Supertype records that Owner (a qualified type) declares TypeRef as a
+// supertype. TypeRef uses the same encoding as Field.TypeRef.
+type Supertype struct {
+	Owner   string
+	Kind    string // SuperExtends, SuperImplements or SuperEmbeds
+	TypeRef string
+}
+
+// How a type relates to its supertype.
+const (
+	SuperExtends    = "extends"    // class inheritance, or an interface extending (Go: embedding) another
+	SuperImplements = "implements" // declared, as in Java
+	SuperEmbeds     = "embeds"     // Go struct embedding: reuse, not subtyping
+	SuperMethodSet  = "method set" // Go: has every method of the interface
+)
 
 // Call forms understood by the resolver.
 const (
@@ -252,7 +309,7 @@ func (s *Store) Meta(key string) (string, error) {
 
 // Stats returns file, symbol and resolved-edge counts.
 func (s *Store) Stats() (files, symbols, edges int, err error) {
-	if err = s.db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&files); err != nil {
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM files WHERE test = 0`).Scan(&files); err != nil {
 		return
 	}
 	if err = s.db.QueryRow(`SELECT COUNT(*) FROM symbols`).Scan(&symbols); err != nil {

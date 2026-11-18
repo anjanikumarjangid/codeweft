@@ -22,6 +22,16 @@ var (
 	maxCandidates = 30  // symbols listed when a name is ambiguous
 	maxBodyLines  = 200 // source lines shown by get_symbol
 	maxFileLinks  = 20  // related files listed by get_file_summary
+	maxImpls      = 50  // types or methods listed by get_implementations
+	maxTests      = 30  // tests listed by find_tests
+	maxSymTests   = 5   // tests listed inline by get_symbol
+)
+
+// Tests are found up to testCallers calls away through the repository's
+// own code, and testHelpers calls through helper functions in test files.
+const (
+	testCallers = 3
+	testHelpers = 3
 )
 
 // Options configures New. The zero value serves st as it is.
@@ -59,7 +69,10 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
 			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
 			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
-			"or what depends on it, and get_file_summary for an overview of a file before reading it. " +
+			"or what depends on it, get_implementations to find what implements an interface or overrides a " +
+			"method (where an interface call actually goes), find_tests to see which tests exercise code " +
+			"before changing it, and get_file_summary for an overview of a file " +
+			"before reading it. " +
 			"Prefer these tools over grepping or reading whole files.",
 	})
 	h := handlers{st}
@@ -82,6 +95,22 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"several levels deep. Pass an external package path such as 'database/sql' instead of a symbol " +
 			"to list every place in the codebase that calls into it.",
 	}, h.dependencyGraph)
+	addTool(s, opts.Ready, &mcp.Tool{
+		Name: "get_implementations",
+		Description: "Type hierarchy around an interface, class or method. By default lists what implements " +
+			"or extends a type, or what implements or overrides a method, several levels down; with direction " +
+			"'up', what a type extends and implements, or which interface methods a method implements. Go " +
+			"implementations are found from method sets (names plus parameter and result types); Java and " +
+			"Python from declared extends/implements and base classes. Pass a type from outside the " +
+			"repository, such as 'java.io.Serializable', to list the repository types that implement it.",
+	}, h.implementations)
+	addTool(s, opts.Ready, &mcp.Tool{
+		Name: "find_tests",
+		Description: "Tests that exercise a function, method or type: tests that call it directly, call " +
+			"something that calls it (up to `depth` calls away through the repository's code), or reach it " +
+			"through helper functions in test files. Nearest first, with the call each test goes through. " +
+			"Use it to know which tests to run, or which to update, before changing code.",
+	}, h.findTests)
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "get_file_summary",
 		Description: "Overview of one source file without reading it: package, doc comment, imports, every " +
@@ -344,6 +373,38 @@ type SymbolDetail struct {
 	MoreCallers      int         `json:"more_callers,omitempty"`
 	MoreCallees      int         `json:"more_callees,omitempty"`
 	ExternalUses     []string    `json:"external_calls,omitempty"`
+	// Type hierarchy: for a type, what it extends or implements and what
+	// extends or implements it; for a method, what it implements or
+	// overrides and what implements or overrides it.
+	Supertypes []store.TypeLink `json:"supertypes,omitempty"`
+	Subtypes   []store.TypeLink `json:"subtypes,omitempty"`
+	MoreSubs   int              `json:"more_subtypes,omitempty"`
+	// Tests that exercise the symbol, nearest first.
+	Tests     []store.TestRef `json:"tests,omitempty"`
+	MoreTests int             `json:"more_tests,omitempty"`
+}
+
+var typeKinds = map[string]bool{"struct": true, "interface": true, "type": true, "class": true, "enum": true, "record": true}
+
+func isMethodKind(kind string) bool { return kind == "method" || kind == "interface method" }
+
+// hierarchy returns what s extends or implements (up) or what extends or
+// implements it (down), for a type or a method; ok is false for other
+// symbols.
+func (h handlers) hierarchy(s store.Symbol, up bool, depth int) (links []store.TypeLink, ok bool, err error) {
+	switch {
+	case typeKinds[s.Kind] && up:
+		links, err = h.st.Supertypes(s.ID, depth)
+	case typeKinds[s.Kind]:
+		links, err = h.st.Subtypes(s.ID, depth)
+	case isMethodKind(s.Kind) && up:
+		links, err = h.st.MethodSupers(s, depth)
+	case isMethodKind(s.Kind):
+		links, err = h.st.MethodImplementations(s, depth)
+	default:
+		return nil, false, nil
+	}
+	return links, true, err
 }
 
 // SymbolOutput is the structured result of get_symbol. A name that matches
@@ -419,6 +480,22 @@ func (h handlers) getSymbol(ctx context.Context, req *mcp.CallToolRequest, in Sy
 		}
 		if len(d.Callees) > maxRefs {
 			d.MoreCallees, d.Callees = len(d.Callees)-maxRefs, d.Callees[:maxRefs]
+		}
+		if d.Supertypes, _, err = h.hierarchy(s, true, 1); err != nil {
+			return nil, out, err
+		}
+		if d.Subtypes, _, err = h.hierarchy(s, false, 5); err != nil {
+			return nil, out, err
+		}
+		if len(d.Subtypes) > maxRefs {
+			d.MoreSubs, d.Subtypes = len(d.Subtypes)-maxRefs, d.Subtypes[:maxRefs]
+		}
+		tests, total, err := h.st.TestsFor(s.ID, testCallers, testHelpers, maxSymTests)
+		if err != nil {
+			return nil, out, err
+		}
+		if len(tests) > 0 {
+			d.Tests, d.MoreTests = tests, total-len(tests)
 		}
 		out.Matches = append(out.Matches, d)
 	}
@@ -585,8 +662,230 @@ func formatSymbols(name string, syms []SymbolDetail) string {
 		if len(s.ExternalUses) > 0 {
 			fmt.Fprintf(&b, "\nExternal calls: %s\n", strings.Join(s.ExternalUses, ", "))
 		}
+		up, down := "Extends / implements", "Extended / implemented by"
+		if isMethodKind(s.Kind) {
+			up, down = "Implements / overrides", "Implemented / overridden by"
+		}
+		formatLinks(&b, up, s.Supertypes, 0)
+		formatLinks(&b, down, s.Subtypes, s.MoreSubs)
+		formatTests(&b, "Tested by", s.Tests, s.MoreTests, "use find_tests")
 	}
 	return b.String()
+}
+
+// formatLinks lists type hierarchy links under a title; nothing when empty.
+func formatLinks(b *strings.Builder, title string, links []store.TypeLink, more int) {
+	if len(links) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, l := range links {
+		indent := strings.Repeat("  ", max(l.Depth-1, 0))
+		switch {
+		case l.External:
+			fmt.Fprintf(b, "%s- %s (%s, outside the repository)\n", indent, l.Qualified, l.How)
+		default:
+			fmt.Fprintf(b, "%s- %s (%s) at %s\n", indent, l.Qualified, l.How, l.Location)
+		}
+	}
+	if more > 0 {
+		fmt.Fprintf(b, "- ... and %d more (use get_implementations)\n", more)
+	}
+}
+
+// formatTests lists tests under a title; nothing when there are none.
+func formatTests(b *strings.Builder, title string, tests []store.TestRef, more int, hint string) {
+	if len(tests) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, t := range tests {
+		how := "calls it directly"
+		if t.Distance > 1 {
+			how = fmt.Sprintf("%d calls away, through %s", t.Distance, t.Via)
+		}
+		fmt.Fprintf(b, "- %s at %s (%s)\n", t.Qualified, t.Location, how)
+	}
+	if more > 0 {
+		fmt.Fprintf(b, "- ... and %d more (%s)\n", more, hint)
+	}
+}
+
+// TestsInput is the input of find_tests.
+type TestsInput struct {
+	Symbol string `json:"symbol" jsonschema:"qualified or short name of a function, method or type"`
+	Depth  int    `json:"depth,omitempty" jsonschema:"calls to follow up through the repository's code, default 3, max 6"`
+}
+
+// TestsOutput is the structured result of find_tests.
+type TestsOutput struct {
+	Root       string          `json:"root,omitempty"`
+	Tests      []store.TestRef `json:"tests"`
+	More       int             `json:"more,omitempty"`
+	Candidates []SymbolSummary `json:"candidates,omitempty"`
+	Total      int             `json:"total,omitempty"`
+}
+
+func (h handlers) findTests(ctx context.Context, req *mcp.CallToolRequest, in TestsInput) (*mcp.CallToolResult, TestsOutput, error) {
+	name := strings.TrimSpace(in.Symbol)
+	out := TestsOutput{Tests: []store.TestRef{}}
+	depth := min(max(in.Depth, 0), 6)
+	if depth == 0 {
+		depth = testCallers
+	}
+	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	if err != nil {
+		return nil, out, err
+	}
+	if len(syms) == 0 {
+		return text(fmt.Sprintf("No symbol named %q. Use search_code to find the name.", name)), out, nil
+	}
+	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
+		out.Total = total
+		for _, s := range syms {
+			out.Candidates = append(out.Candidates, summarize(s))
+		}
+		so := SymbolOutput{Candidates: out.Candidates, Total: total}
+		return text(strings.Replace(formatCandidates(name, so), "call get_symbol again", "call find_tests again", 1)), out, nil
+	}
+	s := syms[0]
+	out.Root = s.Qualified
+	tests, n, err := h.st.TestsFor(s.ID, depth, testHelpers, maxTests)
+	if err != nil {
+		return nil, out, err
+	}
+	out.Tests, out.More = tests, n-len(tests)
+	if len(tests) == 0 {
+		files, _, err := h.st.TestCount()
+		if err != nil {
+			return nil, out, err
+		}
+		if files == 0 {
+			return text("No test files are indexed for this repository."), out, nil
+		}
+		return text(fmt.Sprintf("No test reaches %s within %d call(s) through the repository's code. "+
+			"Calls the index cannot resolve (through function values, or ambiguous method names) are not followed.",
+			s.Qualified, depth)), out, nil
+	}
+	var b strings.Builder
+	formatTests(&b, fmt.Sprintf("%d test(s) exercise %s", n, s.Qualified), tests, out.More, "only the nearest are listed")
+	return text(strings.TrimPrefix(b.String(), "\n")), out, nil
+}
+
+// ImplInput is the input of get_implementations.
+type ImplInput struct {
+	Symbol    string `json:"symbol" jsonschema:"qualified or short name of an interface, class, type or method, or a type outside the repository such as 'java.io.Serializable'"`
+	Direction string `json:"direction,omitempty" jsonschema:"'down' (what implements, extends or overrides it; default) or 'up' (what it implements, extends or overrides)"`
+	Depth     int    `json:"depth,omitempty" jsonschema:"levels to follow, default 5, max 10"`
+	Path      string `json:"path,omitempty" jsonschema:"optional: only results in files under this directory, e.g. 'net/http'"`
+}
+
+// ImplOutput is the structured result of get_implementations.
+type ImplOutput struct {
+	Root       string           `json:"root,omitempty"`
+	Kind       string           `json:"kind,omitempty"`
+	Direction  string           `json:"direction"`
+	Results    []store.TypeLink `json:"results"`
+	More       int              `json:"more,omitempty"` // results left out by the limit
+	Candidates []SymbolSummary  `json:"candidates,omitempty"`
+	Total      int              `json:"total,omitempty"`
+}
+
+// limitLinks applies the optional path filter and the result limit.
+func limitLinks(links []store.TypeLink, path string) ([]store.TypeLink, int) {
+	if path = strings.Trim(strings.TrimSpace(path), "/"); path != "" {
+		kept := []store.TypeLink{}
+		for _, l := range links {
+			if strings.HasPrefix(l.Location, path+"/") {
+				kept = append(kept, l)
+			}
+		}
+		links = kept
+	}
+	if len(links) > maxImpls {
+		return links[:maxImpls], len(links) - maxImpls
+	}
+	return links, 0
+}
+
+func (h handlers) implementations(ctx context.Context, req *mcp.CallToolRequest, in ImplInput) (*mcp.CallToolResult, ImplOutput, error) {
+	name := strings.TrimSpace(in.Symbol)
+	up := in.Direction == "up"
+	out := ImplOutput{Direction: "down", Results: []store.TypeLink{}}
+	if up {
+		out.Direction = "up"
+	}
+	depth := min(max(in.Depth, 0), 10)
+	if depth == 0 {
+		depth = 5
+	}
+	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	if err != nil {
+		return nil, out, err
+	}
+	if len(syms) == 0 {
+		if up {
+			return text(fmt.Sprintf("No symbol named %q. Use search_code to find the name.", name)), out, nil
+		}
+		// Not in the repository: list the repository types implementing it.
+		ext, err := h.st.ExternalSubtypes(name)
+		if err != nil {
+			return nil, out, err
+		}
+		out.Root = name
+		out.Results, out.More = limitLinks(ext, in.Path)
+		ext = out.Results
+		if len(ext) == 0 {
+			return text(fmt.Sprintf("No symbol named %q, and no repository type extends or implements a type of that name. Use search_code to find the name.", name)), out, nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d repository type(s) extend or implement %s (outside the repository):\n", len(ext)+out.More, name)
+		for _, l := range ext {
+			fmt.Fprintf(&b, "- %s (%s) at %s\n", l.Qualified, l.How, l.Location)
+		}
+		moreNote(&b, out.More)
+		return text(b.String()), out, nil
+	}
+	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
+		out.Total = total
+		for _, s := range syms {
+			out.Candidates = append(out.Candidates, summarize(s))
+		}
+		so := SymbolOutput{Candidates: out.Candidates, Total: total}
+		return text(strings.Replace(formatCandidates(name, so), "call get_symbol again", "call get_implementations again", 1)), out, nil
+	}
+	s := syms[0]
+	out.Root, out.Kind = s.Qualified, s.Kind
+	links, ok, err := h.hierarchy(s, up, depth)
+	if err != nil {
+		return nil, out, err
+	}
+	if !ok {
+		return text(fmt.Sprintf("%s is a %s; implementations apply to interfaces, classes, types and methods.", s.Qualified, s.Kind)), out, nil
+	}
+	out.Results, out.More = limitLinks(links, in.Path)
+	links = out.Results
+	var b strings.Builder
+	title := fmt.Sprintf("What %s (%s) is extended, implemented or overridden by", s.Qualified, s.Kind)
+	if up {
+		title = fmt.Sprintf("What %s (%s) extends, implements or overrides", s.Qualified, s.Kind)
+	}
+	if len(links) == 0 {
+		fmt.Fprintf(&b, "%s: nothing found in the index.\n", title)
+		if !up && (s.Kind == "interface" || s.Kind == "interface method") {
+			b.WriteString("Implementations in generated files or outside the repository are not indexed.\n")
+		}
+		return text(b.String()), out, nil
+	}
+	formatLinks(&b, title, links, 0)
+	moreNote(&b, out.More)
+	return text(strings.TrimPrefix(b.String(), "\n")), out, nil
+}
+
+func moreNote(b *strings.Builder, more int) {
+	if more > 0 {
+		fmt.Fprintf(b, "- ... and %d more; pass path to narrow the list to one directory\n", more)
+	}
 }
 
 func formatCandidates(name string, out SymbolOutput) string {

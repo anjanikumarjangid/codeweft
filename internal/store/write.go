@@ -45,7 +45,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {
@@ -56,9 +56,11 @@ func (t *Tx) Reset() error {
 	return nil
 }
 
-// FileHashes returns path -> content hash for every indexed file.
+// FileHashes returns path -> content hash for every indexed file. A
+// test-only file's hash is prefixed with "test:", so a file indexed in the
+// other mode (with or without --include-tests) never looks unchanged.
 func (t *Tx) FileHashes() (map[string]string, error) {
-	rows, err := t.tx.Query(`SELECT path, hash FROM files`)
+	rows, err := t.tx.Query(`SELECT path, hash, test FROM files`)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +68,12 @@ func (t *Tx) FileHashes() (map[string]string, error) {
 	out := map[string]string{}
 	for rows.Next() {
 		var p, h string
-		if err := rows.Scan(&p, &h); err != nil {
+		var test bool
+		if err := rows.Scan(&p, &h, &test); err != nil {
 			return nil, err
+		}
+		if test {
+			h = "test:" + h
 		}
 		out[p] = h
 	}
@@ -87,8 +93,8 @@ func (t *Tx) DeleteFile(path string) error {
 
 // AddFile inserts a file and returns its id.
 func (t *Tx) AddFile(f File) (int64, error) {
-	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash)
+	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test)
 	if err != nil {
 		return 0, err
 	}
@@ -127,6 +133,20 @@ func (t *Tx) AddField(fileID int64, f Field) error {
 	return err
 }
 
+// AddSupertype records a declared supertype of a type.
+func (t *Tx) AddSupertype(fileID int64, st Supertype) error {
+	_, err := t.exec(`INSERT INTO supertypes(file_id, owner, kind, type_ref) VALUES(?, ?, ?, ?)`,
+		fileID, st.Owner, st.Kind, st.TypeRef)
+	return err
+}
+
+// AddTestFunc records a function declared in a test file.
+func (t *Tx) AddTestFunc(fileID int64, tf TestFunc) error {
+	_, err := t.exec(`INSERT INTO test_funcs(file_id, qualified, line, entry) VALUES(?, ?, ?, ?)`,
+		fileID, tf.Qualified, tf.Line, tf.Entry)
+	return err
+}
+
 // AddEndpoint records an HTTP route.
 func (t *Tx) AddEndpoint(fileID int64, e Endpoint) error {
 	_, err := t.exec(`INSERT INTO endpoints(file_id, method, path, handler, framework, line) VALUES(?, ?, ?, ?, ?, ?)`,
@@ -152,7 +172,12 @@ type ResolveInput struct {
 	DirQual   map[string]string    // directory -> qualifier (Go packages)
 	Fields    map[[2]string]string // (owner, field) -> type ref
 	Calls     []RawCall
-	CallFiles []string // file path per call, parallel to Calls
+	CallFiles []string         // file path per call, parallel to Calls
+	TestFuncs map[string]int64 // qualified name -> test_funcs id
+	// ReExports maps a Python module attribute bound by an import, such as
+	// "requests.get" after `from .api import get` in requests/__init__.py,
+	// to the imported name ("requests.api.get").
+	ReExports map[string]string
 }
 
 // LoadResolveInput reads symbols, fields and raw calls for resolution.
@@ -166,6 +191,8 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		Types:     map[string][]string{},
 		DirQual:   map[string]string{},
 		Fields:    map[[2]string]string{},
+		TestFuncs: map[string]int64{},
+		ReExports: map[string]string{},
 	}
 	rows, err := t.tx.Query(`SELECT id, name, qualified, kind FROM symbols ORDER BY id`)
 	if err != nil {
@@ -195,7 +222,7 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		return nil, err
 	}
 
-	rows, err = t.tx.Query(`SELECT DISTINCT dir, qual FROM files WHERE lang = 'go'`)
+	rows, err = t.tx.Query(`SELECT DISTINCT dir, qual FROM files WHERE lang = 'go' AND test = 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +250,44 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 	}
 	rows.Close()
 
+	rows, err = t.tx.Query(`SELECT f.qual, i.alias, i.path FROM imports i JOIN files f ON f.id = i.file_id
+		WHERE f.lang = 'python' AND f.test = 0 AND i.path != i.alias`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var mod, alias, target string
+		if err := rows.Scan(&mod, &alias, &target); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		in.ReExports[mod+"."+alias] = target
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = t.tx.Query(`SELECT id, qualified FROM test_funcs ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		var q string
+		if err := rows.Scan(&id, &q); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if _, dup := in.TestFuncs[q]; !dup {
+			in.TestFuncs[q] = id
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	rows, err = t.tx.Query(`SELECT f.path, r.caller, r.form, r.a, r.b, r.c, r.line
 		FROM raw_calls r JOIN files f ON f.id = r.file_id ORDER BY r.rowid`)
 	if err != nil {
@@ -248,6 +313,39 @@ type Edge struct {
 	ToRef      string
 	Line       int
 	Confidence string // "exact" or "name"
+}
+
+// TestEdge is a call from a test function, into the repository's code
+// (ToID) or into another test function such as a helper (ToTest).
+type TestEdge struct {
+	FromTest int64
+	ToID     int64
+	ToTest   int64
+	Line     int
+}
+
+// ReplaceTestEdges deletes all test edges and writes the given ones.
+func (t *Tx) ReplaceTestEdges(edges []TestEdge) error {
+	if _, err := t.tx.Exec(`DELETE FROM test_edges`); err != nil {
+		return err
+	}
+	stmt, err := t.tx.Prepare(`INSERT INTO test_edges(from_test, to_id, to_test, line) VALUES(?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	nullable := func(id int64) any {
+		if id == 0 {
+			return nil
+		}
+		return id
+	}
+	for _, e := range edges {
+		if _, err := stmt.Exec(e.FromTest, nullable(e.ToID), nullable(e.ToTest), e.Line); err != nil {
+			return fmt.Errorf("test edge %d: %w", e.FromTest, err)
+		}
+	}
+	return nil
 }
 
 // ReplaceEdges deletes all edges and writes the given ones.
