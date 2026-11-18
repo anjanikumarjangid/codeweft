@@ -35,6 +35,7 @@ type pyFile struct {
 	imports  map[string]string // local name -> dotted target
 	prefixes map[string]string // router/blueprint variable -> URL prefix
 	consts   map[string]string // module-level string constants: BASE = "/api"
+	stubs    map[string]string // self attributes of the class being parsed holding a gRPC stub
 	res      *FileResult
 }
 
@@ -241,6 +242,14 @@ func (pf *pyFile) class(def, outer *sitter.Node, prefix string) {
 			pf.res.Supertypes = append(pf.res.Supertypes, store.Supertype{Owner: qual, Kind: store.SuperExtends, TypeRef: ref})
 		}
 	}
+	saved := pf.stubs
+	pf.stubs = pf.grpcClassStubs(body)
+	defer func() { pf.stubs = saved }()
+	if servicer := pf.grpcServicer(def); servicer != "" {
+		// Its methods, and those of the classes extending it.
+		pf.res.Contracts = append(pf.res.Contracts, store.Contract{Kind: store.ContractGRPC, Role: store.RoleProvides,
+			Name: servicer + "/", Symbol: store.ClassMethods + qual, Line: line(def), Exact: true})
+	}
 	for _, m := range namedChildren(body) {
 		d := unwrapDecorated(m)
 		switch d.Type() {
@@ -332,6 +341,7 @@ func (pf *pyFile) mainGuard(n *sitter.Node) {
 func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	locals := map[string]string{}
 	bound := pyBound(def, body, pf.src) // parameters and assigned names
+	grpcStubs := map[string]string{}    // local variables holding a gRPC stub
 	exprs := map[string]any{}           // x = <call or attribute>: how x's type can be found
 	for _, p := range namedChildren(field(def, "parameters")) {
 		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
@@ -368,6 +378,9 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 			return n == body // nested definitions are not indexed separately
 		case "assignment":
 			left, right := field(n, "left"), field(n, "right")
+			if svc := pf.grpcStubCall(right); svc != "" && left != nil && left.Type() == "identifier" {
+				grpcStubs[text(left, pf.src)] = svc
+			}
 			ref := pf.annotationRef(field(n, "type"))
 			if ref == "" {
 				ref = classRef(right)
@@ -400,6 +413,9 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 				pf.res.Contracts = append(pf.res.Contracts, c)
 			}
 			if c, ok := pf.temporalCall(n, caller, bound); ok {
+				pf.res.Contracts = append(pf.res.Contracts, c)
+			}
+			if c, ok := pf.grpcCall(n, caller, grpcStubs); ok {
 				pf.res.Contracts = append(pf.res.Contracts, c)
 			}
 		}

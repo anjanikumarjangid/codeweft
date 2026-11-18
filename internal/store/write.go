@@ -179,6 +179,7 @@ type ResolveInput struct {
 	Results   map[int64]string      // id -> declared result type reference (Java, Python)
 	Overloads map[string][]Overload // qualified name -> every declaration with it
 	Methods   map[string][]int64    // short method name -> ids
+	Langs     map[int64]string      // id -> language of the file declaring it
 	Types     map[string][]string   // short type name -> qualified names
 	DirQual   map[string]string     // directory -> qualifier (Go packages)
 	Fields    map[[2]string]string  // (owner, field) -> type ref
@@ -199,6 +200,7 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		Kinds:     map[int64]string{},
 		Qualified: map[int64]string{},
 		Methods:   map[string][]int64{},
+		Langs:     map[int64]string{},
 		Types:     map[string][]string{},
 		DirQual:   map[string]string{},
 		Fields:    map[[2]string]string{},
@@ -207,14 +209,15 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		Results:   map[int64]string{},
 		Overloads: map[string][]Overload{},
 	}
-	rows, err := t.tx.Query(`SELECT id, name, qualified, kind, result, arity FROM symbols ORDER BY id`)
+	rows, err := t.tx.Query(`SELECT s.id, s.name, s.qualified, s.kind, s.result, s.arity, f.lang
+		FROM symbols s JOIN files f ON f.id = s.file_id ORDER BY s.id`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id int64
-		var name, q, kind, result, arity string
-		if err := rows.Scan(&id, &name, &q, &kind, &result, &arity); err != nil {
+		var name, q, kind, result, arity, lang string
+		if err := rows.Scan(&id, &name, &q, &kind, &result, &arity, &lang); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -227,6 +230,7 @@ func (t *Tx) LoadResolveInput(module string) (*ResolveInput, error) {
 		}
 		in.Kinds[id] = kind
 		in.Qualified[id] = q
+		in.Langs[id] = lang
 		switch kind {
 		case "method", "interface method", "constructor":
 			in.Methods[name] = append(in.Methods[name], id)

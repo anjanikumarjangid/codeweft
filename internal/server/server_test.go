@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (8 files), java (6 files), python (5 files)",
+		"Languages: go (9 files), java (7 files), python (6 files), proto (2 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",
@@ -464,6 +464,18 @@ func TestServiceLinks(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("get_service_links temporal: missing %q in:\n%s", want, got)
 		}
+	}
+	got = callText(t, cs, "get_service_links", map[string]any{"kind": "grpc", "query": "Refund"})
+	for _, want := range []string{
+		"RefundService/Refund (grpc, service shop.orders.v1.RefundService), provided by com.shop.orders.RefundServer.refund at java/com/shop/orders/RefundServer.java:20",
+		"  <- py.inventory.grpc_api.refund at py/inventory/grpc_api.py:33 (RefundService/Refund, service shop.orders.v1.RefundService)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("get_service_links grpc: missing %q in:\n%s", want, got)
+		}
+	}
+	if got := callText(t, cs, "search_code", map[string]any{"query": "GetStock", "kind": "rpc"}); !strings.Contains(got, "shop.inventory.v1.InventoryService.GetStock (rpc) at proto/inventory.proto:11") {
+		t.Errorf("search_code rpc:\n%s", got)
 	}
 	if got := callText(t, cs, "get_service_links", map[string]any{"kind": "kafka"}); !strings.Contains(got, "No service links found") {
 		t.Errorf("no kafka contracts in the fixture:\n%s", got)

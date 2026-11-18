@@ -318,6 +318,11 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	}
 
 	temporalKind, temporalPrefix := jf.temporalInterface(n)
+	if svc := jf.grpcService(n); svc != "" {
+		// Its public methods, and those of the classes extending it.
+		jf.res.Contracts = append(jf.res.Contracts, store.Contract{Kind: store.ContractGRPC, Role: store.RoleProvides,
+			Name: svc + "/", Symbol: store.ClassMethods + qual, Line: line(n), Exact: true})
+	}
 	savedStubs := jf.stubs
 	jf.stubs = map[string]string{}
 	defer func() { jf.stubs = savedStubs }()
@@ -354,6 +359,8 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 					fn := text(field(d, "name"), jf.src)
 					fields[fn] = ref
 					if st := jf.temporalStub(field(d, "value")); st != "" {
+						jf.stubs[fn] = st
+					} else if st := jf.grpcStub(field(m, "type"), field(d, "value")); st != "" {
 						jf.stubs[fn] = st
 					}
 					if ref != "" {
@@ -466,6 +473,9 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 		if ref := jf.typeRef(typ); ref != "" {
 			locals[text(name, jf.src)] = ref
 		}
+		if st := jf.grpcStub(typ, nil); st != "" {
+			stubs[text(name, jf.src)] = st
+		}
 	}
 	for _, p := range namedChildren(field(decl, "parameters")) {
 		param(p)
@@ -488,6 +498,8 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 					locals[text(field(d, "name"), jf.src)] = r
 				}
 				if st := jf.temporalStub(field(d, "value")); st != "" {
+					stubs[text(field(d, "name"), jf.src)] = st
+				} else if st := jf.grpcStub(field(n, "type"), field(d, "value")); st != "" {
 					stubs[text(field(d, "name"), jf.src)] = st
 				}
 			}
@@ -527,6 +539,9 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				jf.res.Contracts = append(jf.res.Contracts, c)
 			}
 			jf.res.Contracts = append(jf.res.Contracts, jf.temporalCall(n, stubs, locals, fields, caller)...)
+			if c, ok := jf.grpcCall(n, stubs, caller); ok {
+				jf.res.Contracts = append(jf.res.Contracts, c)
+			}
 			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {

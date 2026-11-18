@@ -118,6 +118,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 	typeRef := func(e ast.Expr) string { return goTypeRef(e, qual, aliases) }
 
 	consts := goStringConsts(f)
+	clientFields := goGRPCClientFields(f)
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
@@ -133,6 +134,7 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
 				res.Contracts = append(res.Contracts, goHTTPClientCalls(fset, d.Body, qualified, aliases, consts, enc)...)
 				res.Contracts = append(res.Contracts, goTemporalCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
+				res.Contracts = append(res.Contracts, goGRPCCalls(fset, d.Body, qualified, qual, aliases, enc, clientFields)...)
 			}
 			if c, ok := goWorkflowDef(fset, d, qualified, aliases); ok {
 				res.Contracts = append(res.Contracts, c)
@@ -180,6 +182,10 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 
 				switch t := ts.Type.(type) {
 				case *ast.StructType:
+					if svc := goGRPCServer(t); svc != "" {
+						res.Contracts = append(res.Contracts, store.Contract{Kind: store.ContractGRPC, Role: store.RoleProvides,
+							Name: svc + "/", Symbol: store.StructMethods + owner, Line: fset.Position(ts.Pos()).Line, Exact: true})
+					}
 					for _, fld := range t.Fields.List {
 						ref := typeRef(fld.Type)
 						names := fld.Names

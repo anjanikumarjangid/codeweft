@@ -3,11 +3,13 @@ checkout.wrappedGateway -> payments.Gateway [method set]
 checkout.wrappedGateway -> payments.StripeGateway [embeds]
 checkout.wrappedGateway -> payments.VoidingGateway [method set]
 checkout.wrappedGateway -> payments.settler [method set]
+checkout.orderServer -> example.com/sample/gen/ordersv1.UnimplementedOrderServiceServer [embeds] (external)
 com.shop.orders.BillingWorkflowImpl -> com.shop.orders.BillingWorkflow [implements]
 com.shop.orders.BillingActivitiesImpl -> com.shop.orders.BillingActivities [implements]
 com.shop.orders.InMemoryOrderRepository -> com.shop.orders.OrderRepository [implements]
 com.shop.orders.CountingOrderRepository -> com.shop.orders.InMemoryOrderRepository [extends]
 com.shop.orders.CountingOrderRepository -> java.io.Serializable [implements] (external)
+com.shop.orders.RefundServer -> com.shop.orders.grpc.RefundServiceGrpc.RefundServiceImplBase [extends] (external)
 payments.StripeGateway -> payments.AuditedGateway [method set]
 payments.StripeGateway -> payments.Gateway [method set]
 payments.StripeGateway -> payments.VoidingGateway [method set]
@@ -26,4 +28,5 @@ payments.DoubleGateway -> payments.Gateway [method set]
 payments.DoubleGateway -> payments.StripeGateway [embeds]
 payments.DoubleGateway -> payments.settler [method set]
 payments.DoubleGateway -> payments.voider [embeds]
+py.inventory.grpc_api.InventoryServicer -> py.inventory.inventory_pb2_grpc.InventoryServiceServicer [extends] (external)
 py.inventory.models.CachedItemRepository -> py.inventory.models.ItemRepository [extends]
