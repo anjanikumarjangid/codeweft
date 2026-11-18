@@ -1,7 +1,7 @@
 {
   "name": "codeweft",
   "version": "0.0.0",
-  "description": "MCP server giving AI coding agents structured, deterministic context about your code and services: symbols, call graphs, tests and cross-service links for Go, Java and Python.",
+  "description": "MCP server giving AI coding agents structured, deterministic context about your code and services: symbols, call graphs, tests and cross-service links for Go, Java, Python, TypeScript and JavaScript.",
   "keywords": ["mcp", "model-context-protocol", "code-intelligence", "ai-agents", "claude", "call-graph"],
   "license": "Apache-2.0",
   "homepage": "https://github.com/anjanikumarjangid/codeweft#readme",

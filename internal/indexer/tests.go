@@ -38,6 +38,9 @@ func isTestEntry(lang string, s store.Symbol) bool {
 			(strings.HasPrefix(s.Name, "test") && strings.Contains(s.Signature, "public "))
 	case "python":
 		return strings.HasPrefix(s.Name, "test")
+	case "typescript":
+		// it("...") and test("..."), recorded as functions named by title.
+		return strings.HasPrefix(s.Signature, "it(") || strings.HasPrefix(s.Signature, "test(")
 	}
 	return false
 }

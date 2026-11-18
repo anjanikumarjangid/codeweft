@@ -9,6 +9,7 @@ The first release. codeweft was developed as *codewiki* until this release.
 ### Added
 
 - **Indexing** of Go (`go/ast`), Java, Python and Protocol Buffers (tree-sitter): symbols, imports, call sites, routes and service contracts, in a local SQLite + FTS5 index. Go files are those of one build configuration (`--platform`).
+- **TypeScript and JavaScript**: modules, functions, classes, interfaces, imports and `require`, the call graph and type hierarchy, Express and NestJS routes, `fetch` and axios calls, kafkajs, amqplib, SQS and Pub/Sub links, and `it`/`test` tests.
 - **Call graph** resolved from declarations without a type checker: expression typing for Go, Java and Python, method sets, overloads by arity; each edge marked `exact` or `name`. Measured against `go/types`, javac and jedi (see the README's Accuracy section).
 - **Type hierarchy**: Go method sets, Java and Python declared supertypes, interface method implementations.
 - **Tests**: which tests reach a function, through the code and test helpers.

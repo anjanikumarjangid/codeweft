@@ -483,6 +483,11 @@ var builtinMethods = map[string]map[string]bool{
 		split rsplit join strip lstrip rstrip replace format lower upper startswith endswith encode decode find
 		rfind partition rpartition splitlines title capitalize zfill read readline readlines write writelines close
 		flush seek tell fileno isoformat strftime total_seconds group groups match search sub`),
+	"typescript": wordSet(`map filter forEach reduce find findIndex some every includes indexOf push pop shift unshift
+		slice splice concat join sort reverse keys values entries get set has delete clear add then catch finally
+		toString valueOf toJSON json text send status end write emit on once off log error warn info debug
+		split replace trim toLowerCase toUpperCase startsWith endsWith match test exec parse stringify assign
+		create freeze apply call bind next subscribe pipe resolve reject all race`),
 	"java": wordSet(`get put set add addAll remove removeAll contains containsKey containsValue size isEmpty clear
 		iterator next hasNext stream forEach map filter collect of equals hashCode toString compareTo length charAt
 		substring indexOf trim split format getMessage getCause close read write flush append keySet values entrySet
@@ -505,6 +510,10 @@ func langOf(path string) string {
 		return "java"
 	case strings.HasSuffix(path, ".py"):
 		return "python"
+	case strings.HasSuffix(path, ".ts"), strings.HasSuffix(path, ".tsx"), strings.HasSuffix(path, ".js"),
+		strings.HasSuffix(path, ".jsx"), strings.HasSuffix(path, ".mjs"), strings.HasSuffix(path, ".cjs"),
+		strings.HasSuffix(path, ".mts"), strings.HasSuffix(path, ".cts"):
+		return "typescript"
 	}
 	return "go"
 }

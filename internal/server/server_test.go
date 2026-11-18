@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (12 files), java (9 files), python (8 files), proto (2 files)",
+		"Languages: go (12 files), java (9 files), python (8 files), typescript (6 files), proto (2 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",
@@ -214,7 +214,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 		}
 	}
 	apis := callText(t, cs, "list_apis", map[string]any{"method": "post"})
-	for _, want := range []string{"3 endpoint(s) with method POST", "POST    /orders", "-> checkout.handleCheckout (checkout/http.go:23) [net/http]"} {
+	for _, want := range []string{"4 endpoint(s) with method POST", "POST    /orders", "-> checkout.handleCheckout (checkout/http.go:23) [net/http]"} {
 		if !strings.Contains(apis, want) {
 			t.Errorf("list_apis missing %q:\n%s", want, apis)
 		}
@@ -277,12 +277,12 @@ func TestGetSymbolAmbiguous(t *testing.T) {
 	res := callTool(t, cs, "get_symbol", map[string]any{"name": "place"})
 	var out server.SymbolOutput
 	structured(t, res, &out)
-	if len(out.Matches) != 0 || out.Total != 2 || len(out.Candidates) != 2 {
-		t.Fatalf("got %d matches, %d candidates, total %d; want 0, 2, 2", len(out.Matches), len(out.Candidates), out.Total)
+	if len(out.Matches) != 0 || out.Total != 3 || len(out.Candidates) != 3 {
+		t.Fatalf("got %d matches, %d candidates, total %d; want 0, 3, 3", len(out.Matches), len(out.Candidates), out.Total)
 	}
 	txt := res.Content[0].(*mcp.TextContent).Text
 	for _, want := range []string{
-		`"place" matches 2 symbols`,
+		`"place" matches 3 symbols`,
 		"- com.shop.orders.OrderController.place (method) at java/com/shop/orders/OrderController.java:",
 		"- com.shop.orders.OrderService.place (method) at java/com/shop/orders/OrderService.java:",
 	} {
@@ -301,7 +301,7 @@ func TestGetSymbolAmbiguous(t *testing.T) {
 
 	// More candidates than the limit: say how many were left out.
 	defer server.SetLimits(1, 200, 20)()
-	if got := callText(t, cs, "get_symbol", map[string]any{"name": "place"}); !strings.Contains(got, "- ... and 1 more") {
+	if got := callText(t, cs, "get_symbol", map[string]any{"name": "place"}); !strings.Contains(got, "- ... and 2 more") {
 		t.Errorf("truncated candidate list should say how many are missing:\n%s", got)
 	}
 }
@@ -350,7 +350,7 @@ func TestImplementations(t *testing.T) {
 		{map[string]any{"symbol": "Gateway.Charge"}, []string{
 			"- payments.StripeGateway.Charge (implements) at payments/service.go:",
 		}},
-		{map[string]any{"symbol": "OrderRepository"}, []string{
+		{map[string]any{"symbol": "com.shop.orders.OrderRepository"}, []string{
 			"- com.shop.orders.InMemoryOrderRepository (implements)",
 			"  - com.shop.orders.CountingOrderRepository (extends)",
 		}},
@@ -364,7 +364,7 @@ func TestImplementations(t *testing.T) {
 			"1 repository type(s) extend or implement java.io.Serializable (outside the repository):",
 			"- com.shop.orders.CountingOrderRepository (implements)",
 		}},
-		{map[string]any{"symbol": "save"}, []string{`"save" matches 3 symbols; call get_implementations again`}},
+		{map[string]any{"symbol": "save"}, []string{`"save" matches 6 symbols; call get_implementations again`}},
 		{map[string]any{"symbol": "checkout.Checkout"}, []string{"checkout.Checkout is a func; implementations apply to"}},
 		{map[string]any{"symbol": "FakeGateway"}, []string{"nothing found in the index"}},
 	} {

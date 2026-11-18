@@ -190,7 +190,7 @@ func (s *Store) resolveContracts(in []ContractRow) ([]ContractRow, error) {
 	for _, c := range in {
 		if c.Role != RoleProvides {
 			if c.Target != "" {
-				sym, ok, err := s.symbolByRef(c.Target)
+				sym, ok, err := s.symbolByRef(c.Target, c.File)
 				if err != nil {
 					return nil, err
 				}
@@ -267,7 +267,7 @@ func (s *Store) resolveContracts(in []ContractRow) ([]ContractRow, error) {
 				registered(d, t)
 			}
 		default:
-			sym, ok, err := s.symbolByRef(c.Symbol)
+			sym, ok, err := s.symbolByRef(c.Symbol, c.File)
 			if err != nil {
 				return nil, err
 			}
@@ -413,7 +413,7 @@ func splitLocation(loc string) (string, int) {
 // qualified name, "@PATH.NAME" for a Go import path, or a name as written
 // in the code ("h.getOrder"), found by its last part when exactly one
 // function or method has it.
-func (s *Store) symbolByRef(ref string) (Symbol, bool, error) {
+func (s *Store) symbolByRef(ref, from string) (Symbol, bool, error) {
 	q := strings.TrimPrefix(ref, "@")
 	if strings.HasPrefix(ref, "@") {
 		if i := strings.LastIndexByte(q, '.'); i > 0 {
@@ -431,7 +431,7 @@ func (s *Store) symbolByRef(ref string) (Symbol, bool, error) {
 	if err != nil || ok {
 		return sym, ok, err
 	}
-	if h, _, ok := s.handlerByName(ref); ok {
+	if h, _, ok := s.handlerByName(ref, from); ok {
 		return s.symbolNamed(h)
 	}
 	// A Python name imported from a package path that is not the

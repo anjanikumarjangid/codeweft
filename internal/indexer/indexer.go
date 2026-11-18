@@ -71,6 +71,13 @@ var languages = []language{
 		parse:     ParsePython,
 	},
 	{
+		name:      "typescript",
+		exts:      []string{".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"},
+		isTest:    isTSTest,
+		generated: isGeneratedHeader,
+		parse:     ParseTypeScript,
+	},
+	{
 		name:      "config",
 		match:     isConfigFile,
 		isTest:    func(string) bool { return false },
@@ -88,6 +95,9 @@ var languages = []language{
 
 func languageFor(path string) *language {
 	ext, base := filepath.Ext(path), filepath.Base(path)
+	if strings.HasSuffix(base, ".d.ts") || strings.HasSuffix(base, ".min.js") {
+		return nil // type declarations and minified bundles: no code of the repository's own
+	}
 	for i := range languages {
 		if languages[i].match != nil && languages[i].match(base) {
 			return &languages[i]

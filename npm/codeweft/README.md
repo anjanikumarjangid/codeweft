@@ -1,6 +1,6 @@
 # codeweft
 
-MCP server that gives AI coding agents structured, deterministic context about your code and the services calling each other: symbols, call graphs, type hierarchies, tests, HTTP routes, gRPC, Kafka and Temporal links, for Go, Java and Python.
+MCP server that gives AI coding agents structured, deterministic context about your code and the services calling each other: symbols, call graphs, type hierarchies, tests, HTTP routes, gRPC, Kafka, RabbitMQ, SQS, Pub/Sub and Temporal links, for Go, Java, Python, TypeScript and JavaScript.
 
 ```bash
 npx -y codeweft serve            # from inside a repository: index it and serve over stdio

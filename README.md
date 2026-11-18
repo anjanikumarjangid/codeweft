@@ -10,7 +10,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 - **Local:** one binary and one SQLite file. No cloud service, no API keys, no embeddings.
 - **Agent-native:** exposed as MCP tools, so any MCP client can use it.
 
-> Status: v0.6. Supports **Go, Java and Python**, and Protocol Buffers service definitions; see the [roadmap](#roadmap).
+> Status: v0.6. Supports **Go, Java, Python, TypeScript and JavaScript**, and Protocol Buffers service definitions; see the [roadmap](#roadmap).
 
 ## MCP tools
 
@@ -214,6 +214,10 @@ Java: names resolve as javac does: a simple type name is a member type of the cl
 A `super` call is looked up through the declared class hierarchy, depth first in declaration order. Java's `super.m()` starts from the superclass (and what it inherits, interfaces included), never from the class's own interfaces, which take `Interface.super.m()`. Python's `super().m()` and `super(Cls, self).m()` search the base classes left to right, which is Python's method resolution order except in diamond-shaped hierarchies. A method found only on a supertype outside the repository becomes an external reference to it.
 
 Anything ambiguous is dropped rather than guessed: a receiver of a known type that has no such method, a value that came from an outside type (`list.get(0).size()`), `new Runnable() { ... }` of an interface. Raw call sites are stored, so the graph can be rebuilt without re-parsing files. How well this matches a type checker is measured under [Accuracy](#accuracy).
+
+### TypeScript and JavaScript
+
+`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs` and `.cjs` files are parsed with tree-sitter (type declarations, `.d.ts`, and minified bundles are skipped). A file is a module named by its path (`src/orders/service`; an `index` file by its directory), and its symbols by the module: `src/orders/service.OrderService.place`. Functions (declared, or assigned as `const f = () => {}`, `exports.f = function`, `X.prototype.m = function`), classes with their methods, constructors and fields, interfaces with their method signatures, type aliases and enums are indexed with their JSDoc. ES imports and `require` map local names to modules (relative paths resolved, packages kept as named), so calls resolve to imported functions, `this.method()` (inherited too), `super`, fields typed in the class or by constructor parameters (`constructor(private repo: OrderRepository)`), variables created with `new` or annotated with a type, and static calls; other method calls fall back to the method's name, never across languages and never for the built-in names of JavaScript values (`map`, `then`, `push` ...). `extends` and `implements` give the type hierarchy. Routes come from Express-style registrations (`app.get("/orders/:id", handler)`, with `app.use("/prefix", router)`) and NestJS controllers (`@Controller` and `@Get(":id")`); HTTP calls from `fetch` and axios; `process.env.X` is a placeholder resolved from configuration; Kafka (kafkajs), RabbitMQ (amqplib), SQS (AWS SDK v3 commands) and Pub/Sub are linked as in the other languages. In test files (`*.test.ts`, `*.spec.js`, and `__tests__`, `test` and `tests` directories), each `it(...)` and `test(...)` is a test, so `find_tests` works. Not handled: `tsconfig` path aliases, types inferred without an annotation or `new`, and gRPC and Temporal in TypeScript. On the [NestJS RealWorld app](https://github.com/lujakob/nestjs-realworld-example-app), all 21 routes are found with their controller methods and every call resolved within the repository is exact; on [Express](https://github.com/expressjs/express) itself, written in older JavaScript, its 92 test files reach the library through 880 test edges.
 
 ### Build configurations (Go)
 

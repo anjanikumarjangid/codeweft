@@ -30,3 +30,5 @@ payments.DoubleGateway -> payments.settler [method set]
 payments.DoubleGateway -> payments.voider [embeds]
 py.inventory.grpc_api.InventoryServicer -> py.inventory.inventory_pb2_grpc.InventoryServiceServicer [extends] (external)
 py.inventory.models.CachedItemRepository -> py.inventory.models.ItemRepository [extends]
+web/src/orders/repository.MemoryRepository -> web/src/orders/repository.OrderRepository [implements]
+web/src/orders/repository.CountingRepository -> web/src/orders/repository.MemoryRepository [extends]

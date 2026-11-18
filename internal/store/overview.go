@@ -1,7 +1,9 @@
 package store
 
 import (
+	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -58,7 +60,7 @@ func (s *Store) ListEndpoints(f EndpointFilter) ([]EndpointInfo, error) {
 	}
 	for i := range out {
 		if out[i].HandlerLocation == "" {
-			if q, loc, ok := s.handlerByName(out[i].Handler); ok {
+			if q, loc, ok := s.handlerByName(out[i].Handler, out[i].File); ok {
 				out[i].Handler, out[i].HandlerLocation = q, loc
 			}
 		}
@@ -67,17 +69,57 @@ func (s *Store) ListEndpoints(f EndpointFilter) ([]EndpointInfo, error) {
 }
 
 // handlerByName resolves a route handler written as a method on a local
-// variable ("h.createUser"): the only method or function with that name,
-// with its location.
-func (s *Store) handlerByName(handler string) (q, loc string, ok bool) {
+// variable ("h.createUser"): the method or function with that name, with
+// its location. Among several, the one in the directory of the file
+// registering the route wins, then the one in a file of its language;
+// otherwise the name must be unique.
+func (s *Store) handlerByName(handler, from string) (q, loc string, ok bool) {
 	if !strings.Contains(handler, ".") {
 		return "", "", false
 	}
 	name := handler[strings.LastIndex(handler, ".")+1:]
-	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(DISTINCT s.qualified), MIN(f.path || ':' || s.start_line), MIN(s.qualified)
-		FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.name = ? AND s.kind IN ('method', 'func')`, name).Scan(&n, &loc, &q)
-	return q, loc, n == 1
+	rows, err := s.db.Query(`SELECT DISTINCT s.qualified, f.path, s.start_line FROM symbols s JOIN files f ON f.id = s.file_id
+		WHERE s.name = ? AND s.kind IN ('method', 'func') ORDER BY s.qualified`, name)
+	if err != nil {
+		return "", "", false
+	}
+	defer rows.Close()
+	type cand struct {
+		q, path string
+		line    int
+	}
+	var all []cand
+	for rows.Next() {
+		var c cand
+		if rows.Scan(&c.q, &c.path, &c.line) != nil {
+			return "", "", false
+		}
+		all = append(all, c)
+	}
+	pick := func(keep func(cand) bool) (cand, bool) {
+		var found []cand
+		seen := map[string]bool{}
+		for _, c := range all {
+			if keep(c) && !seen[c.q] {
+				seen[c.q] = true
+				found = append(found, c)
+			}
+		}
+		if len(found) == 1 {
+			return found[0], true
+		}
+		return cand{}, false
+	}
+	for _, keep := range []func(cand) bool{
+		func(c cand) bool { return from != "" && path.Dir(c.path) == path.Dir(from) },
+		func(c cand) bool { return from != "" && path.Ext(c.path) == path.Ext(from) },
+		func(cand) bool { return true },
+	} {
+		if c, ok := pick(keep); ok {
+			return c.q, c.path + ":" + strconv.Itoa(c.line), true
+		}
+	}
+	return "", "", false
 }
 
 // Overview is a project-level summary built from the index.

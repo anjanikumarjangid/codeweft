@@ -454,7 +454,7 @@ func formatFile(out FileOutput) string {
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"words to search for in symbol names, signatures and doc comments, e.g. 'rate limiter' or 'ParseConfig'"`
 	Kind  string `json:"kind,omitempty" jsonschema:"optional filter: func, method, struct, interface, type, class, record, enum, constructor; for .proto files service, rpc, message"`
-	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java, python or proto"`
+	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java, python, typescript (also JavaScript) or proto"`
 	Path  string `json:"path,omitempty" jsonschema:"optional: only files under this directory, e.g. 'internal/store'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum results, default 10, max 50"`
 	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`

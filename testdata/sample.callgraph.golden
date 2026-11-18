@@ -118,3 +118,13 @@ ratelimit.TokenBucket.refillLocked -> ratelimit.refill [exact] line 30
 ratelimit.TokenBucket.refillLocked -> time.Now [external] line 29
 ratelimit.refill -> time.Duration.Seconds [external] line 35
 ratelimit.GeneratedHelper -> ratelimit.refill [exact] line 6
+web/src/api/client.javaOrder -> axios.get [external] line 13
+web/src/events.announce -> kafkajs.Kafka.producer [external] line 7
+web/src/events.followStock -> kafkajs.Kafka.consumer [external] line 13
+web/src/orders/controller.AdminController.show -> web/src/orders/service.OrderService.lookup [exact] line 10
+web/src/orders/repository.CountingRepository.save -> web/src/orders/repository.MemoryRepository.save [exact] line 31
+web/src/orders/service.OrderService.place -> web/src/api/client.checkout [exact] line 9
+web/src/orders/service.OrderService.place -> web/src/orders/repository.OrderRepository.save [exact] line 10
+web/src/orders/service.OrderService.lookup -> web/src/orders/repository.OrderRepository.find [exact] line 15
+web/src/server.getOrder -> web/src/orders/service.OrderService.lookup [exact] line 10
+web/src/server.getOrder -> web/src/orders/service.formatCents [exact] line 11

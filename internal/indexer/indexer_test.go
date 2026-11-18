@@ -33,10 +33,11 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 12 Go (one of them generated), 9 Java, 8 Python, 2 proto and 3
-	// configuration files; test files are kept apart and not counted.
-	if res.Files != 34 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 34 (1), 0", res.Files, res.Generated, res.Skipped)
+	// 12 Go (one of them generated), 9 Java, 8 Python, 6 TypeScript, 2
+	// proto and 4 configuration files; test files are kept apart and not
+	// counted.
+	if res.Files != 41 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 41 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -80,8 +81,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 34 || syms != 190 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 34 and 190", files, syms)
+	if files != 41 || syms != 212 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 41 and 212", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -393,7 +394,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 37 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 45 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -416,7 +417,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 35 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 43 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -470,10 +471,11 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 34 default files + 2 Go and Java test files - 9 files under py/ (8
-	// Python files and a .env; the Python test file is under py/ too).
-	if res.Files != 27 {
-		t.Fatalf("indexed %d files, want 27", res.Files)
+	// 41 default files + 3 Go, Java and TypeScript test files - 9 files
+	// under py/ (8 Python files and a .env; the Python test file is under
+	// py/ too).
+	if res.Files != 35 {
+		t.Fatalf("indexed %d files, want 35", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -494,8 +496,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 26 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 26 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 34 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 34 unchanged, 0 removed", res)
 	}
 }
 
@@ -588,12 +590,16 @@ func TestEndpointsAndOverview(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s -> %s [%s] %s", e.Method, e.Path, e.Handler, e.Framework, e.HandlerLocation))
 	}
 	want := []string{
+		"GET /admin/orders/:id -> web/src/orders/controller.AdminController.show [nestjs] web/src/orders/controller.ts:9",
 		"POST /api/v1/checkout -> checkout.handleCheckout [net/http] checkout/http.go:23",
 		"GET /api/v1/orders/{id} -> checkout.Handler.getOrder [net/http] checkout/http.go:27",
 		"GET /inventory/stock/{sku} -> py.inventory.api.get_stock [fastapi] py/inventory/api.py:9",
 		"POST /inventory/stock/{sku}/reserve -> py.inventory.api.reserve [fastapi] py/inventory/api.py:15",
 		"POST /orders -> com.shop.orders.OrderController.place [spring] java/com/shop/orders/OrderController.java:19",
 		"GET /orders/{id} -> com.shop.orders.OrderController.get [spring] java/com/shop/orders/OrderController.java:25",
+		// An inline handler has no symbol: list_apis shows where it is registered.
+		"POST /web/orders -> web/src/server.<inline handler> [express] ",
+		"GET /web/orders/:id -> web/src/server.getOrder [express] web/src/server.ts:9",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("endpoints:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -603,7 +609,7 @@ func TestEndpointsAndOverview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(o.Languages) != 4 || o.Endpoints != 6 {
+	if len(o.Languages) != 5 || o.Endpoints != 9 {
 		t.Errorf("overview languages=%v endpoints=%d", o.Languages, o.Endpoints)
 	}
 	entries := map[string]bool{}
@@ -742,8 +748,8 @@ func TestIncludeTestsSwitch(t *testing.T) {
 		t.Fatal("test helper searchable without --include-tests")
 	}
 	res, err := indexer.Reindex(repo, st, indexer.Options{IncludeTests: true})
-	if err != nil || res.Files != 3 {
-		t.Fatalf("switching to --include-tests should re-index the 3 test files: %+v %v", res, err)
+	if err != nil || res.Files != 4 {
+		t.Fatalf("switching to --include-tests should re-index the 4 test files: %+v %v", res, err)
 	}
 	if !searchable() {
 		t.Error("test helper not searchable with --include-tests")
@@ -990,8 +996,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 33 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 33 files, 1 skipped", res, err)
+	if err != nil || res.Files != 40 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 40 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1435,12 +1441,15 @@ func TestHTTPLinks(t *testing.T) {
 	}
 	want := []string{
 		"POST /api/v1/checkout: com.shop.orders.CheckoutClient.checkout -> checkout.handleCheckout [exact]",
+		// TypeScript, its base URL from process.env.CHECKOUT_URL set in web/.env.
+		"POST /api/v1/checkout: web/src/api/client.checkout -> checkout.handleCheckout [exact]",
 		"GET /api/v1/orders/*: com.shop.orders.CheckoutOrders.find -> checkout.Handler.getOrder [pattern]",
 		"GET /inventory/stock/*: checkout.stockLevel -> py.inventory.api.get_stock [pattern]",
 		"POST /inventory/stock/*/reserve: checkout.reserveRequest -> py.inventory.api.reserve [pattern]",
 		"POST /orders: py.inventory.api.place_order -> com.shop.orders.OrderController.place [pattern]",
 		// The base URL from os.Getenv("ORDERS_URL"), set in checkout/.env.
 		"GET /orders/*: checkout.orderStatus -> com.shop.orders.OrderController.get [pattern]",
+		"GET /orders/*: web/src/api/client.javaOrder -> com.shop.orders.OrderController.get [pattern]",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -1448,8 +1457,13 @@ func TestHTTPLinks(t *testing.T) {
 	if len(res.Unmatched) != 0 {
 		t.Errorf("unmatched uses: %+v", res.Unmatched)
 	}
-	if len(res.Unreferring) != 0 {
-		t.Errorf("unused routes: %+v", res.Unreferring)
+	// The web shop's own routes are called by browsers, not by indexed code.
+	var unused []string
+	for _, p := range res.Unreferring {
+		unused = append(unused, p.Method+" "+p.Name)
+	}
+	if strings.Join(unused, ", ") != "GET /admin/orders/*, POST /web/orders, GET /web/orders/*" {
+		t.Errorf("unused routes: %v", unused)
 	}
 }
 
@@ -1643,11 +1657,15 @@ func TestKafkaLinks(t *testing.T) {
 		// Spring listener and a kafka-python consumer, one per group.
 		"orders.placed [billing]: checkout.publishOrderPlaced -> com.shop.orders.OrderEvents.onOrderPlaced at java/com/shop/orders/OrderEvents.java:20 (exact)",
 		"orders.placed [inventory]: checkout.publishOrderPlaced -> py.inventory.events.consume_orders at py/inventory/events.py:8 (exact)",
+		// kafkajs (TypeScript) producer and consumer.
+		"orders.placed [billing]: web/src/events.announce -> com.shop.orders.OrderEvents.onOrderPlaced at java/com/shop/orders/OrderEvents.java:20 (exact)",
+		"orders.placed [inventory]: web/src/events.announce -> py.inventory.events.consume_orders at py/inventory/events.py:8 (exact)",
 		// KafkaTemplate with a constant topic to a sarama consumer group,
 		// reported at its handler's ConsumeClaim.
 		"payments.settled []: com.shop.orders.OrderEvents.onOrderPlaced -> checkout.paymentHandler.ConsumeClaim at checkout/events.go:27 (exact)",
 		// confluent-kafka (Python, a self attribute) to confluent-kafka-go.
 		"stock.changed []: py.inventory.events.StockEvents.publish -> checkout.watchStock at checkout/events.go:37 (exact)",
+		"stock.changed [web]: py.inventory.events.StockEvents.publish -> web/src/events.followStock at web/src/events.ts:12 (exact)",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -1959,5 +1977,88 @@ func TestMessagingLinks(t *testing.T) {
 	}
 	if len(res.Unmatched) != 0 || len(res.Unreferring) != 0 {
 		t.Errorf("unmatched uses %+v, providers %+v", res.Unmatched, res.Unreferring)
+	}
+}
+
+// TestTypeScript checks the TypeScript call graph of the fixture's web
+// service: calls through an imported function, a field typed in a
+// constructor, super, a module-level variable, and the tests reaching it.
+func TestTypeScript(t *testing.T) {
+	st := indexSample(t)
+	for _, c := range []struct{ from, to string }{
+		{"web/src/orders/service.OrderService.place", "web/src/api/client.checkout"},                             // imported function
+		{"web/src/orders/service.OrderService.place", "web/src/orders/repository.OrderRepository.save"},          // this.repo, typed in the constructor
+		{"web/src/orders/repository.CountingRepository.save", "web/src/orders/repository.MemoryRepository.save"}, // super.save
+		{"web/src/server.getOrder", "web/src/orders/service.OrderService.lookup"},                                // a module-level const service = new OrderService()
+		{"web/src/orders/controller.AdminController.show", "web/src/orders/service.OrderService.lookup"},
+	} {
+		syms, err := st.Lookup(c.from)
+		if err != nil || len(syms) != 1 {
+			t.Fatalf("lookup %s: %v %v", c.from, syms, err)
+		}
+		callees, err := st.Callees(syms[0].ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, ref := range callees {
+			if ref.Qualified == c.to {
+				found = ref.Confidence == "exact"
+			}
+		}
+		if !found {
+			t.Errorf("%s -> %s: no exact edge (callees %+v)", c.from, c.to, callees)
+		}
+	}
+	// The interface method's implementations, through implements.
+	syms, _ := st.Lookup("web/src/orders/repository.OrderRepository.save")
+	impls, err := st.MethodImplementations(syms[0], 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, l := range impls {
+		got = append(got, l.Qualified)
+	}
+	if strings.Join(got, ",") != "web/src/orders/repository.MemoryRepository.save,web/src/orders/repository.CountingRepository.save" {
+		t.Errorf("implementations: %v", got)
+	}
+	// it("...") in service.test.ts is a test reaching the service.
+	syms, _ = st.Lookup("web/src/orders/service.OrderService.lookup")
+	tests, _, err := st.TestsFor(syms[0].ID, 3, 3, 10)
+	if err != nil || len(tests) == 0 || tests[0].Qualified != "web/src/orders/service.test.test:looks up a saved order" {
+		t.Errorf("tests of lookup: %+v %v", tests, err)
+	}
+}
+
+func TestParseJavaScript(t *testing.T) {
+	src := `const express = require("express");
+const { place } = require("./orders");
+
+/** Starts the server. */
+function main() {
+  const app = express();
+  app.get("/health", (req, res) => res.send("ok"));
+  place(1);
+}
+
+module.exports = { main };
+`
+	fr, err := indexer.ParseTypeScript("server.js", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.Symbols) != 1 || fr.Symbols[0].Qualified != "server.main" || fr.Symbols[0].Doc != "Starts the server." {
+		t.Fatalf("symbols: %+v", fr.Symbols)
+	}
+	var calls []string
+	for _, c := range fr.Calls {
+		calls = append(calls, c.Form+":"+c.A+"."+c.B)
+	}
+	if !strings.Contains(strings.Join(calls, " "), "import:orders.place") || !strings.Contains(strings.Join(calls, " "), "import:express.express") {
+		t.Errorf("calls: %v", calls)
+	}
+	if len(fr.Endpoints) != 1 || fr.Endpoints[0].Path != "/health" || fr.Endpoints[0].Framework != "express" {
+		t.Errorf("endpoints: %+v", fr.Endpoints)
 	}
 }
