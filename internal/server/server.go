@@ -1184,6 +1184,14 @@ func endName(e links.End) string {
 	return n
 }
 
+// queueNote names a Temporal contract's task queue.
+func queueNote(e links.End) string {
+	if e.Detail == "" || e.Kind == store.ContractHTTP {
+		return ""
+	}
+	return ", task queue " + e.Detail
+}
+
 func endWhere(e links.End) string {
 	repo := ""
 	if e.Repo != "" {
@@ -1203,10 +1211,10 @@ func formatServiceLinks(out LinksOutput) string {
 	for _, l := range out.Links {
 		key := l.To.Kind + "|" + endName(l.To) + "|" + l.To.Symbol
 		if key != last {
-			fmt.Fprintf(&b, "\n%s (%s), provided by %s\n", endName(l.To), l.To.Kind, endWhere(l.To))
+			fmt.Fprintf(&b, "\n%s (%s%s), provided by %s\n", endName(l.To), l.To.Kind, queueNote(l.To), endWhere(l.To))
 			last = key
 		}
-		how := ""
+		how := queueNote(l.From)
 		if l.Confidence != "exact" {
 			how = fmt.Sprintf(", matched as a pattern: %s", l.From.Detail)
 		}

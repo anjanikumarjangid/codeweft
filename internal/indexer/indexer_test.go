@@ -29,10 +29,10 @@ func indexSample(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 6 Go (one of them generated), 5 Java and 4 Python files; test files
+	// 8 Go (one of them generated), 6 Java and 5 Python files; test files
 	// are kept apart and not counted.
-	if res.Files != 15 || res.Generated != 1 || res.Skipped != 0 {
-		t.Fatalf("got %d files (%d generated), %d skipped; want 15 (1), 0", res.Files, res.Generated, res.Skipped)
+	if res.Files != 19 || res.Generated != 1 || res.Skipped != 0 {
+		t.Fatalf("got %d files (%d generated), %d skipped; want 19 (1), 0", res.Files, res.Generated, res.Skipped)
 	}
 	return st
 }
@@ -76,8 +76,8 @@ func TestReindexReplacesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files != 15 || syms != 97 {
-		t.Fatalf("after re-index: %d files, %d symbols; want 15 and 97", files, syms)
+	if files != 19 || syms != 124 {
+		t.Fatalf("after re-index: %d files, %d symbols; want 19 and 124", files, syms)
 	}
 	hits, err := st.Search("payment", store.SearchOptions{})
 	if err != nil {
@@ -389,7 +389,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 0 || res.Unchanged != 18 || res.Removed != 0 {
+	if res.Files != 0 || res.Unchanged != 22 || res.Removed != 0 {
 		t.Fatalf("no-op reindex: %+v", res)
 	}
 
@@ -412,7 +412,7 @@ func TestReindexIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 2 || res.Unchanged != 16 || res.Removed != 1 {
+	if res.Files != 2 || res.Unchanged != 20 || res.Removed != 1 {
 		t.Fatalf("reindex after changes: %+v", res)
 	}
 	if syms, _ := st.Lookup("ratelimit.TokenBucket"); len(syms) != 0 {
@@ -466,10 +466,10 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 15 default files + 2 Go and Java test files - 4 Python files under
+	// 19 default files + 2 Go and Java test files - 5 Python files under
 	// py/ (the Python test file is under py/ too).
-	if res.Files != 13 {
-		t.Fatalf("indexed %d files, want 13", res.Files)
+	if res.Files != 16 {
+		t.Fatalf("indexed %d files, want 16", res.Files)
 	}
 	got, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -490,8 +490,8 @@ func TestStoredOptionsKeepFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Files != 1 || res.Unchanged != 12 || res.Removed != 0 {
-		t.Fatalf("reindex with stored options: %+v; want 1 changed, 12 unchanged, 0 removed", res)
+	if res.Files != 1 || res.Unchanged != 15 || res.Removed != 0 {
+		t.Fatalf("reindex with stored options: %+v; want 1 changed, 15 unchanged, 0 removed", res)
 	}
 }
 
@@ -986,8 +986,8 @@ func TestGeneratedCode(t *testing.T) {
 	}
 	defer st2.Close()
 	res, err := indexer.Index("../../testdata/sample", st2, indexer.Options{SkipGenerated: true})
-	if err != nil || res.Files != 14 || res.Skipped != 1 {
-		t.Fatalf("SkipGenerated: %+v %v; want 14 files, 1 skipped", res, err)
+	if err != nil || res.Files != 18 || res.Skipped != 1 {
+		t.Fatalf("SkipGenerated: %+v %v; want 18 files, 1 skipped", res, err)
 	}
 	if syms, _ := st2.Lookup("ratelimit.GeneratedHelper"); len(syms) != 0 {
 		t.Error("generated symbol indexed with SkipGenerated")
@@ -1445,5 +1445,80 @@ func TestHTTPLinks(t *testing.T) {
 	// GET /orders/{id} in Java is not called by anything in the fixture.
 	if len(res.Unreferring) != 1 || res.Unreferring[0].Symbol != "com.shop.orders.OrderController.get" {
 		t.Errorf("unused routes: %+v", res.Unreferring)
+	}
+}
+
+// TestTemporalLinks links the workflows and activities of the three SDKs
+// in the fixture, across languages: a Java workflow starts the Go one by
+// name, the Go workflow runs a Python activity, a Python workflow starts
+// the Java one by its annotated name.
+func TestTemporalLinks(t *testing.T) {
+	st := indexSample(t)
+	var ends []links.End
+	for _, kind := range []string{store.ContractTemporalWorkflow, store.ContractTemporalActivity} {
+		rows, err := st.Contracts(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			ends = append(ends, links.End{ContractRow: r})
+		}
+	}
+	res := links.Match(ends)
+	var got []string
+	for _, l := range res.Links {
+		got = append(got, fmt.Sprintf("%s %s [%s]: %s -> %s at %s:%d", l.To.Kind, l.To.Name, l.To.Detail,
+			l.From.Symbol, l.To.Symbol, l.To.File, l.To.Line))
+	}
+	want := []string{
+		"temporal-activity ChargeCard [billing]: com.shop.orders.BillingWorkflowImpl.bill -> com.shop.orders.BillingActivitiesImpl.chargeCard at java/com/shop/orders/BillingWorkflow.java:46",
+		"temporal-activity NotifyCustomer []: fulfillment.ShipOrder -> py.inventory.notify.notify_customer at py/inventory/notify.py:6",
+		"temporal-activity Release [fulfillment]: fulfillment.ReturnOrder -> fulfillment.Activities.Release at fulfillment/workflow.go:35",
+		"temporal-activity Reserve [fulfillment]: fulfillment.ShipOrder -> fulfillment.Activities.Reserve at fulfillment/workflow.go:32",
+		"temporal-activity notify_customer []: py.inventory.notify.RestockWorkflow.run -> py.inventory.notify.notify_customer at py/inventory/notify.py:6",
+		"temporal-workflow BillingWorkflow [billing]: com.shop.orders.BillingStarter.start -> com.shop.orders.BillingWorkflowImpl.bill at java/com/shop/orders/BillingWorkflow.java:37",
+		"temporal-workflow RestockWorkflow []: py.inventory.notify.restock -> py.inventory.notify.RestockWorkflow.run at py/inventory/notify.py:15",
+		"temporal-workflow ShipOrder [fulfillment]: com.shop.orders.BillingWorkflowImpl.bill -> fulfillment.ShipOrder at fulfillment/workflow.go:13",
+		"temporal-workflow ShipOrder [fulfillment]: fulfillment.StartShipping -> fulfillment.ShipOrder at fulfillment/workflow.go:13",
+		"temporal-workflow bill-order [billing]: py.inventory.notify.RestockWorkflow.run -> com.shop.orders.BillingWorkflowImpl.bill at java/com/shop/orders/BillingWorkflow.java:37",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("links:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(res.Unmatched) != 0 {
+		t.Errorf("unmatched uses: %+v", res.Unmatched)
+	}
+	// Nothing starts the return workflow or the refund activity; the
+	// unexported audit method is not an activity, and the interfaces'
+	// copies are reported at their implementations, not twice.
+	var unused []string
+	for _, p := range res.Unreferring {
+		unused = append(unused, p.Name+" "+p.Symbol)
+	}
+	wantUnused := "ReturnOrder fulfillment.ReturnOrder, process-return fulfillment.ReturnOrder, " +
+		"RefundCard com.shop.orders.BillingActivitiesImpl.refundCard, refund com.shop.orders.BillingActivitiesImpl.refundCard"
+	if strings.Join(unused, ", ") != wantUnused {
+		t.Errorf("providers without uses: %s\nwant: %s", strings.Join(unused, ", "), wantUnused)
+	}
+}
+
+// TestPythonLocalImport is the regression test for a module imported inside
+// a block (`if __name__ == "__main__": import uvicorn`) taken for an object
+// whose method could be matched by name: uvicorn.run(app) was linked to the
+// repository's only method named run.
+func TestPythonLocalImport(t *testing.T) {
+	st := indexSample(t)
+	syms, err := st.Lookup("py.inventory.api.__main__")
+	if err != nil || len(syms) != 1 {
+		t.Fatalf("lookup: %v %v", syms, err)
+	}
+	callees, err := st.Callees(syms[0].ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range callees {
+		if c.Qualified == "py.inventory.notify.RestockWorkflow.run" {
+			t.Errorf("uvicorn.run linked to %s", c.Qualified)
+		}
 	}
 }

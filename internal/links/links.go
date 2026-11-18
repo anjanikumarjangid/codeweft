@@ -5,6 +5,7 @@ package links
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
@@ -33,10 +34,17 @@ type Result struct {
 	Unreferring []End  `json:"unmatched_providers"` // routes, consumers, workflows nothing indexed uses
 }
 
+// isTemporal reports whether a contract kind is a Temporal one, whose
+// Detail is the task queue.
+func isTemporal(kind string) bool {
+	return kind == store.ContractTemporalWorkflow || kind == store.ContractTemporalActivity
+}
+
 // Match links every use to the providers it can reach. An HTTP call links
 // to the routes whose pattern its path matches, with a compatible method,
 // keeping only the most specific ones (the most segments matched
-// literally); other kinds link by equal name.
+// literally); other kinds link by equal name, and a Temporal workflow or
+// activity also by task queue when both sides name one.
 func Match(all []End) Result {
 	var uses, provides []End
 	for _, e := range all {
@@ -67,6 +75,8 @@ func Match(all []End) Result {
 				score = literal
 			} else if u.Name != p.Name {
 				continue
+			} else if isTemporal(u.Kind) && u.Detail != "" && p.Detail != "" && u.Detail != p.Detail {
+				continue // started on another task queue than the worker polls
 			}
 			switch {
 			case score > best:
@@ -78,6 +88,20 @@ func Match(all []End) Result {
 		if len(matched) == 0 {
 			res.Unmatched = append(res.Unmatched, u)
 			continue
+		}
+		// A use naming its code (a workflow function, not just a name)
+		// reaches that code when its repository provides it.
+		if u.Target != "" {
+			var exact []int
+			for _, i := range matched {
+				p := provides[i]
+				if p.Repo == u.Repo && (names(p.Symbol, u.Target) || names(p.Target, u.Target)) {
+					exact = append(exact, i)
+				}
+			}
+			if len(exact) > 0 {
+				matched = exact
+			}
 		}
 		conf := "exact"
 		if !u.Exact {
@@ -104,4 +128,11 @@ func Match(all []End) Result {
 		return a.From.Repo+a.From.Symbol < b.From.Repo+b.From.Symbol
 	})
 	return res
+}
+
+// names reports whether a symbol is the target or a member of it: the
+// workflow function itself, the run method of a workflow class, a method
+// of a stub's interface.
+func names(symbol, target string) bool {
+	return symbol != "" && (symbol == target || strings.HasPrefix(symbol, target+"."))
 }

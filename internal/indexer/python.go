@@ -63,14 +63,18 @@ func ParsePython(rel string, src []byte) (*FileResult, error) {
 		Doc: pyDocstring(root, src),
 	}}
 
-	for _, n := range namedChildren(root) {
+	// Imports anywhere in the file, including those inside a function or
+	// an `if __name__ == "__main__":` block: a name bound by an import is a
+	// module, never an object whose method could be guessed by name.
+	walk(root, func(n *sitter.Node) bool {
 		switch n.Type() {
 		case "import_statement":
 			pf.importStmt(n)
 		case "import_from_statement":
 			pf.importFrom(n)
 		}
-	}
+		return true
+	})
 	for _, n := range namedChildren(root) {
 		pf.routerPrefix(n)
 		pf.mainGuard(n)
@@ -222,6 +226,7 @@ func (pf *pyFile) class(def, outer *sitter.Node, prefix string) {
 	qual := prefix + "." + name
 	body := field(def, "body")
 	pf.add(outer, name, qual, "class", strings.TrimSuffix(header(def, body, pf.src), ":"), pyDocstring(body, pf.src))
+	pf.res.Contracts = append(pf.res.Contracts, pf.pyWorkflowClass(def, outer, name, qual)...)
 	// Base classes: `class A(B, mod.C, Generic[T], metaclass=M)` records B,
 	// mod.C and Generic. Keyword arguments such as metaclass are not bases.
 	for _, b := range namedChildren(field(def, "superclasses")) {
@@ -259,6 +264,7 @@ func (pf *pyFile) function(def, outer *sitter.Node, prefix, class string) {
 	// The return annotation: what calling it gives, for typing receivers.
 	pf.res.Symbols[len(pf.res.Symbols)-1].Result = pf.annotationRef(field(def, "return_type"))
 	pf.calls(def, body, qual, class)
+	pf.res.Contracts = append(pf.res.Contracts, pf.pyActivity(def, outer, name, qual)...)
 	if outer.Type() == "decorated_definition" {
 		for _, dec := range namedChildren(outer) {
 			if dec.Type() != "decorator" {
@@ -325,7 +331,8 @@ func (pf *pyFile) mainGuard(n *sitter.Node) {
 
 func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 	locals := map[string]string{}
-	exprs := map[string]any{} // x = <call or attribute>: how x's type can be found
+	bound := pyBound(def, body, pf.src) // parameters and assigned names
+	exprs := map[string]any{}           // x = <call or attribute>: how x's type can be found
 	for _, p := range namedChildren(field(def, "parameters")) {
 		if p.Type() == "typed_parameter" || p.Type() == "typed_default_parameter" {
 			var pname string
@@ -390,6 +397,9 @@ func (pf *pyFile) calls(def, body *sitter.Node, caller, class string) {
 		case "call":
 			pf.call(n, caller, class, locals, exprs)
 			if c, ok := pf.httpClientCall(n, caller, locals); ok {
+				pf.res.Contracts = append(pf.res.Contracts, c)
+			}
+			if c, ok := pf.temporalCall(n, caller, bound); ok {
 				pf.res.Contracts = append(pf.res.Contracts, c)
 			}
 		}

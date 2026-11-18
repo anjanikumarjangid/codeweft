@@ -45,6 +45,9 @@ type javaFile struct {
 	// consts holds the file's static final String constants with a
 	// written-out value, by simple name, for evaluating URLs and names.
 	consts map[string]string
+	// stubs maps the fields of the class being parsed that hold a Temporal
+	// activity stub or worker to what they hold (see temporalStub).
+	stubs map[string]string
 }
 
 // withTypeParams adds the type parameters declared by n (a class or a
@@ -314,6 +317,11 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 		classPrefix = joinRoute(feignPrefix, classPrefix)
 	}
 
+	temporalKind, temporalPrefix := jf.temporalInterface(n)
+	savedStubs := jf.stubs
+	jf.stubs = map[string]string{}
+	defer func() { jf.stubs = savedStubs }()
+
 	fields := map[string]string{}
 	// Record components are fields with generated accessor methods.
 	if n.Type() == "record_declaration" {
@@ -345,6 +353,9 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				if d.Type() == "variable_declarator" {
 					fn := text(field(d, "name"), jf.src)
 					fields[fn] = ref
+					if st := jf.temporalStub(field(d, "value")); st != "" {
+						jf.stubs[fn] = st
+					}
 					if ref != "" {
 						jf.res.Fields = append(jf.res.Fields, store.Field{Owner: qual, Name: fn, TypeRef: ref})
 					}
@@ -371,6 +382,9 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				isInterface || hasModifier(m, jf.src, "public"))
 			sym := &jf.res.Symbols[len(jf.res.Symbols)-1]
 			sym.Arity = arity(field(m, "parameters"))
+			if temporalKind != "" && kind != "constructor" {
+				jf.res.Contracts = append(jf.res.Contracts, jf.temporalMethod(m, temporalKind, temporalPrefix, name, mname, mq)...)
+			}
 			jf.withTypeParams(m, func() {
 				if t := field(m, "type"); t != nil {
 					sym.Result = jf.typeRef(t) // the declared return type
@@ -411,6 +425,10 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 // calls records method invocations and constructor calls in a body.
 func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields map[string]string) {
 	locals := map[string]string{}
+	stubs := map[string]string{} // Temporal stubs and workers: the class's fields, then locals
+	for k, v := range jf.stubs {
+		stubs[k] = v
+	}
 	// param records a parameter-like declaration: a method or lambda
 	// parameter, a varargs parameter (an array: its methods are Object's),
 	// a catch parameter (of the first type of a multi-catch), or a for-each
@@ -469,6 +487,9 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				if r != "" {
 					locals[text(field(d, "name"), jf.src)] = r
 				}
+				if st := jf.temporalStub(field(d, "value")); st != "" {
+					stubs[text(field(d, "name"), jf.src)] = st
+				}
 			}
 		case "lambda_expression", "class_body":
 			// Calls inside lambdas belong to the enclosing method; anonymous
@@ -505,6 +526,7 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 			if c, ok := jf.httpClientCall(n, locals, fields, caller); ok {
 				jf.res.Contracts = append(jf.res.Contracts, c)
 			}
+			jf.res.Contracts = append(jf.res.Contracts, jf.temporalCall(n, stubs, locals, fields, caller)...)
 			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {

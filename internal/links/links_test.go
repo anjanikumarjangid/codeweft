@@ -1,6 +1,7 @@
 package links
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/anjanikumarjangid/codewiki/internal/store"
@@ -68,5 +69,28 @@ func TestMatch(t *testing.T) {
 	}
 	if len(res.Unmatched) != 2 || len(res.Unreferring) != 1 || res.Unreferring[0].Symbol != "health" {
 		t.Errorf("unmatched uses %d (want 2), unused providers %+v (want health)", len(res.Unmatched), res.Unreferring)
+	}
+}
+
+// TestTaskQueue: a workflow started on one task queue is not served by a
+// worker polling another, even under the same name.
+func TestTaskQueue(t *testing.T) {
+	wf := func(role, sym, queue string) End {
+		return End{ContractRow: store.ContractRow{Contract: store.Contract{Kind: store.ContractTemporalWorkflow, Role: role,
+			Name: "Ship", Symbol: sym, Detail: queue, Exact: true}}}
+	}
+	res := Match([]End{
+		wf(store.RoleProvides, "eu.Ship", "ship-eu"),
+		wf(store.RoleProvides, "us.Ship", "ship-us"),
+		wf(store.RoleUses, "startEU", "ship-eu"),
+		wf(store.RoleUses, "startAny", ""),
+	})
+	var got []string
+	for _, l := range res.Links {
+		got = append(got, l.From.Symbol+" -> "+l.To.Symbol)
+	}
+	want := "startAny -> eu.Ship, startAny -> us.Ship, startEU -> eu.Ship"
+	if strings.Join(got, ", ") != want {
+		t.Errorf("got %s, want %s", strings.Join(got, ", "), want)
 	}
 }

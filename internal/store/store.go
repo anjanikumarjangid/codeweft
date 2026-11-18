@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "11"
+const SchemaVersion = "12"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS contracts (
 	symbol  TEXT NOT NULL,
 	line    INTEGER NOT NULL,
 	detail  TEXT NOT NULL,
-	exact   INTEGER NOT NULL
+	exact   INTEGER NOT NULL,
+	target  TEXT NOT NULL DEFAULT '' -- a use's reference to the code it names
 );
 CREATE INDEX IF NOT EXISTS contracts_file ON contracts(file_id);
 CREATE INDEX IF NOT EXISTS contracts_name ON contracts(kind, name);
