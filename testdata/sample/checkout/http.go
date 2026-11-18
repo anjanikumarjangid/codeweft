@@ -27,3 +27,16 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getOrder(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(newOrder(r.PathValue("id")))
 }
+
+// inventoryBase is where the inventory service listens.
+const inventoryBase = "http://inventory:8000"
+
+// stockLevel asks the inventory service for an item's stock.
+func stockLevel(base, sku string) (*http.Response, error) {
+	return http.Get(base + "/inventory/stock/" + sku)
+}
+
+// reserveRequest builds the request holding an item in the inventory service.
+func reserveRequest(sku string) (*http.Request, error) {
+	return http.NewRequest(http.MethodPost, inventoryBase+"/inventory/stock/"+sku+"/reserve", nil)
+}

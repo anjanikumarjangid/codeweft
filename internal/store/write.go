@@ -48,7 +48,7 @@ func (t *Tx) Rollback() error { return t.tx.Rollback() }
 // Reset removes all indexed data, keeping the schema.
 func (t *Tx) Reset() error {
 	for _, q := range []string{
-		`DELETE FROM vars`, `DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
+		`DELETE FROM contracts`, `DELETE FROM vars`, `DELETE FROM test_edges`, `DELETE FROM test_funcs`, `DELETE FROM type_edges`, `DELETE FROM supertypes`, `DELETE FROM edges`, `DELETE FROM endpoints`, `DELETE FROM raw_calls`, `DELETE FROM fields`,
 		`DELETE FROM imports`, `DELETE FROM symbols`, `DELETE FROM files`,
 		`DELETE FROM symbols_fts`,
 	} {

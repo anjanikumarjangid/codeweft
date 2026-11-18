@@ -3,6 +3,8 @@ checkout.wrappedGateway -> payments.Gateway [method set]
 checkout.wrappedGateway -> payments.StripeGateway [embeds]
 checkout.wrappedGateway -> payments.VoidingGateway [method set]
 checkout.wrappedGateway -> payments.settler [method set]
+com.shop.orders.BillingWorkflowImpl -> com.shop.orders.BillingWorkflow [implements]
+com.shop.orders.BillingActivitiesImpl -> com.shop.orders.BillingActivities [implements]
 com.shop.orders.InMemoryOrderRepository -> com.shop.orders.OrderRepository [implements]
 com.shop.orders.CountingOrderRepository -> com.shop.orders.InMemoryOrderRepository [extends]
 com.shop.orders.CountingOrderRepository -> java.io.Serializable [implements] (external)

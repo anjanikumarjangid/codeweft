@@ -86,7 +86,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("tool %s should be annotated read-only and closed-world: %+v", tool.Name, a)
 		}
 	}
-	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis", "get_implementations", "find_tests"} {
+	for _, want := range []string{"search_code", "get_symbol", "get_dependency_graph", "get_file_summary", "get_architecture_overview", "list_apis", "get_implementations", "find_tests", "get_service_links"} {
 		if !got[want] {
 			t.Errorf("tool %s not registered", want)
 		}
@@ -203,7 +203,7 @@ func TestOverviewAndAPIs(t *testing.T) {
 	cs := connect(t)
 	o := callText(t, cs, "get_architecture_overview", map[string]any{})
 	for _, want := range []string{
-		"Languages: go (6 files), java (5 files), python (4 files)",
+		"Languages: go (8 files), java (6 files), python (5 files)",
 		"HTTP frameworks:",
 		"- checkout/cmd/server/main.main at checkout/cmd/server/main.go:11",
 		"- payments [go, 1 file(s), 28 symbols] - Package payments processes customer payments.",
@@ -439,5 +439,33 @@ func TestGeneratedLabel(t *testing.T) {
 	}
 	if got := callText(t, cs, "search_code", map[string]any{"query": "GeneratedHelper"}); !strings.Contains(got, "(func, generated code)") {
 		t.Errorf("search_code should label generated code:\n%s", got)
+	}
+}
+
+func TestServiceLinks(t *testing.T) {
+	cs := connect(t)
+	got := callText(t, cs, "get_service_links", map[string]any{"query": "checkout"})
+	for _, want := range []string{
+		"POST /api/v1/checkout (http), provided by checkout.handleCheckout at checkout/http.go:23",
+		"  <- com.shop.orders.CheckoutClient.checkout at java/com/shop/orders/OrderController.java:",
+		"GET /api/v1/orders/* (http), provided by checkout.Handler.getOrder at checkout/http.go:27",
+		"matched as a pattern: http://checkout/api/v1/orders/*",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("get_service_links: missing %q in:\n%s", want, got)
+		}
+	}
+	got = callText(t, cs, "get_service_links", map[string]any{"kind": "temporal-workflow", "query": "ShipOrder"})
+	for _, want := range []string{
+		"ShipOrder (temporal-workflow, task queue fulfillment), provided by fulfillment.ShipOrder at fulfillment/workflow.go:13",
+		"  <- fulfillment.StartShipping at fulfillment/worker.go:25 (ShipOrder, task queue fulfillment)",
+		"  <- com.shop.orders.BillingWorkflowImpl.bill at java/com/shop/orders/BillingWorkflow.java:39 (ShipOrder)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("get_service_links temporal: missing %q in:\n%s", want, got)
+		}
+	}
+	if got := callText(t, cs, "get_service_links", map[string]any{"kind": "kafka"}); !strings.Contains(got, "No service links found") {
+		t.Errorf("no kafka contracts in the fixture:\n%s", got)
 	}
 }

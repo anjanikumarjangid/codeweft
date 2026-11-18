@@ -42,6 +42,12 @@ type javaFile struct {
 	// typeVars maps the type variables in scope to their bound's type
 	// reference ("" when unbounded): class and method type parameters.
 	typeVars map[string]string
+	// consts holds the file's static final String constants with a
+	// written-out value, by simple name, for evaluating URLs and names.
+	consts map[string]string
+	// stubs maps the fields of the class being parsed that hold a Temporal
+	// activity stub or worker to what they hold (see temporalStub).
+	stubs map[string]string
 }
 
 // withTypeParams adds the type parameters declared by n (a class or a
@@ -90,7 +96,7 @@ func ParseJava(rel string, src []byte) (*FileResult, error) {
 	}
 	defer done()
 
-	jf := &javaFile{src: src, rel: rel, imports: map[string]string{}, statics: map[string]string{}}
+	jf := &javaFile{src: src, rel: rel, imports: map[string]string{}, statics: map[string]string{}, consts: map[string]string{}}
 	dir := path.Dir(rel)
 	jf.res = &FileResult{File: store.File{Path: rel, Dir: dir, Lang: "java"}}
 
@@ -304,6 +310,17 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	if _, p, _, ok := javaRoute(modifiersOf(n), jf.src); ok {
 		classPrefix = p
 	}
+	// An @FeignClient interface declares the HTTP calls this service makes:
+	// its mapped methods are uses, not routes.
+	feignPrefix, feign := jf.feignClient(modifiersOf(n))
+	if feign {
+		classPrefix = joinRoute(feignPrefix, classPrefix)
+	}
+
+	temporalKind, temporalPrefix := jf.temporalInterface(n)
+	savedStubs := jf.stubs
+	jf.stubs = map[string]string{}
+	defer func() { jf.stubs = savedStubs }()
 
 	fields := map[string]string{}
 	// Record components are fields with generated accessor methods.
@@ -330,11 +347,15 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 	}
 	for _, m := range members {
 		if m.Type() == "field_declaration" || m.Type() == "constant_declaration" {
+			jf.stringConsts(m)
 			ref := jf.typeRef(field(m, "type"))
 			for _, d := range namedChildren(m) {
 				if d.Type() == "variable_declarator" {
 					fn := text(field(d, "name"), jf.src)
 					fields[fn] = ref
+					if st := jf.temporalStub(field(d, "value")); st != "" {
+						jf.stubs[fn] = st
+					}
 					if ref != "" {
 						jf.res.Fields = append(jf.res.Fields, store.Field{Owner: qual, Name: fn, TypeRef: ref})
 					}
@@ -361,6 +382,9 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				isInterface || hasModifier(m, jf.src, "public"))
 			sym := &jf.res.Symbols[len(jf.res.Symbols)-1]
 			sym.Arity = arity(field(m, "parameters"))
+			if temporalKind != "" && kind != "constructor" {
+				jf.res.Contracts = append(jf.res.Contracts, jf.temporalMethod(m, temporalKind, temporalPrefix, name, mname, mq)...)
+			}
 			jf.withTypeParams(m, func() {
 				if t := field(m, "type"); t != nil {
 					sym.Result = jf.typeRef(t) // the declared return type
@@ -381,6 +405,15 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 				if route == "" {
 					route = "/"
 				}
+				if feign {
+					if method == "ANY" {
+						method = ""
+					}
+					if c, ok := httpUse(method, route, mq, line(m)); ok {
+						jf.res.Contracts = append(jf.res.Contracts, c)
+					}
+					continue
+				}
 				jf.res.Endpoints = append(jf.res.Endpoints, store.Endpoint{
 					Method: method, Path: route, Handler: mq, Framework: fw, File: jf.rel, Line: line(m),
 				})
@@ -392,6 +425,10 @@ func (jf *javaFile) typeBody(n *sitter.Node, name, qual string, inInterface bool
 // calls records method invocations and constructor calls in a body.
 func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields map[string]string) {
 	locals := map[string]string{}
+	stubs := map[string]string{} // Temporal stubs and workers: the class's fields, then locals
+	for k, v := range jf.stubs {
+		stubs[k] = v
+	}
 	// param records a parameter-like declaration: a method or lambda
 	// parameter, a varargs parameter (an array: its methods are Object's),
 	// a catch parameter (of the first type of a multi-catch), or a for-each
@@ -450,6 +487,9 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 				if r != "" {
 					locals[text(field(d, "name"), jf.src)] = r
 				}
+				if st := jf.temporalStub(field(d, "value")); st != "" {
+					stubs[text(field(d, "name"), jf.src)] = st
+				}
 			}
 		case "lambda_expression", "class_body":
 			// Calls inside lambdas belong to the enclosing method; anonymous
@@ -483,6 +523,10 @@ func (jf *javaFile) calls(decl, body *sitter.Node, caller, owner string, fields 
 			jf.res.Calls = append(jf.res.Calls, rc)
 		case "method_invocation":
 			name := text(field(n, "name"), jf.src)
+			if c, ok := jf.httpClientCall(n, locals, fields, caller); ok {
+				jf.res.Contracts = append(jf.res.Contracts, c)
+			}
+			jf.res.Contracts = append(jf.res.Contracts, jf.temporalCall(n, stubs, locals, fields, caller)...)
 			rc := store.RawCall{Caller: caller, Line: line(n), Args: argCount(n)}
 			obj := field(n, "object")
 			switch {
@@ -653,4 +697,127 @@ func arity(params *sitter.Node) string {
 		return strconv.Itoa(n) + "+"
 	}
 	return strconv.Itoa(n)
+}
+
+// stringConsts records a field declaration's String constants whose value
+// is written out: static final String BASE = "/api/orders".
+func (jf *javaFile) stringConsts(m *sitter.Node) {
+	if t := field(m, "type"); t == nil || text(t, jf.src) != "String" {
+		return
+	}
+	if m.Type() == "field_declaration" && (!hasModifier(m, jf.src, "static") || !hasModifier(m, jf.src, "final")) {
+		return
+	}
+	for _, d := range namedChildren(m) {
+		if d.Type() == "variable_declarator" {
+			if v := field(d, "value"); v != nil {
+				if s := jf.template(v); !strings.Contains(s, "*") {
+					jf.consts[text(field(d, "name"), jf.src)] = s
+				}
+			}
+		}
+	}
+}
+
+// template evaluates a Java string expression as far as the source
+// allows, writing "*" for each part it cannot see: literals, +, the file's
+// String constants, and String.format (each verb a "*").
+func (jf *javaFile) template(n *sitter.Node) string {
+	if n == nil {
+		return "*"
+	}
+	switch n.Type() {
+	case "string_literal":
+		return strings.Trim(text(n, jf.src), `"`)
+	case "parenthesized_expression":
+		if kids := namedChildren(n); len(kids) == 1 {
+			return jf.template(kids[0])
+		}
+	case "binary_expression":
+		if op := field(n, "operator"); op != nil && text(op, jf.src) == "+" {
+			return jf.template(field(n, "left")) + jf.template(field(n, "right"))
+		}
+	case "identifier":
+		if v, ok := jf.consts[text(n, jf.src)]; ok {
+			return v
+		}
+	case "method_invocation":
+		if obj := field(n, "object"); obj != nil && text(obj, jf.src) == "String" && text(field(n, "name"), jf.src) == "format" {
+			if args := namedChildren(field(n, "arguments")); len(args) > 0 {
+				return fmtVerb.ReplaceAllString(jf.template(args[0]), "*")
+			}
+		}
+	}
+	return "*"
+}
+
+// feignClient reports whether a type is an @FeignClient interface, and the
+// path prefix its annotation declares (path = "/api").
+func (jf *javaFile) feignClient(mods *sitter.Node) (string, bool) {
+	for _, a := range namedChildren(mods) {
+		if a.Type() != "annotation" && a.Type() != "marker_annotation" {
+			continue
+		}
+		name := text(field(a, "name"), jf.src)
+		if name[strings.LastIndex(name, ".")+1:] != "FeignClient" {
+			continue
+		}
+		prefix := ""
+		for _, p := range namedChildren(field(a, "arguments")) {
+			if p.Type() == "element_value_pair" && text(field(p, "key"), jf.src) == "path" {
+				prefix = jf.template(field(p, "value"))
+			}
+		}
+		return prefix, true
+	}
+	return "", false
+}
+
+// restTemplateMethods maps RestTemplate methods to the HTTP method they send.
+var restTemplateMethods = map[string]string{
+	"getForObject": "GET", "getForEntity": "GET", "postForObject": "POST", "postForEntity": "POST",
+	"postForLocation": "POST", "put": "PUT", "delete": "DELETE", "patchForObject": "PATCH",
+	"exchange": "", "execute": "",
+}
+
+// httpClientCall recognizes an HTTP request made with Spring's
+// RestTemplate (restTemplate.getForObject(url, ...), exchange(url,
+// HttpMethod.POST, ...)) or a WebClient/RestClient chain
+// (client.get().uri("/orders/{id}", id)).
+func (jf *javaFile) httpClientCall(n *sitter.Node, locals, fields map[string]string, caller string) (store.Contract, bool) {
+	name := text(field(n, "name"), jf.src)
+	obj := field(n, "object")
+	args := namedChildren(field(n, "arguments"))
+	if obj == nil || len(args) == 0 {
+		return store.Contract{}, false
+	}
+	httpMethodArg := func(a *sitter.Node) string {
+		t := text(a, jf.src)
+		return strings.ToUpper(t[strings.LastIndex(t, ".")+1:])
+	}
+	if method, ok := restTemplateMethods[name]; ok && obj.Type() == "identifier" {
+		ref := locals[text(obj, jf.src)]
+		if ref == "" {
+			ref = fields[text(obj, jf.src)]
+		}
+		if !strings.HasSuffix(ref, "RestTemplate") {
+			return store.Contract{}, false
+		}
+		if (name == "exchange" || name == "execute") && len(args) > 1 {
+			method = httpMethodArg(args[1])
+		}
+		return httpUse(method, jf.template(args[0]), caller, line(n))
+	}
+	if name == "uri" && obj.Type() == "method_invocation" {
+		verb := text(field(obj, "name"), jf.src)
+		switch verb {
+		case "get", "post", "put", "patch", "delete", "head", "options":
+			return httpUse(strings.ToUpper(verb), jf.template(args[0]), caller, line(n))
+		case "method":
+			if ma := namedChildren(field(obj, "arguments")); len(ma) > 0 {
+				return httpUse(httpMethodArg(ma[0]), jf.template(args[0]), caller, line(n))
+			}
+		}
+	}
+	return store.Contract{}, false
 }

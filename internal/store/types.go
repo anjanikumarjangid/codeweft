@@ -207,6 +207,7 @@ type TypeLink struct {
 	How       string `json:"how"`   // extends, implements, embeds, method set, overrides
 	Depth     int    `json:"depth"` // 1 for a direct relation
 	External  bool   `json:"external,omitempty"`
+	Repo      string `json:"repo,omitempty"` // in a workspace, the repository of the type
 }
 
 // hierarchyLimit caps how many related types a single query returns.

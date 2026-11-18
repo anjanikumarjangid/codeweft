@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/anjanikumarjangid/codewiki/internal/links"
 	"github.com/anjanikumarjangid/codewiki/internal/store"
 )
 
@@ -26,6 +27,7 @@ var (
 	maxFileLinks  = 20  // related files listed by get_file_summary
 	maxImpls      = 50  // types or methods listed by get_implementations
 	maxTests      = 30  // tests listed by find_tests
+	maxLinks      = 60  // links listed by get_service_links
 	maxSymTests   = 5   // tests listed inline by get_symbol
 )
 
@@ -66,18 +68,34 @@ func addTool[In, Out any](s *mcp.Server, ready func() error, t *mcp.Tool, h mcp.
 
 // New builds an MCP server backed by st.
 func New(st *store.Store, opts Options) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{
-		Instructions: "codewiki answers questions about the indexed codebase from a parsed index. " +
-			"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
-			"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
-			"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
-			"or what depends on it, get_implementations to find what implements an interface or overrides a " +
-			"method (where an interface call actually goes), find_tests to see which tests exercise code " +
-			"before changing it, and get_file_summary for an overview of a file " +
-			"before reading it. " +
-			"Prefer these tools over grepping or reading whole files.",
-	})
-	h := handlers{st}
+	return NewWorkspace([]Repo{{Store: st}}, opts)
+}
+
+// NewWorkspace builds an MCP server answering about several repositories
+// at once: searches and listings span all of them, results are labelled
+// with their repository's name, a repo argument narrows any tool to one,
+// and get_service_links links the services' contracts across repositories.
+func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
+	instructions := "codewiki answers questions about the indexed codebase from a parsed index. " +
+		"Start with get_architecture_overview on an unfamiliar codebase, and list_apis for HTTP endpoints. " +
+		"Use search_code to find where something is implemented, get_symbol to read its exact signature, " +
+		"doc, source, callers and callees, and get_dependency_graph to trace what a function depends on " +
+		"or what depends on it, get_implementations to find what implements an interface or overrides a " +
+		"method (where an interface call actually goes), find_tests to see which tests exercise code " +
+		"before changing it, and get_file_summary for an overview of a file " +
+		"before reading it. " +
+		"Prefer these tools over grepping or reading whole files."
+	if len(repos) > 1 {
+		names := make([]string, len(repos))
+		for i, r := range repos {
+			names[i] = r.Name
+		}
+		instructions += " This server answers about a workspace of several repositories (" + strings.Join(names, ", ") +
+			"): results are labelled with their repository, every tool takes an optional repo argument to look in one, " +
+			"and get_service_links shows how the services call each other."
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "codewiki", Version: Version}, &mcp.ServerOptions{Instructions: instructions})
+	h := handlers{st: repos[0].Store, repos: repos}
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "search_code",
 		Description: "Ranked keyword search over the indexed codebase's functions, methods and types. " +
@@ -106,6 +124,14 @@ func New(st *store.Store, opts Options) *mcp.Server {
 			"Python from declared extends/implements and base classes. Pass a type from outside the " +
 			"repository, such as 'java.io.Serializable', to list the repository types that implement it.",
 	}, h.implementations)
+	addTool(s, opts.Ready, &mcp.Tool{
+		Name: "get_service_links",
+		Description: "How services talk to each other: HTTP routes and the client calls that reach them, " +
+			"Kafka topics and their producers and consumers, gRPC methods and their callers, Temporal workflows " +
+			"and activities and the code that starts them. Pass a route, topic, workflow or function name " +
+			"(any part of it) to narrow the list, and kind to pick one: http, grpc, kafka, temporal-workflow, " +
+			"temporal-activity. Also lists calls whose provider is not indexed.",
+	}, h.serviceLinks)
 	addTool(s, opts.Ready, &mcp.Tool{
 		Name: "find_tests",
 		Description: "Tests that exercise a function, method or type: tests that call it directly, call " +
@@ -137,13 +163,28 @@ func New(st *store.Store, opts Options) *mcp.Server {
 
 // OverviewInput is the input of get_architecture_overview.
 type OverviewInput struct {
-	Limit int `json:"limit,omitempty" jsonschema:"maximum entries per section, default 15"`
+	Limit int    `json:"limit,omitempty" jsonschema:"maximum entries per section, default 15"`
+	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 func (h handlers) overview(ctx context.Context, req *mcp.CallToolRequest, in OverviewInput) (*mcp.CallToolResult, *store.Overview, error) {
-	o, err := h.st.BuildOverview(min(max(in.Limit, 0), 50))
+	hs, err := h.selected(in.Repo)
 	if err != nil {
 		return nil, nil, err
+	}
+	limit := min(max(in.Limit, 0), 50)
+	var names []string
+	var os []*store.Overview
+	for _, x := range hs {
+		o, err := x.st.BuildOverview(limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		names, os = append(names, x.repo), append(os, o)
+	}
+	o := os[0]
+	if len(os) > 1 {
+		o = mergeOverviews(names, os, limit)
 	}
 	return text(FormatOverview(o)), o, nil
 }
@@ -152,6 +193,7 @@ func (h handlers) overview(ctx context.Context, req *mcp.CallToolRequest, in Ove
 type APIsInput struct {
 	Path   string `json:"path,omitempty" jsonschema:"optional: only routes containing this text, e.g. '/orders'"`
 	Method string `json:"method,omitempty" jsonschema:"optional: GET, POST, PUT, PATCH or DELETE"`
+	Repo   string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // APIsOutput is the structured result of list_apis.
@@ -160,9 +202,23 @@ type APIsOutput struct {
 }
 
 func (h handlers) listAPIs(ctx context.Context, req *mcp.CallToolRequest, in APIsInput) (*mcp.CallToolResult, APIsOutput, error) {
-	eps, err := h.st.ListEndpoints(store.EndpointFilter{Path: in.Path, Method: in.Method, Limit: 300})
+	hs, err := h.selected(in.Repo)
 	if err != nil {
 		return nil, APIsOutput{}, err
+	}
+	eps := []store.EndpointInfo{}
+	for _, x := range hs {
+		got, err := x.st.ListEndpoints(store.EndpointFilter{Path: in.Path, Method: in.Method, Limit: 300 - len(eps)})
+		if err != nil {
+			return nil, APIsOutput{}, err
+		}
+		for _, e := range got {
+			e.Repo = x.repo
+			eps = append(eps, e)
+		}
+		if len(eps) >= 300 {
+			break
+		}
 	}
 	if len(eps) == 0 {
 		return text("No HTTP endpoints found" + filterNote(in) + "."), APIsOutput{Endpoints: eps}, nil
@@ -174,7 +230,7 @@ func (h handlers) listAPIs(ctx context.Context, req *mcp.CallToolRequest, in API
 		if loc == "" {
 			loc = fmt.Sprintf("registered at %s:%d", e.File, e.Line)
 		}
-		fmt.Fprintf(&b, "%-7s %s\n        -> %s (%s) [%s]\n", e.Method, e.Path, e.Handler, loc, e.Framework)
+		fmt.Fprintf(&b, "%-7s %s\n        -> %s (%s) [%s]\n", e.Method, label(e.Repo, e.Path), e.Handler, loc, e.Framework)
 	}
 	return text(b.String()), APIsOutput{Endpoints: eps}, nil
 }
@@ -220,7 +276,7 @@ func FormatOverview(o *store.Overview) string {
 	if len(o.EntryPoints) > 0 {
 		fmt.Fprintf(&b, "\nEntry points:\n")
 		for _, e := range o.EntryPoints {
-			fmt.Fprintf(&b, "- %s at %s\n", e.Qualified, e.Location)
+			fmt.Fprintf(&b, "- %s at %s\n", label(e.Repo, e.Qualified), e.Location)
 		}
 	}
 	if len(o.Dependencies) > 0 {
@@ -247,6 +303,7 @@ func FormatOverview(o *store.Overview) string {
 // FileInput is the input of get_file_summary.
 type FileInput struct {
 	Path string `json:"path" jsonschema:"repository-relative file path, or a unique suffix of one"`
+	Repo string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // FileOutput is the structured result of get_file_summary. Related files
@@ -257,26 +314,42 @@ type FileOutput struct {
 	MoreDependsOn int                `json:"more_depends_on,omitempty"`
 	MoreUsedBy    int                `json:"more_used_by,omitempty"`
 	Candidates    []string           `json:"candidates,omitempty"`
+	Repo          string             `json:"repo,omitempty"` // in a workspace, the file's repository
 }
 
 func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, FileOutput, error) {
-	paths, err := h.st.FindFiles(in.Path)
+	hs, err := h.selected(in.Repo)
 	if err != nil {
 		return nil, FileOutput{}, err
+	}
+	var paths []string
+	var in1 handlers
+	for _, x := range hs {
+		ps, err := x.st.FindFiles(in.Path)
+		if err != nil {
+			return nil, FileOutput{}, err
+		}
+		for _, p := range ps {
+			paths, in1 = append(paths, label(x.repo, p)), x
+		}
 	}
 	switch len(paths) {
 	case 0:
 		return text(fmt.Sprintf("No indexed file matches %q. Use search_code to find where something lives.", in.Path)), FileOutput{}, nil
 	case 1:
 	default:
-		return text(fmt.Sprintf("%q matches %d files; call again with one of:\n- %s", in.Path, len(paths), strings.Join(paths, "\n- "))),
+		hint := ""
+		if h.workspace() {
+			hint = " (and the repo in brackets as repo)"
+		}
+		return text(fmt.Sprintf("%q matches %d files; call again with one of%s:\n- %s", in.Path, len(paths), hint, strings.Join(paths, "\n- "))),
 			FileOutput{Candidates: paths}, nil
 	}
-	fs, err := h.st.FileSummary(paths[0])
+	fs, err := in1.st.FileSummary(strings.TrimPrefix(paths[0], label(in1.repo, "")))
 	if err != nil {
 		return nil, FileOutput{}, err
 	}
-	out := FileOutput{Summary: fs}
+	out := FileOutput{Summary: fs, Repo: in1.repo}
 	if n := len(fs.DependsOn); n > maxFileLinks {
 		fs.DependsOn, out.MoreDependsOn = fs.DependsOn[:maxFileLinks], n-maxFileLinks
 	}
@@ -289,7 +362,7 @@ func (h handlers) fileSummary(ctx context.Context, req *mcp.CallToolRequest, in 
 func formatFile(out FileOutput) string {
 	fs := out.Summary
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s (%s, package %s)\n", fs.Path, fs.Lang, fs.Package)
+	fmt.Fprintf(&b, "%s (%s, package %s)\n", label(out.Repo, fs.Path), fs.Lang, fs.Package)
 	if fs.Doc != "" {
 		fmt.Fprintf(&b, "\n%s\n", fs.Doc)
 	}
@@ -320,8 +393,6 @@ func formatFile(out FileOutput) string {
 	return b.String()
 }
 
-type handlers struct{ st *store.Store }
-
 // SearchInput is the input of search_code.
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"words to search for in symbol names, signatures and doc comments, e.g. 'rate limiter' or 'ParseConfig'"`
@@ -329,6 +400,7 @@ type SearchInput struct {
 	Lang  string `json:"lang,omitempty" jsonschema:"optional filter: go, java or python"`
 	Path  string `json:"path,omitempty" jsonschema:"optional: only files under this directory, e.g. 'internal/store'"`
 	Limit int    `json:"limit,omitempty" jsonschema:"maximum results, default 10, max 50"`
+	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // SymbolSummary is one search hit.
@@ -339,6 +411,7 @@ type SymbolSummary struct {
 	Doc       string `json:"doc,omitempty"`
 	Location  string `json:"location"`
 	Generated bool   `json:"generated,omitempty"`
+	Repo      string `json:"repo,omitempty"` // in a workspace, the symbol's repository
 }
 
 // SearchOutput is the structured result of search_code.
@@ -351,13 +424,33 @@ func (h handlers) searchCode(ctx context.Context, req *mcp.CallToolRequest, in S
 	if limit == 0 {
 		limit = 10
 	}
-	syms, err := h.st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind, Lang: in.Lang, Path: in.Path})
+	hs, err := h.selected(in.Repo)
 	if err != nil {
 		return nil, SearchOutput{}, err
 	}
-	out := SearchOutput{Results: make([]SymbolSummary, 0, len(syms))}
-	for _, sym := range syms {
-		out.Results = append(out.Results, summarize(sym))
+	// Each repository ranks its own matches; across repositories the lists
+	// are interleaved, best of each first, since their scores do not compare.
+	per := make([][]SymbolSummary, len(hs))
+	for i, x := range hs {
+		syms, err := x.st.Search(in.Query, store.SearchOptions{Limit: limit, Kind: in.Kind, Lang: in.Lang, Path: in.Path})
+		if err != nil {
+			return nil, SearchOutput{}, err
+		}
+		for _, sym := range syms {
+			per[i] = append(per[i], x.summarize(sym))
+		}
+	}
+	out := SearchOutput{Results: []SymbolSummary{}}
+	for rank := 0; len(out.Results) < limit; rank++ {
+		added := false
+		for _, rs := range per {
+			if rank < len(rs) && len(out.Results) < limit {
+				out.Results, added = append(out.Results, rs[rank]), true
+			}
+		}
+		if !added {
+			break
+		}
 	}
 	return text(formatSearch(in.Query, out)), out, nil
 }
@@ -365,6 +458,7 @@ func (h handlers) searchCode(ctx context.Context, req *mcp.CallToolRequest, in S
 // SymbolInput is the input of get_symbol.
 type SymbolInput struct {
 	Name string `json:"name" jsonschema:"qualified name like 'internal/store.Store.Search', or a short name like 'Search'"`
+	Repo string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // SymbolDetail is a symbol with its direct neighbours in the call graph.
@@ -385,6 +479,9 @@ type SymbolDetail struct {
 	// Tests that exercise the symbol, nearest first.
 	Tests     []store.TestRef `json:"tests,omitempty"`
 	MoreTests int             `json:"more_tests,omitempty"`
+	// Repo is, in a workspace, the repository of the symbol and of
+	// everything listed with it.
+	Repo string `json:"repo,omitempty"`
 }
 
 var typeKinds = map[string]bool{"struct": true, "interface": true, "type": true, "class": true, "enum": true, "record": true}
@@ -420,8 +517,9 @@ type SymbolOutput struct {
 	Total      int             `json:"total,omitempty"`
 }
 
-func summarize(sym store.Symbol) SymbolSummary {
+func (h handlers) summarize(sym store.Symbol) SymbolSummary {
 	return SymbolSummary{
+		Repo:      h.repo,
 		Qualified: sym.Qualified,
 		Kind:      sym.Kind,
 		Signature: sym.Signature,
@@ -442,24 +540,25 @@ func truncateLines(s string, n int) (string, int) {
 
 func (h handlers) getSymbol(ctx context.Context, req *mcp.CallToolRequest, in SymbolInput) (*mcp.CallToolResult, SymbolOutput, error) {
 	name := strings.TrimSpace(in.Name)
-	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	fs, err := h.lookup(name, in.Repo)
 	if err != nil {
 		return nil, SymbolOutput{}, err
 	}
 	out := SymbolOutput{Matches: []SymbolDetail{}}
+	if len(fs) == 0 {
+		return text(formatSymbols(in.Name, out.Matches)), out, nil
+	}
 	// Decide on the total, not on the rows fetched: with more matches than
 	// the limit, the fetched rows alone could look unambiguous.
-	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
+	if ambiguous(fs) {
 		// Ambiguous: list the candidates rather than sending the source of
 		// every one. The agent picks one and asks again.
-		out.Total = total
-		for _, s := range syms {
-			out.Candidates = append(out.Candidates, summarize(s))
-		}
+		out.Candidates, out.Total = candidates(fs)
 		return text(formatCandidates(name, out)), out, nil
 	}
-	for _, s := range syms {
-		d := SymbolDetail{Symbol: s, Callers: []store.Ref{}, Callees: []store.Ref{}}
+	h = fs[0].h
+	for _, s := range fs[0].syms {
+		d := SymbolDetail{Symbol: s, Repo: h.repo, Callers: []store.Ref{}, Callees: []store.Ref{}}
 		d.Body, d.BodyOmittedLines = truncateLines(s.Body, maxBodyLines)
 		callers, err := h.st.Callers(s.ID)
 		if err != nil {
@@ -512,6 +611,7 @@ type GraphInput struct {
 	Direction       string `json:"direction,omitempty" jsonschema:"'callees' (what it depends on, default) or 'callers' (what depends on it)"`
 	Depth           int    `json:"depth,omitempty" jsonschema:"levels to expand, default 2, max 5"`
 	IncludeExternal bool   `json:"include_external,omitempty" jsonschema:"also list calls into packages outside the repository"`
+	Repo            string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // GraphEdge is one edge of the dependency graph, flattened breadth-first.
@@ -533,6 +633,7 @@ type GraphOutput struct {
 	Direction string      `json:"direction,omitempty"`
 	Edges     []GraphEdge `json:"edges"`
 	External  []store.Ref `json:"external_callers,omitempty"`
+	Repo      string      `json:"repo,omitempty"` // in a workspace, the repository of the graph
 }
 
 func flatten(root *store.GraphNode, dir string) []GraphEdge {
@@ -563,15 +664,38 @@ func (h handlers) dependencyGraph(ctx context.Context, req *mcp.CallToolRequest,
 	if depth == 0 {
 		depth = 2
 	}
-	syms, err := h.st.Lookup(name)
+	hs, err := h.selected(in.Repo)
 	if err != nil {
 		return nil, GraphOutput{}, err
 	}
-	if len(syms) == 0 {
-		// Not a symbol in the repo: treat it as an external package or member.
-		ext, err := h.st.ExternalCallers(name, 100)
+	var syms []store.Symbol
+	for _, x := range hs {
+		got, err := x.st.Lookup(name)
 		if err != nil {
 			return nil, GraphOutput{}, err
+		}
+		if len(got) > 0 {
+			if len(syms) > 0 {
+				return h.graphCandidates(name, hs)
+			}
+			syms, h = got, x
+		}
+	}
+	if len(syms) == 0 {
+		// Not a symbol in the repo: treat it as an external package or member.
+		ext := []store.Ref{}
+		for _, x := range hs {
+			got, err := x.st.ExternalCallers(name, 100-len(ext))
+			if err != nil {
+				return nil, GraphOutput{}, err
+			}
+			for _, r := range got {
+				r.Repo = x.repo
+				ext = append(ext, r)
+			}
+			if len(ext) >= 100 {
+				break
+			}
 		}
 		out := GraphOutput{Edges: []GraphEdge{}, External: ext}
 		return text(formatExternal(name, ext)), out, nil
@@ -595,8 +719,24 @@ func (h handlers) dependencyGraph(ctx context.Context, req *mcp.CallToolRequest,
 	if err != nil {
 		return nil, GraphOutput{}, err
 	}
-	out := GraphOutput{Root: root.Qualified, Direction: dir, Edges: flatten(root, dir)}
-	return text(formatGraph(root, dir, depth, n)), out, nil
+	out := GraphOutput{Root: root.Qualified, Direction: dir, Edges: flatten(root, dir), Repo: h.repo}
+	return text(label(h.repo, formatGraph(root, dir, depth, n))), out, nil
+}
+
+// graphCandidates answers a symbol name found in several repositories.
+func (h handlers) graphCandidates(name string, hs []handlers) (*mcp.CallToolResult, GraphOutput, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q matches symbols in several repositories; call again with one of these qualified names and its repo:\n", name)
+	for _, x := range hs {
+		got, err := x.st.Lookup(name)
+		if err != nil {
+			return nil, GraphOutput{}, err
+		}
+		for _, s := range got {
+			fmt.Fprintf(&b, "- %s (%s) at %s:%d\n", label(x.repo, s.Qualified), s.Kind, s.File, s.StartLine)
+		}
+	}
+	return text(b.String()), GraphOutput{Edges: []GraphEdge{}}, nil
 }
 
 func text(s string) *mcp.CallToolResult {
@@ -621,7 +761,7 @@ func formatSearch(query string, out SearchOutput) string {
 		if r.Generated {
 			gen = ", generated code"
 		}
-		fmt.Fprintf(&b, "\n%d. %s (%s%s) at %s\n   %s\n", i+1, r.Qualified, r.Kind, gen, r.Location, firstLine(r.Signature))
+		fmt.Fprintf(&b, "\n%d. %s (%s%s) at %s\n   %s\n", i+1, label(r.Repo, r.Qualified), r.Kind, gen, r.Location, firstLine(r.Signature))
 		if r.Doc != "" {
 			fmt.Fprintf(&b, "   %s\n", r.Doc)
 		}
@@ -660,7 +800,7 @@ func formatSymbols(name string, syms []SymbolDetail) string {
 		if s.Generated {
 			gen = ", generated code"
 		}
-		fmt.Fprintf(&b, "%s (%s%s)\n%s:%d-%d\n", s.Qualified, s.Kind, gen, s.File, s.StartLine, s.EndLine)
+		fmt.Fprintf(&b, "%s (%s%s)\n%s:%d-%d\n", label(s.Repo, s.Qualified), s.Kind, gen, s.File, s.StartLine, s.EndLine)
 		if s.Doc != "" {
 			fmt.Fprintf(&b, "\n%s\n", s.Doc)
 		}
@@ -727,6 +867,7 @@ func formatTests(b *strings.Builder, title string, tests []store.TestRef, more i
 type TestsInput struct {
 	Symbol string `json:"symbol" jsonschema:"qualified or short name of a function, method or type"`
 	Depth  int    `json:"depth,omitempty" jsonschema:"calls to follow up through the repository's code, default 3, max 6"`
+	Repo   string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // TestsOutput is the structured result of find_tests.
@@ -736,6 +877,7 @@ type TestsOutput struct {
 	More       int             `json:"more,omitempty"`
 	Candidates []SymbolSummary `json:"candidates,omitempty"`
 	Total      int             `json:"total,omitempty"`
+	Repo       string          `json:"repo,omitempty"` // in a workspace, the repository of the symbol and its tests
 }
 
 func (h handlers) findTests(ctx context.Context, req *mcp.CallToolRequest, in TestsInput) (*mcp.CallToolResult, TestsOutput, error) {
@@ -745,23 +887,21 @@ func (h handlers) findTests(ctx context.Context, req *mcp.CallToolRequest, in Te
 	if depth == 0 {
 		depth = testCallers
 	}
-	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	fs, err := h.lookup(name, in.Repo)
 	if err != nil {
 		return nil, out, err
 	}
-	if len(syms) == 0 {
+	if len(fs) == 0 {
 		return text(fmt.Sprintf("No symbol named %q. Use search_code to find the name.", name)), out, nil
 	}
-	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
-		out.Total = total
-		for _, s := range syms {
-			out.Candidates = append(out.Candidates, summarize(s))
-		}
-		so := SymbolOutput{Candidates: out.Candidates, Total: total}
+	if ambiguous(fs) {
+		out.Candidates, out.Total = candidates(fs)
+		so := SymbolOutput{Candidates: out.Candidates, Total: out.Total}
 		return text(strings.Replace(formatCandidates(name, so), "call get_symbol again", "call find_tests again", 1)), out, nil
 	}
-	s := syms[0]
-	out.Root = s.Qualified
+	h = fs[0].h
+	s := fs[0].syms[0]
+	out.Root, out.Repo = s.Qualified, h.repo
 	tests, n, err := h.st.TestsFor(s.ID, depth, testHelpers, maxTests)
 	if err != nil {
 		return nil, out, err
@@ -780,7 +920,7 @@ func (h handlers) findTests(ctx context.Context, req *mcp.CallToolRequest, in Te
 			s.Qualified, depth)), out, nil
 	}
 	var b strings.Builder
-	formatTests(&b, fmt.Sprintf("%d test(s) exercise %s", n, s.Qualified), tests, out.More, "only the nearest are listed")
+	formatTests(&b, fmt.Sprintf("%d test(s) exercise %s", n, label(h.repo, s.Qualified)), tests, out.More, "only the nearest are listed")
 	return text(strings.TrimPrefix(b.String(), "\n")), out, nil
 }
 
@@ -790,6 +930,7 @@ type ImplInput struct {
 	Direction string `json:"direction,omitempty" jsonschema:"'down' (what implements, extends or overrides it; default) or 'up' (what it implements, extends or overrides)"`
 	Depth     int    `json:"depth,omitempty" jsonschema:"levels to follow, default 5, max 10"`
 	Path      string `json:"path,omitempty" jsonschema:"optional: only results in files under this directory, e.g. 'net/http'"`
+	Repo      string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
 }
 
 // ImplOutput is the structured result of get_implementations.
@@ -801,6 +942,7 @@ type ImplOutput struct {
 	More       int              `json:"more,omitempty"` // results left out by the limit
 	Candidates []SymbolSummary  `json:"candidates,omitempty"`
 	Total      int              `json:"total,omitempty"`
+	Repo       string           `json:"repo,omitempty"` // in a workspace, the repository of the symbol and the results
 }
 
 // limitLinks applies the optional path filter and the result limit.
@@ -831,18 +973,29 @@ func (h handlers) implementations(ctx context.Context, req *mcp.CallToolRequest,
 	if depth == 0 {
 		depth = 5
 	}
-	syms, total, err := h.st.LookupAll(name, maxCandidates)
+	fs, err := h.lookup(name, in.Repo)
 	if err != nil {
 		return nil, out, err
 	}
-	if len(syms) == 0 {
+	if len(fs) == 0 {
 		if up {
 			return text(fmt.Sprintf("No symbol named %q. Use search_code to find the name.", name)), out, nil
 		}
 		// Not in the repository: list the repository types implementing it.
-		ext, err := h.st.ExternalSubtypes(name)
+		hs, err := h.selected(in.Repo)
 		if err != nil {
 			return nil, out, err
+		}
+		ext := []store.TypeLink{}
+		for _, x := range hs {
+			got, err := x.st.ExternalSubtypes(name)
+			if err != nil {
+				return nil, out, err
+			}
+			for _, l := range got {
+				l.Repo = x.repo
+				ext = append(ext, l)
+			}
 		}
 		out.Root = name
 		out.Results, out.More = limitLinks(ext, in.Path)
@@ -853,21 +1006,19 @@ func (h handlers) implementations(ctx context.Context, req *mcp.CallToolRequest,
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d repository type(s) extend or implement %s (outside the repository):\n", len(ext)+out.More, name)
 		for _, l := range ext {
-			fmt.Fprintf(&b, "- %s (%s) at %s\n", l.Qualified, l.How, l.Location)
+			fmt.Fprintf(&b, "- %s (%s) at %s\n", label(l.Repo, l.Qualified), l.How, l.Location)
 		}
 		moreNote(&b, out.More)
 		return text(b.String()), out, nil
 	}
-	if total > len(syms) || (len(syms) > 1 && !store.SameName(syms)) {
-		out.Total = total
-		for _, s := range syms {
-			out.Candidates = append(out.Candidates, summarize(s))
-		}
-		so := SymbolOutput{Candidates: out.Candidates, Total: total}
+	if ambiguous(fs) {
+		out.Candidates, out.Total = candidates(fs)
+		so := SymbolOutput{Candidates: out.Candidates, Total: out.Total}
 		return text(strings.Replace(formatCandidates(name, so), "call get_symbol again", "call get_implementations again", 1)), out, nil
 	}
-	s := syms[0]
-	out.Root, out.Kind = s.Qualified, s.Kind
+	h = fs[0].h
+	s := fs[0].syms[0]
+	out.Root, out.Kind, out.Repo = s.Qualified, s.Kind, h.repo
 	links, ok, err := h.hierarchy(s, up, depth)
 	if err != nil {
 		return nil, out, err
@@ -878,9 +1029,9 @@ func (h handlers) implementations(ctx context.Context, req *mcp.CallToolRequest,
 	out.Results, out.More = limitLinks(links, in.Path)
 	links = out.Results
 	var b strings.Builder
-	title := fmt.Sprintf("What %s (%s) is extended, implemented or overridden by", s.Qualified, s.Kind)
+	title := fmt.Sprintf("What %s (%s) is extended, implemented or overridden by", label(h.repo, s.Qualified), s.Kind)
 	if up {
-		title = fmt.Sprintf("What %s (%s) extends, implements or overrides", s.Qualified, s.Kind)
+		title = fmt.Sprintf("What %s (%s) extends, implements or overrides", label(h.repo, s.Qualified), s.Kind)
 	}
 	if len(links) == 0 {
 		fmt.Fprintf(&b, "%s: nothing found in the index.\n", title)
@@ -902,9 +1053,16 @@ func moreNote(b *strings.Builder, more int) {
 
 func formatCandidates(name string, out SymbolOutput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%q matches %d symbols; call get_symbol again with one of these qualified names:\n", name, out.Total)
+	how := "one of these qualified names"
 	for _, c := range out.Candidates {
-		fmt.Fprintf(&b, "- %s (%s) at %s\n    %s\n", c.Qualified, c.Kind, c.Location, firstLine(c.Signature))
+		if c.Repo != "" {
+			how += " and its repo (in brackets)"
+			break
+		}
+	}
+	fmt.Fprintf(&b, "%q matches %d symbols; call get_symbol again with %s:\n", name, out.Total, how)
+	for _, c := range out.Candidates {
+		fmt.Fprintf(&b, "- %s (%s) at %s\n    %s\n", label(c.Repo, c.Qualified), c.Kind, c.Location, firstLine(c.Signature))
 	}
 	if more := out.Total - len(out.Candidates); more > 0 {
 		fmt.Fprintf(&b, "- ... and %d more; use search_code with kind or path filters to narrow it down\n", more)
@@ -951,7 +1109,125 @@ func formatExternal(name string, refs []store.Ref) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d call site(s) into %s:\n", len(refs), name)
 	for _, r := range refs {
-		fmt.Fprintf(&b, "- %s %s at %s:%d\n", r.Qualified, r.Confidence, r.CallFile, r.CallLine)
+		fmt.Fprintf(&b, "- %s %s at %s:%d\n", label(r.Repo, r.Qualified), r.Confidence, r.CallFile, r.CallLine)
 	}
 	return b.String()
+}
+
+// LinksInput is the input of get_service_links.
+type LinksInput struct {
+	Query string `json:"query,omitempty" jsonschema:"optional: part of a route, topic, workflow, activity or function name"`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional: http, grpc, kafka, temporal-workflow or temporal-activity"`
+	Repo  string `json:"repo,omitempty" jsonschema:"optional, in a workspace of several repositories: the one to look in"`
+}
+
+// LinksOutput is the structured result of get_service_links.
+type LinksOutput struct {
+	Links     []links.Link `json:"links"`
+	Unmatched []links.End  `json:"unmatched_uses"`
+	More      int          `json:"more,omitempty"` // links left out by the limit
+}
+
+func (h handlers) serviceLinks(ctx context.Context, req *mcp.CallToolRequest, in LinksInput) (*mcp.CallToolResult, LinksOutput, error) {
+	out := LinksOutput{Links: []links.Link{}, Unmatched: []links.End{}}
+	// Links are matched across every repository, so a call from one service
+	// reaches the route of another; the repo argument then keeps the links
+	// with an end in that repository.
+	var ends []links.End
+	for _, x := range h.selectedAll() {
+		rows, err := x.st.Contracts(strings.TrimSpace(in.Kind))
+		if err != nil {
+			return nil, out, err
+		}
+		for _, r := range rows {
+			ends = append(ends, links.End{Repo: x.repo, ContractRow: r})
+		}
+	}
+	if _, err := h.selected(in.Repo); err != nil {
+		return nil, out, err
+	}
+	res := links.Match(ends)
+	q := strings.ToLower(strings.TrimSpace(in.Query))
+	repo := strings.TrimSpace(in.Repo)
+	if !h.workspace() {
+		repo = ""
+	}
+	inRepo := func(l links.Link) bool { return repo == "" || l.From.Repo == repo || l.To.Repo == repo }
+	hit := func(e links.End) bool {
+		return q == "" || strings.Contains(strings.ToLower(e.Name), q) || strings.Contains(strings.ToLower(e.Symbol), q) ||
+			strings.Contains(strings.ToLower(e.Detail), q)
+	}
+	for _, l := range res.Links {
+		if inRepo(l) && (hit(l.From) || hit(l.To)) {
+			out.Links = append(out.Links, l)
+		}
+	}
+	for _, u := range res.Unmatched {
+		if (repo == "" || u.Repo == repo) && hit(u) {
+			out.Unmatched = append(out.Unmatched, u)
+		}
+	}
+	if len(out.Links) > maxLinks {
+		out.More, out.Links = len(out.Links)-maxLinks, out.Links[:maxLinks]
+	}
+	if len(out.Unmatched) > maxLinks {
+		out.Unmatched = out.Unmatched[:maxLinks]
+	}
+	return text(formatServiceLinks(out)), out, nil
+}
+
+func endName(e links.End) string {
+	n := e.Name
+	if e.Method != "" {
+		n = e.Method + " " + n
+	}
+	return n
+}
+
+// queueNote names a Temporal contract's task queue.
+func queueNote(e links.End) string {
+	if e.Detail == "" || e.Kind == store.ContractHTTP {
+		return ""
+	}
+	return ", task queue " + e.Detail
+}
+
+func endWhere(e links.End) string {
+	repo := ""
+	if e.Repo != "" {
+		repo = "[" + e.Repo + "] "
+	}
+	return fmt.Sprintf("%s%s at %s:%d", repo, e.Symbol, e.File, e.Line)
+}
+
+// formatServiceLinks renders links grouped by what provides them.
+func formatServiceLinks(out LinksOutput) string {
+	var b strings.Builder
+	if len(out.Links) == 0 && len(out.Unmatched) == 0 {
+		return "No service links found. Routes, Kafka topics, gRPC methods and Temporal workflows are linked to " +
+			"the code using them when both sides are indexed."
+	}
+	last := ""
+	for _, l := range out.Links {
+		key := l.To.Kind + "|" + endName(l.To) + "|" + l.To.Symbol
+		if key != last {
+			fmt.Fprintf(&b, "\n%s (%s%s), provided by %s\n", endName(l.To), l.To.Kind, queueNote(l.To), endWhere(l.To))
+			last = key
+		}
+		how := queueNote(l.From)
+		if l.Confidence != "exact" {
+			how = fmt.Sprintf(", matched as a pattern: %s", l.From.Detail)
+		}
+		fmt.Fprintf(&b, "  <- %s (%s%s)\n", endWhere(l.From), endName(l.From), how)
+	}
+	if out.More > 0 {
+		fmt.Fprintf(&b, "... and %d more links; pass query or kind to narrow them down\n", out.More)
+	}
+	if len(out.Unmatched) > 0 {
+		fmt.Fprintf(&b, "\nUsed, but not provided by anything indexed:\n")
+		for _, u := range out.Unmatched {
+			fmt.Fprintf(&b, "- %s (%s) by %s\n", endName(u), u.Kind, endWhere(u))
+		}
+	}
+	return strings.TrimPrefix(b.String(), "\n")
 }

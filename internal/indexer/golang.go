@@ -115,31 +115,9 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		})
 	}
 
-	// typeRef turns a field type expression into a resolvable reference.
-	typeRef := func(e ast.Expr) string {
-		for {
-			switch t := e.(type) {
-			case *ast.StarExpr:
-				e = t.X
-			case *ast.IndexExpr:
-				e = t.X
-			case *ast.IndexListExpr:
-				e = t.X
-			case *ast.Ident:
-				return qual + "." + t.Name
-			case *ast.SelectorExpr:
-				if x, ok := t.X.(*ast.Ident); ok {
-					if p, ok := aliases[x.Name]; ok {
-						return "@" + p + "." + t.Sel.Name
-					}
-				}
-				return ""
-			default:
-				return ""
-			}
-		}
-	}
+	typeRef := func(e ast.Expr) string { return goTypeRef(e, qual, aliases) }
 
+	consts := goStringConsts(f)
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
@@ -153,6 +131,11 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 				enc := &goEncoder{fset: fset, src: src, aliases: aliases,
 					locals: goLocals(d), visiting: map[goLocalKey]bool{}, typeParams: goTypeParams(fset, d)}
 				res.Calls = append(res.Calls, goCalls(fset, d.Body, qualified, qual, aliases, enc)...)
+				res.Contracts = append(res.Contracts, goHTTPClientCalls(fset, d.Body, qualified, aliases, consts, enc)...)
+				res.Contracts = append(res.Contracts, goTemporalCalls(fset, d.Body, qualified, qual, aliases, consts, enc)...)
+			}
+			if c, ok := goWorkflowDef(fset, d, qualified, aliases); ok {
+				res.Contracts = append(res.Contracts, c)
 			}
 
 		case *ast.GenDecl:
@@ -238,6 +221,34 @@ func ParseGo(relPath string, src []byte) (*FileResult, error) {
 		res.Endpoints[i].File = relPath
 	}
 	return res, nil
+}
+
+// goTypeRef turns a type expression into a resolvable reference: "QUAL.T"
+// for a type of this package, "@PATH.T" for one of an imported package.
+func goTypeRef(e ast.Expr, qual string, aliases map[string]string) string {
+	for {
+		switch t := e.(type) {
+		case *ast.StarExpr:
+			e = t.X
+		case *ast.ParenExpr:
+			e = t.X
+		case *ast.IndexExpr:
+			e = t.X
+		case *ast.IndexListExpr:
+			e = t.X
+		case *ast.Ident:
+			return qual + "." + t.Name
+		case *ast.SelectorExpr:
+			if x, ok := t.X.(*ast.Ident); ok {
+				if p, ok := aliases[x.Name]; ok {
+					return "@" + p + "." + t.Sel.Name
+				}
+			}
+			return ""
+		default:
+			return ""
+		}
+	}
 }
 
 // goPredeclared are the predeclared type names, which typeRef would

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,4 +193,49 @@ func TestServeCatchesUpAndWatches(t *testing.T) {
 	// And edits after start are picked up by the watcher.
 	writeFile(t, filepath.Join(repo, "d.go"), "package m\n\nfunc D() {}\n")
 	waitFor(t, "the watcher", func() bool { return indexed(t, db, "m.D") })
+}
+
+// TestLinksWorkspace links a client call in one repository to the route of
+// another, through a workspace file with paths relative to it.
+func TestLinksWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "orders", "go.mod"), "module example.com/orders\n\ngo 1.24\n")
+	writeFile(t, filepath.Join(dir, "orders", "main.go"), `package main
+
+import "net/http"
+
+func main() { http.HandleFunc("POST /orders", createOrder) }
+
+func createOrder(w http.ResponseWriter, r *http.Request) {}
+`)
+	writeFile(t, filepath.Join(dir, "web", "go.mod"), "module example.com/web\n\ngo 1.24\n")
+	writeFile(t, filepath.Join(dir, "web", "main.go"), `package main
+
+import "net/http"
+
+func main() { http.Post("http://orders/orders", "application/json", nil) }
+`)
+	for _, r := range []string{"orders", "web"} {
+		if err := runIndex([]string{filepath.Join(dir, r)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(dir, "ws", "workspace.json"), `{"repos": [{"path": "../orders"}, {"name": "frontend", "path": "../web"}]}`)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	err = runLinks([]string{"--workspace", filepath.Join(dir, "ws", "workspace.json")})
+	os.Stdout = stdout
+	w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(r)
+	if want := "[orders] main.createOrder  <-  [frontend] main.main (exact)"; !strings.Contains(string(out), want) {
+		t.Errorf("links --workspace: missing %q in:\n%s", want, out)
+	}
 }

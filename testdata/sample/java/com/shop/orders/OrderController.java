@@ -30,3 +30,20 @@ public class OrderController {
     /** Request body for placing an order. */
     public record PlaceRequest(String customerId, List<String> items) {}
 }
+
+/** The checkout service, called over HTTP. */
+@FeignClient(name = "checkout", path = "/api/v1")
+interface CheckoutClient {
+    @PostMapping("/checkout")
+    String checkout(String cart);
+}
+
+/** Looks orders up in the checkout service. */
+class CheckoutOrders {
+    static final String ORDERS = "/api/v1/orders/";
+    private final org.springframework.web.client.RestTemplate rest = new org.springframework.web.client.RestTemplate();
+
+    String find(String id) {
+        return rest.getForObject("http://checkout" + ORDERS + id, String.class);
+    }
+}

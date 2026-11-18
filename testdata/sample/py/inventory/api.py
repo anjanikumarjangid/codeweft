@@ -24,3 +24,13 @@ if __name__ == "__main__":
     app = FastAPI()
     app.include_router(router)
     uvicorn.run(app)
+
+
+# The orders service, called over HTTP.
+import requests  # noqa: E402
+
+ORDERS_URL = "http://orders:8080"
+
+
+def place_order(customer_id: str):
+    return requests.post(f"{ORDERS_URL}/orders", json={"customerId": customer_id})

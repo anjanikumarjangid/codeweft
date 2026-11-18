@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "10"
+const SchemaVersion = "12"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -132,6 +132,20 @@ CREATE TABLE IF NOT EXISTS test_edges (
 );
 CREATE INDEX IF NOT EXISTS test_edges_to ON test_edges(to_id);
 CREATE INDEX IF NOT EXISTS test_edges_to_test ON test_edges(to_test);
+CREATE TABLE IF NOT EXISTS contracts (
+	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	kind    TEXT NOT NULL,
+	role    TEXT NOT NULL,
+	name    TEXT NOT NULL,
+	method  TEXT NOT NULL,
+	symbol  TEXT NOT NULL,
+	line    INTEGER NOT NULL,
+	detail  TEXT NOT NULL,
+	exact   INTEGER NOT NULL,
+	target  TEXT NOT NULL DEFAULT '' -- a use's reference to the code it names
+);
+CREATE INDEX IF NOT EXISTS contracts_file ON contracts(file_id);
+CREATE INDEX IF NOT EXISTS contracts_name ON contracts(kind, name);
 CREATE TABLE IF NOT EXISTS edges (
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
@@ -155,7 +169,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 `
 
-var allTables = []string{"symbols_fts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
+var allTables = []string{"symbols_fts", "contracts", "vars", "test_edges", "test_funcs", "type_edges", "supertypes", "edges", "endpoints", "raw_calls", "fields", "imports", "symbols", "files", "meta"}
 
 // Symbol is one indexed declaration.
 type Symbol struct {

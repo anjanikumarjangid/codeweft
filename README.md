@@ -21,6 +21,7 @@ When an agent like Claude Code needs to know *where rate limiting is implemented
 | `find_tests` | Which tests exercise a function, method or type: tests that call it, call something that calls it, or reach it through helpers in test files, nearest first, with the call each one goes through. `get_symbol` lists the nearest few inline. |
 | `get_file_summary` | A file at a glance: package doc, imports, every declaration with its signature, and which files it calls into or is called from. |
 | `get_architecture_overview` | The repository at a glance: languages, packages and what they are for, entry points, HTTP frameworks, package-to-package dependencies, most-called functions and most-used external libraries. |
+| `get_service_links` | How services call each other: each HTTP route with the client calls that reach it, and each Temporal workflow and activity with the code starting it and its task queue, across languages and across repositories in a [workspace](#several-repositories). Also lists calls whose provider is not indexed. |
 | `list_apis` | Every HTTP endpoint with method, route and handler: Go `net/http`, gin, echo, chi and fiber; Spring and JAX-RS; Flask and FastAPI, including router, group and class-level prefixes. |
 
 ## Quick start
@@ -58,6 +59,20 @@ No index needs to exist beforehand. `serve` finds the repository root (the neare
 
 For a client that does not start servers inside the project, pass `--root /abs/path/to/repo` (or `--db FILE` for an index stored elsewhere). Then ask something like: *"Using codewiki, where is the retry logic for outgoing webhooks?"* or *"What are the HTTP endpoints of this service and which ones write to the database?"*
 
+### Several repositories
+
+Services that call each other usually live in separate repositories. A workspace file lists them, with paths relative to the file:
+
+```json
+{"repos": [{"name": "orders", "path": "../orders-service"}, {"path": "../web"}]}
+```
+
+```bash
+claude mcp add codewiki -- /abs/path/to/codewiki/bin/codewiki serve --workspace /abs/path/to/workspace.json
+```
+
+Each repository keeps its own index at `PATH/.codewiki/index.db`, built and watched as with one repository. Every tool then answers across all of them: results are labelled with their repository (`[orders] main.getOrder`), a name found in two repositories lists both, and every tool takes an optional `repo` argument to look in one. `get_service_links` links a client call in one repository to the route serving it in another. A repository's name defaults to its directory name. `codewiki links --workspace FILE` prints the same links from the terminal.
+
 ### CLI
 
 ```
@@ -69,10 +84,12 @@ codewiki deps   [--db FILE] [--callers] [--depth N] [--external] NAME
 codewiki impl   [--db FILE] [--up] [--depth N] [--json] NAME
 codewiki tests  [--db FILE] [--depth N] [--json] NAME
 codewiki file   [--db FILE] [--json] PATH
+codewiki links  [--db FILE | --workspace FILE] [--kind KIND] [--json] [QUERY]
 codewiki apis   [--db FILE] [--method M] [--json] [ROUTE]
 codewiki overview [--db FILE] [--json]
 codewiki watch  [--db FILE] [--interval 2s] [PATH]
 codewiki serve  [--db FILE] [--root PATH] [--watch=false]
+codewiki serve  --workspace FILE [--watch=false]
 ```
 
 `reindex`, `watch` and `serve` reuse the `--include-tests`, `--skip-generated`, `--platform` and `--exclude` settings the index was built with; flags passed to `reindex` override them.
@@ -153,6 +170,22 @@ Parsing tests costs index time; the [Benchmarks](#benchmarks) include it. `find_
 `codewiki watch` (and `serve`, unless started with `--watch=false`) first runs one incremental re-index to catch up on edits made while nothing was watching, then polls file sizes and modification times every couple of seconds and runs the same incremental re-index when something changes. The baseline for polling is taken before the catch-up run, so a file saved during it is not missed. Polling needs no platform-specific file events and stays cheap on large trees.
 
 Search input is always tokenised and quoted before it reaches FTS5, so user text can never inject query syntax. A query first requires every word to match, then falls back to matching any word.
+
+### Service links
+
+Routes come from the same detection as `list_apis`. Client calls are found in Go `net/http` (`http.Get`, `Post`, `NewRequest`, `NewRequestWithContext` and the methods of an `http.Client`), Java Spring `RestTemplate`, `WebClient` and `RestClient`, and `@FeignClient` interfaces, and Python `requests` and `httpx` (module functions, `Session` and `Client`). The URL is worked out as far as the source shows it: literals, concatenation, string constants, `fmt.Sprintf`, `String.format`, f-strings, `%` and `.format`, `path.Join` and `url.JoinPath`; any part the index cannot see (a base URL from configuration, an id from a variable) becomes a wildcard. Scheme and host are dropped, since services usually find each other through configuration, and path parameters (`{id}`, `:id`, `<int:id>`) become wildcards too. A call then links to the routes whose path matches segment by segment with a compatible method, keeping the most specific ones. A link is marked `exact` when the whole URL was written out, and `pattern` otherwise.
+
+Temporal workflows and activities are found for all three SDKs. Providers: Go functions taking a `workflow.Context` and worker registrations (`RegisterWorkflow`, `RegisterActivity` of a function or of a struct, whose exported methods are then activities, and `RegisterOptions.Name`); Java `@WorkflowInterface` / `@WorkflowMethod` and `@ActivityInterface` / `@ActivityMethod` (with `namePrefix`), reported at the implementing class, and classes registered with a worker; Python `@workflow.defn` and `@activity.defn` (with `name=`). Uses: `ExecuteWorkflow`, `SignalWithStartWorkflow`, `ExecuteChildWorkflow`, `ExecuteActivity` and `ExecuteLocalActivity` in Go; workflow stubs and calls on activity stubs, typed or untyped, in Java; `execute_workflow`, `start_workflow`, `execute_child_workflow` and the `execute_activity` family in Python. Each side is named the way Temporal names it (a Java activity method `chargeCard` is `ChargeCard`), so a Java workflow can start a Go one by name and a Go workflow can run a Python activity. The task queue is read from the worker (`worker.New`, `newWorker`) and from the start options; a start and a worker on different queues are not linked. When the call passes the code itself (a workflow function, a stub of an interface, `OrderWorkflow.run`), it links to that code rather than to everything sharing its name.
+
+On Temporal's own sample repositories ([Go](https://github.com/temporalio/samples-go), [Java](https://github.com/temporalio/samples-java), [Python](https://github.com/temporalio/samples-python)), dozens of separate sample apps with the same workflow names in one repository:
+
+| Repository | Workflow and activity starts | Linked | To exactly one provider | Not linked |
+|---|---|---|---|---|
+| samples-go | 240 | 231 (96.2%) | 222 | 9: names built at run time (dynamic workflows, a name in a variable) |
+| samples-java | 275 | 270 (98.2%) | 249 | 5: dynamic workflows, and stubs of a signal listener interface |
+| samples-python | 300 | 297 (99.0%) | 290 | 3: a workflow or activity held in a variable |
+
+A start linked to several providers is reached by several: an activity interface with several implementations, two versions of a workflow, or one function registered on several task queues.
 
 ### Output size
 
@@ -246,7 +279,9 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.4:** `get_file_summary`, incremental re-index using file hashes
 - [x] **v0.5:** Java and Python via tree-sitter
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
-- [ ] Later: multi-repo indexes, TypeScript and Rust, optional semantic search with local embeddings
+- [x] **v0.7 (in progress):** workspaces of several repositories, `get_service_links` for HTTP routes and Temporal workflows and activities
+- [ ] Next: gRPC and Kafka links between services
+- [ ] Later: TypeScript and Rust, optional semantic search with local embeddings
 
 ## License
 

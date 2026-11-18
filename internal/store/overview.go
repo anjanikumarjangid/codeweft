@@ -17,6 +17,7 @@ type EndpointFilter struct {
 type EndpointInfo struct {
 	Endpoint
 	HandlerLocation string `json:"handler_location,omitempty"`
+	Repo            string `json:"repo,omitempty"` // in a workspace, the repository serving the route
 }
 
 // ListEndpoints returns HTTP routes found in the code, ordered by path.
@@ -55,22 +56,28 @@ func (s *Store) ListEndpoints(f EndpointFilter) ([]EndpointInfo, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Handlers like "h.createUser" name a method on a local variable: fill in
-	// the location when exactly one method has that name.
 	for i := range out {
-		if out[i].HandlerLocation != "" || !strings.Contains(out[i].Handler, ".") {
-			continue
-		}
-		name := out[i].Handler[strings.LastIndex(out[i].Handler, ".")+1:]
-		var n int
-		var loc, q string
-		_ = s.db.QueryRow(`SELECT COUNT(DISTINCT s.qualified), MIN(f.path || ':' || s.start_line), MIN(s.qualified)
-			FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.name = ? AND s.kind IN ('method', 'func')`, name).Scan(&n, &loc, &q)
-		if n == 1 {
-			out[i].Handler, out[i].HandlerLocation = q, loc
+		if out[i].HandlerLocation == "" {
+			if q, loc, ok := s.handlerByName(out[i].Handler); ok {
+				out[i].Handler, out[i].HandlerLocation = q, loc
+			}
 		}
 	}
 	return out, nil
+}
+
+// handlerByName resolves a route handler written as a method on a local
+// variable ("h.createUser"): the only method or function with that name,
+// with its location.
+func (s *Store) handlerByName(handler string) (q, loc string, ok bool) {
+	if !strings.Contains(handler, ".") {
+		return "", "", false
+	}
+	name := handler[strings.LastIndex(handler, ".")+1:]
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(DISTINCT s.qualified), MIN(f.path || ':' || s.start_line), MIN(s.qualified)
+		FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.name = ? AND s.kind IN ('method', 'func')`, name).Scan(&n, &loc, &q)
+	return q, loc, n == 1
 }
 
 // Overview is a project-level summary built from the index.

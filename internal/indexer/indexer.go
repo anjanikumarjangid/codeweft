@@ -34,6 +34,7 @@ type FileResult struct {
 	Supertypes []store.Supertype
 	Calls      []store.RawCall
 	Endpoints  []store.Endpoint
+	Contracts  []store.Contract // other than the routes in Endpoints, which are added as contracts too
 }
 
 // language describes how to recognise and parse one language.
@@ -452,6 +453,20 @@ func write(tx *store.Tx, fr *FileResult, isTest bool) error {
 	}
 	for _, e := range fr.Endpoints {
 		if err := tx.AddEndpoint(id, e); err != nil {
+			return err
+		}
+		// A route is an HTTP contract this code provides.
+		c := store.Contract{Kind: store.ContractHTTP, Role: store.RoleProvides, Name: store.NormalizePath(e.Path),
+			Symbol: e.Handler, Line: e.Line, Detail: e.Path, Exact: true}
+		if e.Method != "ANY" {
+			c.Method = e.Method
+		}
+		if err := tx.AddContract(id, c); err != nil {
+			return err
+		}
+	}
+	for _, c := range fr.Contracts {
+		if err := tx.AddContract(id, c); err != nil {
 			return err
 		}
 	}
