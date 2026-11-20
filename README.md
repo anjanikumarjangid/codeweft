@@ -342,53 +342,53 @@ Reproducible with `make bench`: [`scripts/bench`](scripts/bench) clones each rep
 
 Test files are parsed and kept apart (see [Tests](#tests)); Go files are those of linux/amd64. "Files" counts files other than tests; "Call edges" counts calls resolved to the repository's own code.
 
-Machine: linux/amd64, 4 vCPUs (Intel(R) Xeon(R) Processor @ 2.30GHz), 16 GB RAM, go1.24.7. Full index: median of 3 runs, each from scratch (fastest and slowest in brackets).
+Machine: linux/amd64, 4 vCPUs (Intel(R) Xeon(R) Processor @ 2.10GHz), 16 GB RAM, go1.24.7. Full index: median of 3 runs, each from scratch (fastest and slowest in brackets).
 
 | Repository | Files | Lines | Symbols | Call edges | Full index | CPU | Peak memory | Index size | Re-index, no change | Re-index, one file | Server start |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| MCP Go SDK `v1.1.0` | 56 | 14,043 | 939 | 740 | 0.10 s (0.10-0.12) | 0.2 s | 23 MB | 2 MB | 0.04 s | 0.04 s | 12 ms |
-| Go standard library `go1.24.7` | 2,503 | 1,107,573 | 38,642 | 210,683 | 5.40 s (5.29-5.61) | 8.3 s | 362 MB | 118 MB | 2.87 s | 2.85 s | 182 ms |
-| Kubernetes `v1.31.0` | 8,188 | 1,696,593 | 91,865 | 85,601 | 9.34 s (9.30-9.85) | 14.6 s | 659 MB | 230 MB | 4.46 s | 4.48 s | 193 ms |
-| Guava `v33.4.0` | 2,219 | 497,238 | 36,924 | 54,696 | 5.76 s (5.70-5.84) | 12.9 s | 338 MB | 122 MB | 1.64 s | 1.77 s | 92 ms |
-| Spring PetClinic `500158f` | 30 | 1,899 | 118 | 92 | 0.06 s (0.05-0.11) | 0.1 s | 59 MB | 1 MB | 0.01 s | 0.01 s | 8 ms |
-| requests `3c7baaa` | 22 | 6,874 | 306 | 273 | 0.18 s (0.17-0.19) | 0.3 s | 59 MB | 1 MB | 0.02 s | 0.03 s | 9 ms |
-| Django `5.1.4` | 883 | 156,354 | 10,591 | 10,960 | 4.82 s (4.72-4.97) | 14.2 s | 232 MB | 46 MB | 0.68 s | 0.79 s | 36 ms |
-| microservices-demo `v0.10.2` | 47 | 22,123 | 2,342 | 451 | 0.13 s (0.13-0.14) | 0.2 s | 59 MB | 3 MB | 0.04 s | 0.04 s | 11 ms |
+| MCP Go SDK `v1.1.0` | 56 | 14,043 | 939 | 740 | 0.16 s (0.13-0.17) | 0.2 s | 27 MB | 2 MB | 0.01 s | 0.03 s | 17 ms |
+| Go standard library `go1.24.7` | 2,503 | 1,107,573 | 38,642 | 210,683 | 7.15 s (6.85-7.17) | 11.1 s | 354 MB | 118 MB | 0.17 s | 0.47 s | 235 ms |
+| Kubernetes `v1.31.0` | 8,188 | 1,696,593 | 91,865 | 85,601 | 13.08 s (13.04-19.91) | 20.2 s | 586 MB | 231 MB | 0.42 s | 1.33 s | 259 ms |
+| Guava `v33.4.0` | 2,221 | 497,267 | 36,928 | 54,696 | 8.06 s (7.83-9.11) | 18.0 s | 365 MB | 122 MB | 0.24 s | 0.53 s | 134 ms |
+| Spring PetClinic `500158f` | 33 | 1,942 | 118 | 92 | 0.07 s (0.07-0.09) | 0.1 s | 49 MB | 1 MB | 0.01 s | 0.01 s | 14 ms |
+| requests `3c7baaa` | 22 | 6,874 | 306 | 273 | 0.22 s (0.22-0.26) | 0.4 s | 49 MB | 1 MB | 0.01 s | 0.03 s | 13 ms |
+| Django `5.1.4` | 907 | 159,320 | 10,606 | 10,972 | 6.88 s (6.33-8.23) | 20.0 s | 225 MB | 46 MB | 0.17 s | 0.27 s | 36 ms |
+| microservices-demo `v0.10.2` | 53 | 22,678 | 2,366 | 462 | 0.19 s (0.17-0.26) | 0.3 s | 49 MB | 3 MB | 0.01 s | 0.03 s | 15 ms |
 
 Tool latency through the MCP protocol, p50 / p95 in ms:
 
 | Tool | MCP Go SDK | Go standard library | Kubernetes | Guava | Spring PetClinic | requests | Django | microservices-demo |
 |---|---|---|---|---|---|---|---|---|
-| `search_code` | 0.5 / 0.8 | 2.2 / 9.4 | 3.1 / 17 | 1.6 / 4.6 | 0.4 / 0.6 | 0.5 / 0.9 | 0.8 / 1.6 | 0.5 / 1.0 |
-| `get_symbol` | 1.2 / 1.9 | 20 / 132 | 7.6 / 37 | 34 / 148 | 1.0 / 2.3 | 1.0 / 2.1 | 5.6 / 9.8 | 1.0 / 1.1 |
-| `find_tests` | 0.7 / 1.2 | 7.8 / 110 | 1.9 / 4.0 | 2.7 / 10 | 0.5 / 1.3 | 0.5 / 1.3 | 1.6 / 3.2 | 0.4 / 0.6 |
-| `get_dependency_graph` | 0.5 / 1.1 | 1.4 / 18 | 1.0 / 9.6 | 1.2 / 13 | 0.2 / 0.8 | 0.3 / 0.7 | 0.6 / 5.9 | 0.3 / 1.4 |
-| `get_implementations` | 0.7 / 1.0 | 8.1 / 11 | 18 / 26 | 7.7 / 11 | 0.4 / 0.5 | 0.3 / 0.6 | 2.5 / 4.0 | 0.4 / 0.6 |
-| `get_file_summary` | 1.0 / 3.3 | 6.1 / 19 | 9.0 / 16 | 5.2 / 14 | 0.4 / 0.8 | 0.5 / 2.8 | 2.6 / 5.5 | 0.7 / 5.0 |
-| `get_architecture_overview` | 4.2 / 4.3 | 170 / 174 | 178 / 188 | 82 / 82 | 1.0 / 1.6 | 1.1 / 1.4 | 20 / 22 | 3.0 / 3.9 |
-| `list_apis` | 0.6 / 0.7 | 0.9 / 1.0 | 3.0 / 4.1 | 0.3 / 0.6 | 0.7 / 0.8 | 0.2 / 0.5 | 0.2 / 0.3 | 0.2 / 0.3 |
-| `get_service_links` | 0.6 / 0.7 | 1.4 / 1.5 | 246 / 258 | 0.8 / 0.9 | 0.5 / 0.7 | 0.1 / 0.2 | 0.4 / 0.5 | 5.3 / 5.9 |
+| `search_code` | 0.7 / 1.2 | 2.2 / 11 | 4.4 / 24 | 1.8 / 5.2 | 0.7 / 1.2 | 0.6 / 1.4 | 1.4 / 3.0 | 0.9 / 1.9 |
+| `get_symbol` | 1.3 / 2.6 | 20 / 88 | 9.4 / 61 | 39 / 171 | 1.5 / 2.9 | 1.1 / 2.6 | 8.2 / 14 | 1.2 / 1.9 |
+| `find_tests` | 0.7 / 1.8 | 5.8 / 71 | 2.3 / 4.6 | 3.0 / 18 | 0.5 / 1.7 | 0.5 / 1.5 | 2.0 / 4.7 | 0.4 / 0.7 |
+| `get_dependency_graph` | 0.6 / 1.7 | 1.1 / 14 | 0.6 / 5.5 | 1.4 / 12 | 0.5 / 1.2 | 0.4 / 1.0 | 1.1 / 2.7 | 0.5 / 1.5 |
+| `get_implementations` | 0.5 / 1.1 | 8.3 / 11 | 22 / 28 | 12 / 18 | 0.7 / 0.9 | 0.4 / 0.8 | 3.5 / 9.3 | 0.5 / 0.9 |
+| `get_file_summary` | 0.9 / 2.8 | 4.7 / 7.5 | 4.5 / 7.7 | 6.6 / 9.9 | 0.8 / 1.5 | 0.9 / 4.9 | 3.5 / 5.1 | 1.1 / 3.9 |
+| `get_architecture_overview` | 3.3 / 3.9 | 199 / 201 | 247 / 332 | 145 / 145 | 2.0 / 2.7 | 2.1 / 2.2 | 25 / 26 | 5.1 / 5.7 |
+| `list_apis` | 0.4 / 0.5 | 1.0 / 1.4 | 4.2 / 5.0 | 0.4 / 0.4 | 1.4 / 1.4 | 0.3 / 0.3 | 0.2 / 0.3 | 0.3 / 0.4 |
+| `get_service_links` | 0.5 / 0.5 | 1.6 / 1.7 | 12 / 19 | 1.4 / 1.6 | 1.1 / 1.1 | 0.2 / 0.3 | 0.5 / 0.7 | 4.7 / 5.2 |
 
 Response size, p50 / largest in KB (about 250 tokens per KB):
 
 | Tool | MCP Go SDK | Go standard library | Kubernetes | Guava | Spring PetClinic | requests | Django | microservices-demo |
 |---|---|---|---|---|---|---|---|---|
-| `search_code` | 1.4 / 2.3 | 1.3 / 2.1 | 2.0 / 3.5 | 2.0 / 3.4 | 1.2 / 3.0 | 1.4 / 2.9 | 1.4 / 2.5 | 1.4 / 2.2 |
+| `search_code` | 1.4 / 2.3 | 1.3 / 2.1 | 2.0 / 3.5 | 2.0 / 3.4 | 1.2 / 3.0 | 1.4 / 2.9 | 1.4 / 2.5 | 1.3 / 2.1 |
 | `get_symbol` | 1.8 / 4.4 | 2.8 / 9.3 | 4.2 / 6.8 | 6.6 / 23.3 | 1.5 / 7.0 | 2.2 / 8.9 | 3.9 / 9.3 | 1.0 / 3.3 |
 | `find_tests` | 0.9 / 3.4 | 2.9 / 4.8 | 4.5 / 6.7 | 4.8 / 8.0 | 0.3 / 3.7 | 0.6 / 4.0 | 4.0 / 6.0 | 0.2 / 0.6 |
-| `get_dependency_graph` | 0.4 / 2.5 | 1.0 / 33.2 | 0.5 / 44.5 | 1.7 / 59.9 | 0.4 / 3.3 | 0.3 / 1.9 | 0.7 / 24.2 | 0.3 / 4.3 |
+| `get_dependency_graph` | 0.4 / 2.5 | 1.0 / 8.4 | 0.5 / 11.4 | 1.7 / 25.1 | 0.4 / 3.3 | 0.3 / 1.9 | 0.7 / 7.5 | 0.3 / 2.8 |
 | `get_implementations` | 0.3 / 1.7 | 3.8 / 4.9 | 6.1 / 10.5 | 3.4 / 9.6 | 0.5 / 1.2 | 0.2 / 1.7 | 2.4 / 4.9 | 0.3 / 0.4 |
-| `get_file_summary` | 1.9 / 11.8 | 17.9 / 63.0 | 27.0 / 184.0 | 21.0 / 57.2 | 1.1 / 3.1 | 1.5 / 8.9 | 9.9 / 20.5 | 2.5 / 19.2 |
-| `get_architecture_overview` | 5.5 / 5.5 | 6.4 / 6.4 | 7.8 / 7.8 | 9.5 / 9.5 | 2.9 / 2.9 | 1.4 / 1.4 | 5.9 / 5.9 | 4.0 / 4.0 |
-| `list_apis` | 0.7 / 0.7 | 1.9 / 1.9 | 10.0 / 10.0 | 0.0 / 0.0 | 3.5 / 3.5 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
+| `get_file_summary` | 1.9 / 11.0 | 7.1 / 13.6 | 6.9 / 21.6 | 13.8 / 22.3 | 1.1 / 3.1 | 1.5 / 8.9 | 8.8 / 15.3 | 2.5 / 11.5 |
+| `get_architecture_overview` | 5.5 / 5.5 | 6.4 / 6.4 | 7.8 / 7.8 | 9.6 / 9.6 | 2.9 / 2.9 | 1.4 / 1.4 | 6.0 / 6.0 | 4.2 / 4.2 |
+| `list_apis` | 0.7 / 0.7 | 1.9 / 1.9 | 10.1 / 10.1 | 0.0 / 0.0 | 3.5 / 3.5 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
 | `get_service_links` | 0.1 / 0.1 | 0.1 / 0.1 | 24.7 / 24.7 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 0.1 / 0.1 | 5.4 / 5.4 |
 
-What the numbers say (measured before the changes noted below; `make bench` gives current numbers):
-- **Indexing** takes about 1 s per 180k lines of Go and 100k lines of Java. Django's Python is the slowest per line (4.8 s for 156k lines) because tree-sitter does all of the parsing.
-- **Memory** peaks while indexing (659 MB for Kubernetes). A running server only holds the SQLite index open.
-- **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (about 180 ms on the largest repositories). `get_service_links` took 250 ms on Kubernetes; an indexed query now makes it about 6 ms.
-- **Re-indexing** one changed file used to cost about as much as a run with no change (2.9 s on the standard library, 4.5 s on Kubernetes), because the whole call graph was rebuilt. An edit that keeps a file's declarations now resolves only that file's calls: measured on a slower machine, 0.23 s with no change and 0.71 s after an edit on the standard library, 0.52 s and 1.55 s on Kubernetes.
-- **Response sizes** stay at a few KB at the median. The largest were `get_file_summary` of a file with hundreds of declarations (184 KB for Kubernetes' largest file) and `get_dependency_graph` of the most-called functions (up to 60 KB). Both are now capped ([Output size](#output-size)): the largest answers drop to 22 and 25 KB.
+What the numbers say:
+- **Indexing** takes about 1 s per 150k lines of Go and 60k lines of Java on this machine. Django's Python is the slowest per line (6.9 s for 159k lines) because tree-sitter does all of the parsing. "Files" includes configuration files and, where a repository has them, TypeScript and JavaScript.
+- **Memory** peaks while indexing (586 MB for Kubernetes). A running server only holds the SQLite index open.
+- **Re-indexing** after an edit takes under half a second on the Go standard library (0.47 s, and 0.17 s when nothing changed) and 1.3 s on Kubernetes: only the changed files are parsed, and an edit that keeps a file's declarations only resolves that file's calls again (see [Incremental re-index](#incremental-re-index)).
+- **Tools** answer in single-digit milliseconds at the median, even on Kubernetes. The overview is the slowest (200 to 250 ms on the largest repositories); everything else stays under 40 ms at the median.
+- **Response sizes** stay at a few KB at the median, and the largest answer of any tool on any of these repositories is 25 KB, thanks to the caps described in [Output size](#output-size).
 
 ## Contributing
 
