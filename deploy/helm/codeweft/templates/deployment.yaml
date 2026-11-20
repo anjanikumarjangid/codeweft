@@ -63,7 +63,16 @@ spec:
             {{- with .Values.githubAPIURL }}
             - {name: CODEWEFT_GITHUB_API_URL, value: {{ . | quote }}}
             {{- end }}
-            {{- range $key := list "GITHUB_TOKEN" "GITHUB_WEBHOOK_SECRET" "CODEWEFT_API_TOKENS" }}
+            {{- with .Values.githubClientID }}
+            - {name: CODEWEFT_GITHUB_CLIENT_ID, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.githubOAuthScope }}
+            - {name: CODEWEFT_GITHUB_OAUTH_SCOPE, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.publicURL }}
+            - {name: CODEWEFT_PUBLIC_URL, value: {{ . | quote }}}
+            {{- end }}
+            {{- range $key := list "GITHUB_TOKEN" "GITHUB_WEBHOOK_SECRET" "CODEWEFT_API_TOKENS" "CODEWEFT_GITHUB_CLIENT_SECRET" }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef: {name: {{ include "codeweft.secretName" $ }}, key: {{ $key }}, optional: true}

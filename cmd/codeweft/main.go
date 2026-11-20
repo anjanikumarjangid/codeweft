@@ -72,6 +72,9 @@ configured by environment variables:
   GITHUB_TOKEN                clones private repositories, lists the org
   GITHUB_WEBHOOK_SECRET       enables /webhooks/github (push events)
   CODEWEFT_API_TOKENS         bearer tokens clients must send (comma-separated)
+  CODEWEFT_GITHUB_CLIENT_ID, CODEWEFT_GITHUB_CLIENT_SECRET
+                              sign-in with GitHub: each person sees the repositories
+                              their account can read (needs CODEWEFT_PUBLIC_URL)
   CODEWEFT_ALLOW_UNAUTHENTICATED=true   serve without tokens
   CODEWEFT_DATA_DIR           clones and indexes (default ./codeweft-data)
   CODEWEFT_DATABASE_URL       postgres://... to keep indexes in PostgreSQL (several replicas)

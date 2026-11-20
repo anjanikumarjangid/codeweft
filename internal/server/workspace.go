@@ -46,6 +46,18 @@ func (h handlers) workspace() bool { return h.labelled || len(h.repos) > 1 }
 type RepoSet struct {
 	mu    sync.RWMutex
 	repos []Repo
+
+	// A view of another set: its repositories that allow accepts.
+	parent *RepoSet
+	allow  func(name string) bool
+}
+
+// Filter returns a live view of the set holding only the repositories
+// whose names allow accepts, as a server signing users in shows each user
+// the repositories they may read. allow is called on every tool call, so
+// it must be fast; Put on the view adds to the underlying set.
+func (s *RepoSet) Filter(allow func(name string) bool) *RepoSet {
+	return &RepoSet{parent: s, allow: allow}
 }
 
 // NewRepoSet returns a set of the given repositories.
@@ -55,6 +67,15 @@ func NewRepoSet(repos ...Repo) *RepoSet {
 
 // Repos returns the repositories, in the order they were added.
 func (s *RepoSet) Repos() []Repo {
+	if s.parent != nil {
+		var out []Repo
+		for _, r := range s.parent.Repos() {
+			if s.allow(r.Name) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]Repo(nil), s.repos...)
@@ -62,6 +83,10 @@ func (s *RepoSet) Repos() []Repo {
 
 // Put adds a repository, or replaces the one of the same name.
 func (s *RepoSet) Put(r Repo) {
+	if s.parent != nil {
+		s.parent.Put(r)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.repos {

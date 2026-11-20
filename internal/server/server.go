@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -48,6 +49,9 @@ type Options struct {
 	// e.g. while the first index of a repository is still being built and
 	// every query would otherwise come back empty.
 	Ready func() error
+	// EmptyMessage is the tool error of a dynamic server while it has no
+	// repository to answer about.
+	EmptyMessage string
 }
 
 // bind calls a tool's handler with the repositories served at the time of
@@ -95,10 +99,13 @@ func NewWorkspace(repos []Repo, opts Options) *mcp.Server {
 // repositories it clones once their first index is built. Results are
 // always labelled with their repository.
 func NewDynamic(set *RepoSet, opts Options) *mcp.Server {
+	if opts.EmptyMessage == "" {
+		opts.EmptyMessage = "no repository is indexed yet: the server is still cloning and indexing; try again in a moment"
+	}
 	ready := opts.Ready
 	opts.Ready = func() error {
 		if len(set.Repos()) == 0 {
-			return fmt.Errorf("no repository is indexed yet: the server is still cloning and indexing; try again in a moment")
+			return errors.New(opts.EmptyMessage)
 		}
 		if ready != nil {
 			return ready()

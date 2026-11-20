@@ -59,6 +59,9 @@ jobs:
           grep -q "replicas: 3" db.yaml && grep -q CODEWEFT_DATABASE_URL db.yaml && ! grep -q PersistentVolumeClaim db.yaml
           helm template t deploy/helm/codeweft --set repos=acme/orders --set existingSecret=s \
             --set database.existingSecret=pg --set replicaCount=2 > /dev/null
+          # Sign-in with GitHub instead of API tokens.
+          helm template t deploy/helm/codeweft --set repos=acme/orders --set githubClientID=Iv1.x \
+            --set githubClientSecret=s --set publicURL=https://cw.example.com | grep -q CODEWEFT_PUBLIC_URL
           # More than one replica on SQLite must fail.
           ! helm template t deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t --set replicaCount=2 2>/dev/null
           # Without tokens or repositories, rendering must fail.

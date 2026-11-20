@@ -26,11 +26,22 @@ import (
 func (m *Manager) Handler() http.Handler {
 	mcpServer := server.NewDynamic(m.set, server.Options{})
 	// Stateless: every tool only reads, so no session needs to be kept,
-	// and replicas behind a load balancer need no affinity.
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer },
-		&mcp.StreamableHTTPOptions{Stateless: true})
+	// and replicas behind a load balancer need no affinity. A signed-in
+	// user gets a server showing only the repositories they may read.
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		if u, ok := r.Context().Value(userKey{}).(*user); ok {
+			return u.server
+		}
+		return mcpServer
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", m.auth(m.countRequests(mcpHandler)))
+	if m.cfg.SignIn() {
+		si := newSignIn(m)
+		si.routes(mux)
+		mux.Handle("/mcp", m.userAuth(si, m.countRequests(mcpHandler)))
+	} else {
+		mux.Handle("/mcp", m.auth(m.countRequests(mcpHandler)))
+	}
 	mux.HandleFunc("/webhooks/github", m.webhook)
 	mux.Handle("/status", m.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -70,6 +81,38 @@ func (m *Manager) auth(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// userKey is the request context key of a signed-in user.
+type userKey struct{}
+
+// userAuth accepts an API token, which reads every repository, or a
+// GitHub user's token (one this server issued at sign-in, or a GitHub
+// token sent as it is), which reads the repositories that user can.
+func (m *Manager) userAuth(si *signIn, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearer(r)
+		if ok && m.validToken(token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if ok {
+			if gh, ok := si.githubToken(token); ok {
+				u, err := si.resolve(r.Context(), gh)
+				if err == nil {
+					next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, u)))
+					return
+				}
+				if !errors.Is(err, errBadToken) {
+					m.log.Warn("signing in", "err", err)
+					http.Error(w, "GitHub could not be reached to check the token", http.StatusBadGateway)
+					return
+				}
+			}
+		}
+		w.Header().Set("WWW-Authenticate", si.challenge())
+		http.Error(w, "sign in with GitHub, or send a valid bearer token", http.StatusUnauthorized)
 	})
 }
 

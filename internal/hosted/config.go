@@ -5,8 +5,6 @@
 package hosted
 
 import (
-	"github.com/anjanikumarjangid/codeweft/internal/store"
-
 	"errors"
 	"fmt"
 	"net/url"
@@ -16,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 // Config is the configuration of a hosted server. Every field can be set
@@ -37,6 +37,15 @@ type Config struct {
 	GitHubToken   string // used to clone private repositories and list the organization's
 	IncludeForks  bool   // with GitHubOrg: also serve forks
 	WebhookSecret string // GitHub webhook secret; the webhook endpoint is off without it
+
+	// Sign-in with GitHub: with a GitHub OAuth App's or GitHub App's client
+	// ID and secret, people sign in with their GitHub account and see the
+	// repositories it can read. PublicURL is the server's address as
+	// clients and browsers reach it, e.g. https://codeweft.example.com.
+	GitHubClientID     string
+	GitHubClientSecret string
+	GitHubOAuthScope   string // scopes asked of an OAuth App, e.g. "repo" for private repositories
+	PublicURL          string
 
 	APITokens            []string // bearer tokens accepted on /mcp, /status and /metrics
 	AllowUnauthenticated bool     // serve without tokens: only behind something that authenticates
@@ -77,6 +86,10 @@ func (r RepoSpec) Local() bool {
 //	GITHUB_TOKEN                     clones private repositories, lists the organization
 //	GITHUB_WEBHOOK_SECRET            enables /webhooks/github
 //	CODEWEFT_API_TOKENS              bearer tokens for clients, separated by commas
+//	CODEWEFT_GITHUB_CLIENT_ID        with the secret: people sign in with GitHub and see the
+//	CODEWEFT_GITHUB_CLIENT_SECRET    repositories their account can read
+//	CODEWEFT_GITHUB_OAUTH_SCOPE      scopes for an OAuth App ("repo" for private repositories)
+//	CODEWEFT_PUBLIC_URL              the server's public address, for sign-in redirects
 //	CODEWEFT_ALLOW_UNAUTHENTICATED   true to serve without tokens
 //	CODEWEFT_SYNC_INTERVAL           e.g. 10m (default); 0 turns periodic syncs off
 //	CODEWEFT_SYNC_CONCURRENCY        repositories indexed at once (default 2)
@@ -93,6 +106,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		GitHubAPIURL:  strings.TrimSuffix(or(getenv("CODEWEFT_GITHUB_API_URL"), "https://api.github.com"), "/"),
 		GitHubToken:   or(getenv("CODEWEFT_GITHUB_TOKEN"), getenv("GITHUB_TOKEN")),
 		WebhookSecret: getenv("GITHUB_WEBHOOK_SECRET"),
+
+		GitHubClientID:     strings.TrimSpace(getenv("CODEWEFT_GITHUB_CLIENT_ID")),
+		GitHubClientSecret: strings.TrimSpace(getenv("CODEWEFT_GITHUB_CLIENT_SECRET")),
+		GitHubOAuthScope:   strings.TrimSpace(getenv("CODEWEFT_GITHUB_OAUTH_SCOPE")),
+		PublicURL:          strings.TrimSuffix(strings.TrimSpace(getenv("CODEWEFT_PUBLIC_URL")), "/"),
 	}
 	var err error
 	if c.IncludeForks, err = boolEnv(getenv, "CODEWEFT_GITHUB_INCLUDE_FORKS"); err != nil {
@@ -132,14 +150,31 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	return c, nil
 }
 
+// SignIn reports whether people sign in with GitHub.
+func (c Config) SignIn() bool { return c.GitHubClientID != "" && c.GitHubClientSecret != "" }
+
 // Validate checks that a configuration can run safely.
 func (c Config) Validate() error {
 	if len(c.Repos) == 0 && c.GitHubOrg == "" {
 		return errors.New("no repositories: set CODEWEFT_REPOS (owner/name, Git URLs or local paths) or CODEWEFT_GITHUB_ORG")
 	}
-	if len(c.APITokens) == 0 && !c.AllowUnauthenticated {
+	if (c.GitHubClientID == "") != (c.GitHubClientSecret == "") {
+		return errors.New("sign-in with GitHub needs both CODEWEFT_GITHUB_CLIENT_ID and CODEWEFT_GITHUB_CLIENT_SECRET")
+	}
+	if c.SignIn() {
+		u, err := url.Parse(c.PublicURL)
+		if c.PublicURL == "" || err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return errors.New("sign-in with GitHub needs CODEWEFT_PUBLIC_URL, the server's address as browsers reach it " +
+				"(e.g. https://codeweft.example.com)")
+		}
+		if c.AllowUnauthenticated {
+			return errors.New("CODEWEFT_ALLOW_UNAUTHENTICATED cannot be combined with sign-in with GitHub")
+		}
+	}
+	if len(c.APITokens) == 0 && !c.AllowUnauthenticated && !c.SignIn() {
 		return errors.New("no API tokens: set CODEWEFT_API_TOKENS so that only your clients can read the code, " +
-			"or CODEWEFT_ALLOW_UNAUTHENTICATED=true if something in front of the server authenticates them")
+			"CODEWEFT_GITHUB_CLIENT_ID and CODEWEFT_GITHUB_CLIENT_SECRET for sign-in with GitHub, " +
+			"or CODEWEFT_ALLOW_UNAUTHENTICATED=true if something in front of the server authenticates clients")
 	}
 	if c.GitHubOrg != "" && c.GitHubToken == "" {
 		return errors.New("CODEWEFT_GITHUB_ORG needs GITHUB_TOKEN to list the organization's repositories")

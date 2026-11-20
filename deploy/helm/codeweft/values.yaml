@@ -21,6 +21,15 @@ existingSecret: ""
 githubToken: ""
 webhookSecret: ""
 apiTokens: ""        # comma-separated
+# Sign-in with GitHub: people sign in with their own account and see the
+# repositories it can read. Needs a GitHub App's (or OAuth App's) client ID
+# and secret, and the server's public URL (its callback is
+# <publicURL>/oauth/callback). With existingSecret, put the secret there
+# under CODEWEFT_GITHUB_CLIENT_SECRET.
+githubClientID: ""
+githubClientSecret: ""
+githubOAuthScope: ""  # for an OAuth App: "repo" to cover private repositories
+publicURL: ""         # e.g. https://codeweft.example.com
 # Serve without tokens: only when something in front authenticates clients.
 allowUnauthenticated: false
 

@@ -133,6 +133,8 @@ Then, in each developer's `.mcp.json` (Claude Code; other clients take the same 
 }
 ```
 
+**Sign-in with GitHub (optional).** Instead of sharing API tokens, people can sign in with their own GitHub account, and each sees only the repositories that account can read. Create a GitHub App (Settings → Developer settings; *Repository permissions → Contents: read*, installed on the repositories served) or an OAuth App, with the callback URL `https://codeweft.example.com/oauth/callback`, and set `CODEWEFT_GITHUB_CLIENT_ID`, `CODEWEFT_GITHUB_CLIENT_SECRET` and `CODEWEFT_PUBLIC_URL=https://codeweft.example.com`. Developers then leave out the `headers` above: MCP clients that support MCP authorization, Claude Code among them, open a browser to sign in on first use. A GitHub token sent as the bearer token (a fine-grained personal access token, or `gh auth token`) works too, for clients without a browser. What each person may read is asked of GitHub with their own token and remembered for 10 minutes. The server keeps no sessions: its tokens are encrypted with a key derived from the client secret, so replicas accept each other's and a restart signs no one out. Repositories not on GitHub (local paths, other Git hosts) are only served to API tokens, which keep reading everything, for automation; `/status` and `/metrics` stay API-token only.
+
 In each repository's GitHub settings (or once for the organization), add a webhook to `https://codeweft.example.com/webhooks/github` with content type `application/json`, the same secret, and the *push* event. A push to a repository's default branch (a merged pull request, whatever the merge method) brings its clone to the new commit and re-indexes it: only the files the push changed are parsed, and when they keep their declarations only their own calls are resolved again, which takes about a second even on Kubernetes-sized repositories.
 
 | Variable | Meaning |
@@ -141,7 +143,10 @@ In each repository's GitHub settings (or once for the organization), add a webho
 | `CODEWEFT_GITHUB_ORG` | Also serve every repository of this organization or user (not archived ones, nor forks unless `CODEWEFT_GITHUB_INCLUDE_FORKS=true`). New repositories are picked up on their first push, or at the next periodic sync. |
 | `GITHUB_TOKEN` | Clones private repositories and lists the organization. Passed to Git as an HTTP header through the environment: never written into a URL, a clone's configuration or a log. A fine-grained token with read access to *Contents* and *Metadata* is enough. |
 | `GITHUB_WEBHOOK_SECRET` | Enables `/webhooks/github`. Deliveries without a valid signature are refused. |
-| `CODEWEFT_API_TOKENS` | Bearer tokens clients must send, separated by commas. Required: the server refuses to start without, unless `CODEWEFT_ALLOW_UNAUTHENTICATED=true` (for a server only reachable behind something that authenticates). |
+| `CODEWEFT_API_TOKENS` | Bearer tokens clients must send, separated by commas. The server refuses to start without them, unless sign-in with GitHub is set up or `CODEWEFT_ALLOW_UNAUTHENTICATED=true` (for a server only reachable behind something that authenticates). |
+| `CODEWEFT_GITHUB_CLIENT_ID`, `CODEWEFT_GITHUB_CLIENT_SECRET` | Sign-in with GitHub, from a GitHub App or OAuth App (see above). |
+| `CODEWEFT_PUBLIC_URL` | The server's address as browsers reach it, for sign-in redirects. |
+| `CODEWEFT_GITHUB_OAUTH_SCOPE` | Scopes asked of an OAuth App: `repo` for private repositories (an OAuth App cannot ask for read-only access to them; a GitHub App needs no scope). |
 | `CODEWEFT_DATA_DIR` | Clones and indexes (default `./codeweft-data`); keep it on a persistent volume. |
 | `CODEWEFT_DATABASE_URL` (or `DATABASE_URL`) | Optional: a `postgres://` URL to keep the indexes in PostgreSQL rather than SQLite files, so that several replicas can serve them (see below). |
 | `CODEWEFT_SYNC_INTERVAL` | Periodic sync of every repository (default `10m`; `0` turns it off), which also catches missed webhooks. |
@@ -425,7 +430,7 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
 - [x] **v0.7:** workspaces of several repositories; `get_service_links` for HTTP routes, gRPC methods, Kafka, RabbitMQ, SQS and Pub/Sub, and Temporal workflows and activities, with values from configuration files; `.proto` files; TypeScript and JavaScript; `codeweft server` (self-hosted, kept current by GitHub webhooks) with a container image, Helm chart, npm and Homebrew packages; capped answers and incremental call graph updates
 - [x] **v0.8:** PostgreSQL backend for the server, with several replicas
-- [ ] Next: per-user sign-in (GitHub OAuth) with per-repository access
+- [x] Sign-in with GitHub (MCP authorization), each person seeing the repositories their account can read
 - [ ] Later: Kotlin, C# and Rust; gRPC and Temporal in TypeScript; bindings declared in infrastructure code (Terraform); optional semantic search with local embeddings
 
 ## License
