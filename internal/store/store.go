@@ -29,7 +29,7 @@ import (
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "15"
+const SchemaVersion = "16"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
