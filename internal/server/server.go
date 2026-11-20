@@ -16,7 +16,7 @@ import (
 // Version is reported to MCP clients and by `codeweft version`. Release
 // builds set it from the git tag:
 // -ldflags "-X github.com/anjanikumarjangid/codeweft/internal/server.Version=1.2.3"
-var Version = "0.8.0"
+var Version = "0.8.1"
 
 // Output limits. Every tool result lands in the agent's context window, so
 // lists and source are capped, and the agent is told what was left out and
