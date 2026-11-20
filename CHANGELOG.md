@@ -19,7 +19,7 @@ The first release. codeweft was developed as *codewiki* until this release.
 - **Configuration values**: topics, URLs, routes and queues set in Spring `application*.yml`/`.properties` files, `.env` files or environment variables (`os.Getenv`, `os.getenv`, `System.getenv`) are resolved, so services configured with the same value link. Secret-looking keys are never read.
 - **Workspaces**: one server over several repositories (`serve --workspace`), with links across them.
 - **Self-hosted server** (`codeweft server`): clones repositories (or a GitHub organization), keeps them indexed from GitHub push webhooks and periodic syncs, and serves them over MCP Streamable HTTP with bearer tokens; `/status`, `/metrics`, `/healthz`, `/readyz`.
-- **Incremental re-indexing**: only changed files are parsed; an edit that keeps a file's declarations only resolves that file's calls again (about 0.7 s on the Go standard library).
+- **Incremental re-indexing**: only changed files are parsed; an edit that keeps a file's declarations only resolves that file's calls again (about half a second on the Go standard library, 1.3 s on Kubernetes).
 - **Distribution**: release binaries for Linux, macOS and Windows; container image on ghcr.io; Docker Compose and Helm; `npx codeweft`; Homebrew.
 - **Benchmarks** (`make bench`) on a pinned corpus, and accuracy tools in `scripts/accuracy`.
 
