@@ -21,6 +21,27 @@ jobs:
           ./bin/codeweft index .
           ./bin/codeweft query search code | grep -q "internal/"
 
+  postgres:
+    # The whole suite again, with every index in PostgreSQL.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: codeweft
+          POSTGRES_DB: codeweft
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CODEWEFT_TEST_POSTGRES: postgres://postgres:codeweft@localhost:5432/codeweft?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test
+
   chart:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +53,14 @@ jobs:
           helm template t deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t > /dev/null
           helm template t deploy/helm/codeweft --set githubOrg=acme --set existingSecret=s \
             --set ingress.enabled=true > /dev/null
+          # With PostgreSQL, several replicas and no volume claim.
+          helm template t deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t \
+            --set database.url=postgres://cw@db/cw --set replicaCount=3 > db.yaml
+          grep -q "replicas: 3" db.yaml && grep -q CODEWEFT_DATABASE_URL db.yaml && ! grep -q PersistentVolumeClaim db.yaml
+          helm template t deploy/helm/codeweft --set repos=acme/orders --set existingSecret=s \
+            --set database.existingSecret=pg --set replicaCount=2 > /dev/null
+          # More than one replica on SQLite must fail.
+          ! helm template t deploy/helm/codeweft --set repos=acme/orders --set apiTokens=t --set replicaCount=2 2>/dev/null
           # Without tokens or repositories, rendering must fail.
           ! helm template t deploy/helm/codeweft --set repos=acme/orders 2>/dev/null
           ! helm template t deploy/helm/codeweft --set apiTokens=t 2>/dev/null

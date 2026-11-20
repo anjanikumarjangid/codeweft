@@ -24,7 +24,18 @@ apiTokens: ""        # comma-separated
 # Serve without tokens: only when something in front authenticates clients.
 allowUnauthenticated: false
 
-persistence:
+# Where indexes are kept. By default, SQLite files on the volume below,
+# with one replica. Set a PostgreSQL URL (or name a Secret holding one) to
+# keep them in PostgreSQL instead: replicaCount may then be more than 1,
+# and clones go to an emptyDir, since each pod can fetch its own.
+database:
+  url: ""            # postgres://user:password@host:5432/codeweft
+  existingSecret: "" # or: a Secret with the URL under secretKey
+  secretKey: CODEWEFT_DATABASE_URL
+
+replicaCount: 1      # more than 1 needs database.url or database.existingSecret
+
+persistence:          # used only without a database
   size: 10Gi
   storageClass: ""
   accessMode: ReadWriteOnce

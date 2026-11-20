@@ -74,6 +74,7 @@ configured by environment variables:
   CODEWEFT_API_TOKENS         bearer tokens clients must send (comma-separated)
   CODEWEFT_ALLOW_UNAUTHENTICATED=true   serve without tokens
   CODEWEFT_DATA_DIR           clones and indexes (default ./codeweft-data)
+  CODEWEFT_DATABASE_URL       postgres://... to keep indexes in PostgreSQL (several replicas)
   CODEWEFT_SYNC_INTERVAL      periodic sync (default 10m, 0 turns it off)
   CODEWEFT_SYNC_CONCURRENCY   repositories indexed at once (default 2)
   CODEWEFT_GITHUB_URL, CODEWEFT_GITHUB_API_URL   for GitHub Enterprise

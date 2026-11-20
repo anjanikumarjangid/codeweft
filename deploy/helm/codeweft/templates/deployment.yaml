@@ -1,17 +1,29 @@
 {{- if and (not .Values.repos) (not .Values.githubOrg) }}
 {{- fail "set repos or githubOrg" }}
 {{- end }}
+{{- $db := include "codeweft.usesDatabase" . }}
+{{- if and .Values.existingSecret .Values.database.url }}
+{{- fail "with existingSecret, keep the database URL in a Secret too: set database.existingSecret instead of database.url" }}
+{{- end }}
+{{- if and (gt (int .Values.replicaCount) 1) (not $db) }}
+{{- fail "replicaCount above 1 needs database.url or database.existingSecret: SQLite indexes live on one pod's volume" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "codeweft.fullname" . }}
   labels: {{- include "codeweft.labels" . | nindent 4 }}
 spec:
+  {{- if $db }}
+  # Indexes are in PostgreSQL: replicas share them, and take turns indexing.
+  replicas: {{ .Values.replicaCount }}
+  {{- else }}
   # One replica: the index is SQLite on a ReadWriteOnce volume, written by
   # this process only. Recreate so two pods never share the volume.
   replicas: 1
   strategy:
     type: Recreate
+  {{- end }}
   selector:
     matchLabels: {{- include "codeweft.selector" . | nindent 6 }}
   template:
@@ -56,6 +68,15 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ include "codeweft.secretName" $ }}, key: {{ $key }}, optional: true}
             {{- end }}
+            {{- if .Values.database.existingSecret }}
+            - name: CODEWEFT_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.database.existingSecret }}, key: {{ .Values.database.secretKey }}}
+            {{- else if .Values.database.url }}
+            - name: CODEWEFT_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ include "codeweft.fullname" . }}, key: CODEWEFT_DATABASE_URL}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -75,8 +96,12 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: data
+          {{- if $db }}
+          emptyDir: {}
+          {{- else }}
           persistentVolumeClaim:
             claimName: {{ include "codeweft.fullname" . }}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

@@ -143,11 +143,16 @@ In each repository's GitHub settings (or once for the organization), add a webho
 | `GITHUB_WEBHOOK_SECRET` | Enables `/webhooks/github`. Deliveries without a valid signature are refused. |
 | `CODEWEFT_API_TOKENS` | Bearer tokens clients must send, separated by commas. Required: the server refuses to start without, unless `CODEWEFT_ALLOW_UNAUTHENTICATED=true` (for a server only reachable behind something that authenticates). |
 | `CODEWEFT_DATA_DIR` | Clones and indexes (default `./codeweft-data`); keep it on a persistent volume. |
+| `CODEWEFT_DATABASE_URL` (or `DATABASE_URL`) | Optional: a `postgres://` URL to keep the indexes in PostgreSQL rather than SQLite files, so that several replicas can serve them (see below). |
 | `CODEWEFT_SYNC_INTERVAL` | Periodic sync of every repository (default `10m`; `0` turns it off), which also catches missed webhooks. |
 | `CODEWEFT_SYNC_CONCURRENCY` | Repositories indexed at once (default 2). |
 | `CODEWEFT_GITHUB_URL`, `CODEWEFT_GITHUB_API_URL` | For GitHub Enterprise Server. |
 
-Besides `/mcp` and `/webhooks/github`, the server answers `/healthz` (the process runs), `/readyz` (a repository is indexed), `/status` (each repository's branch, commit, index time, counts and last error, as JSON) and `/metrics` (Prometheus); the last two need a token. Every repository is served as in a [workspace](#several-repositories): results are labelled with their repository, every tool takes a `repo` argument, and `get_service_links` links the services across repositories. The index is SQLite on the data volume: the server is its only user, so no database needs to be run. Code from the repositories is only parsed, never built or run.
+Besides `/mcp` and `/webhooks/github`, the server answers `/healthz` (the process runs), `/readyz` (a repository is indexed), `/status` (each repository's branch, commit, index time, counts and last error, as JSON) and `/metrics` (Prometheus); the last two need a token. Every repository is served as in a [workspace](#several-repositories): results are labelled with their repository, every tool takes a `repo` argument, and `get_service_links` links the services across repositories. Code from the repositories is only parsed, never built or run.
+
+**Where the indexes live.** By default, in SQLite files on the data volume: the server is their only user, so no database has to be run, and one replica serves any number of repositories. Set `CODEWEFT_DATABASE_URL` to a PostgreSQL database (version 13 or later; a managed one is fine) when you want several replicas behind a load balancer, or a database you already back up. The server creates what it needs: one schema per repository, named `cw_<repository>`, rebuilt by itself when an upgrade changes the index format. Replicas share the indexes and take turns: each fetches its own clone, one indexes a new commit while the others wait, and they then find it already indexed. A restarted server serves the index it finds at once, before its first fetch. With the Helm chart, set `database.url` (or `database.existingSecret`) and `replicaCount`.
+
+Measured on the machine of the [Benchmarks](#benchmarks) (Go standard library, PostgreSQL 16 on the same host, median of three runs): a first full index took 19 s, against 8.5 s for SQLite in the same runs, since every row crosses a connection; re-indexing after a push cost the same on both (0.2 s with nothing to do, 0.5 s after a one-file edit).
 
 ### CLI
 
@@ -289,7 +294,7 @@ On the Go standard library, `get_symbol String` went from 12.1 KB of text (the f
 | Decision | Choice | Why |
 |---|---|---|
 | Parser | `go/ast` for Go, tree-sitter for Java and Python | Exact for Go; one robust, error-tolerant parser for the rest, all behind the same symbol model. |
-| Storage | SQLite + FTS5 | Zero config, a single portable file, fast ranked search. |
+| Storage | SQLite + FTS5, or PostgreSQL | SQLite: zero config, a single portable file, fast ranked search. PostgreSQL (weighted `tsvector` search) only for servers with several replicas. |
 | Search | Keyword + BM25, no embeddings | Deterministic, explainable results with no model or network dependency. |
 | Call graph | Syntactic resolution with types worked out from declarations, no type checker | Works on any checkout without building it; measured against each language's type checker; precision is marked per edge. |
 | Transport | stdio | What local MCP clients like Claude Code use. |
@@ -419,7 +424,8 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.5:** Java and Python via tree-sitter
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
 - [x] **v0.7:** workspaces of several repositories; `get_service_links` for HTTP routes, gRPC methods, Kafka, RabbitMQ, SQS and Pub/Sub, and Temporal workflows and activities, with values from configuration files; `.proto` files; TypeScript and JavaScript; `codeweft server` (self-hosted, kept current by GitHub webhooks) with a container image, Helm chart, npm and Homebrew packages; capped answers and incremental call graph updates
-- [ ] Next: a Postgres backend for several server replicas; per-user sign-in (GitHub OAuth) with per-repository access
+- [x] **v0.8:** PostgreSQL backend for the server, with several replicas
+- [ ] Next: per-user sign-in (GitHub OAuth) with per-repository access
 - [ ] Later: Kotlin, C# and Rust; gRPC and Temporal in TypeScript; bindings declared in infrastructure code (Terraform); optional semantic search with local embeddings
 
 ## License

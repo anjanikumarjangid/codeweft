@@ -22,3 +22,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "codeweft.secretName" -}}
 {{- default (include "codeweft.fullname" .) .Values.existingSecret -}}
 {{- end -}}
+
+{{- define "codeweft.usesDatabase" -}}
+{{- if or .Values.database.url .Values.database.existingSecret }}true{{ end -}}
+{{- end -}}

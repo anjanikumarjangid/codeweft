@@ -234,6 +234,59 @@ func (m *Manager) sync(r *repo) {
 }
 
 func (m *Manager) syncRepo(r *repo) error {
+	r.mu.Lock()
+	st := r.st
+	r.mu.Unlock()
+	if st == nil {
+		var err error
+		if st, err = m.open(r); err != nil {
+			return err
+		}
+	}
+	// With PostgreSQL, replicas share the index: one indexes while the
+	// others wait, then find it already at their commit.
+	return st.WithIndexLock(m.ctx, func() error { return m.update(r, st) })
+}
+
+// open opens a repository's index and, when it already holds one from an
+// earlier run (or another replica), serves it right away, before the first
+// fetch finishes.
+func (m *Manager) open(r *repo) (*store.Store, error) {
+	var st *store.Store
+	var err error
+	if m.cfg.DatabaseURL != "" {
+		st, err = store.OpenPostgres(m.cfg.DatabaseURL, store.SchemaName(r.spec.Name))
+	} else {
+		db := filepath.Join(m.cfg.DataDir, "index", r.spec.Name+".db")
+		if err = os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+			return nil, err
+		}
+		st, err = store.Open(db)
+	}
+	if err != nil {
+		return nil, err
+	}
+	commit, err := st.Meta(commitKey)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	r.mu.Lock()
+	r.st = st
+	r.mu.Unlock()
+	if commit != "" {
+		m.serve(r, st, commit)
+	}
+	return st, nil
+}
+
+// commitKey is the index's metadata entry recording the commit it was
+// built from.
+const commitKey = "commit"
+
+// update brings the working tree to the latest commit and the index up to
+// date with it.
+func (m *Manager) update(r *repo, st *store.Store) error {
 	if !r.spec.Local() {
 		if err := m.fetch(r); err != nil {
 			return err
@@ -247,22 +300,18 @@ func (m *Manager) syncRepo(r *repo) error {
 		}
 		commit = strings.TrimSpace(out)
 	}
-	r.mu.Lock()
-	st, indexed := r.st, r.status.Commit
-	r.mu.Unlock()
-	if st != nil && commit != "" && commit == indexed {
-		return nil // already indexed at this commit
+	indexed, err := st.Meta(commitKey)
+	if err != nil {
+		return err
 	}
-	first := st == nil
-	if first {
-		db := filepath.Join(m.cfg.DataDir, "index", r.spec.Name+".db")
-		if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
-			return err
+	if commit != "" && commit == indexed {
+		r.mu.Lock()
+		served := r.status.Commit == commit
+		r.mu.Unlock()
+		if !served {
+			m.serve(r, st, commit)
 		}
-		var err error
-		if st, err = store.Open(db); err != nil {
-			return err
-		}
+		return nil // already indexed at this commit
 	}
 	opts, err := indexer.StoredOptions(st)
 	if err != nil {
@@ -270,25 +319,30 @@ func (m *Manager) syncRepo(r *repo) error {
 	}
 	res, err := indexer.Reindex(r.dir, st, opts)
 	if err != nil {
-		if first {
-			st.Close()
-		}
 		return fmt.Errorf("index: %w", err)
 	}
-	files, symbols, _, err := st.Stats()
-	if err != nil {
+	if err := st.SetMeta(commitKey, commit); err != nil {
 		return err
 	}
+	m.serve(r, st, commit)
+	m.log.Info("indexed", "repo", r.spec.Name, "commit", short(commit), "partial", res.Partial)
+	return nil
+}
+
+// serve records an index's state and makes sure the server offers it.
+func (m *Manager) serve(r *repo, st *store.Store, commit string) {
+	files, symbols, edges, err := st.Stats()
+	if err != nil {
+		m.log.Error("index stats", "repo", r.spec.Name, "err", err)
+	}
 	r.mu.Lock()
-	r.st = st
+	first := r.status.Commit == "" && r.status.IndexedAt.IsZero()
 	r.status.Commit, r.status.IndexedAt = commit, time.Now().UTC()
-	r.status.Files, r.status.Symbols, r.status.CallEdges = files, symbols, res.Edges
+	r.status.Files, r.status.Symbols, r.status.CallEdges = files, symbols, edges
 	r.mu.Unlock()
 	if first {
 		m.set.Put(server.Repo{Name: r.spec.Name, Store: st})
 	}
-	m.log.Info("indexed", "repo", r.spec.Name, "commit", short(commit), "files", files, "partial", res.Partial)
-	return nil
 }
 
 // fetch clones the repository, or brings the clone to the latest commit

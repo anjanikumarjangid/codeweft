@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,9 +20,11 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/anjanikumarjangid/codeweft/internal/server"
+	"github.com/anjanikumarjangid/codeweft/internal/store"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -226,6 +230,92 @@ func TestServer(t *testing.T) {
 	}
 }
 
+// startManager runs a manager until the test ends.
+func startManager(t *testing.T, cfg Config) (*Manager, *server.RepoSet) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	set := server.NewRepoSet()
+	m := NewManager(cfg, set, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.Start(ctx)
+	t.Cleanup(func() { cancel(); m.Wait() })
+	return m, set
+}
+
+// TestRestartServesStoredIndex: after a restart, the index from the last
+// run is served at once, even while the remote cannot be reached.
+func TestRestartServesStoredIndex(t *testing.T) {
+	src := upstream(t)
+	head := gitRun(t, src, "rev-parse", "HEAD")
+	spec, err := ParseRepo("file://"+src, "https://github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Name = "app"
+	cfg := Config{DataDir: t.TempDir(), Repos: []RepoSpec{spec}, SyncConcurrency: 1, GitHubURL: "https://github.com"}
+	first, _ := startManager(t, cfg)
+	eventually(t, "the first index", func() bool {
+		s := first.Statuses()
+		return len(s) == 1 && s[0].Commit == head && !s[0].Syncing
+	})
+
+	// The upstream goes away; a new process starts on the same data.
+	if err := os.Rename(src, src+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	second, set := startManager(t, cfg)
+	eventually(t, "the stored index to be served", func() bool { return len(set.Repos()) == 1 })
+	eventually(t, "the failed fetch", func() bool {
+		s := second.Statuses()
+		return len(s) == 1 && s[0].Failures == 1
+	})
+	s := second.Statuses()[0]
+	if s.Commit != head || s.Symbols != 1 || s.LastError == "" {
+		t.Errorf("status after restart: %+v", s)
+	}
+}
+
+// TestReplicasSharePostgres runs two servers on one PostgreSQL database, as
+// two replicas would: both serve the repository, indexed once at a time.
+func TestReplicasSharePostgres(t *testing.T) {
+	url := os.Getenv("CODEWEFT_TEST_POSTGRES")
+	if url == "" {
+		t.Skip("set CODEWEFT_TEST_POSTGRES to a PostgreSQL URL")
+	}
+	src := upstream(t)
+	head := gitRun(t, src, "rev-parse", "HEAD")
+	spec, err := ParseRepo("file://"+src, "https://github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Name = fmt.Sprintf("app-%d", time.Now().UnixNano())
+	var ms []*Manager
+	for i := 0; i < 2; i++ {
+		cfg := Config{DataDir: t.TempDir(), DatabaseURL: url, Repos: []RepoSpec{spec}, SyncConcurrency: 1,
+			GitHubURL: "https://github.com", AllowUnauthenticated: true}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		m, _ := startManager(t, cfg)
+		ms = append(ms, m)
+	}
+	for i, m := range ms {
+		eventually(t, fmt.Sprintf("replica %d to serve the index", i), func() bool {
+			s := m.Statuses()
+			return len(s) == 1 && s[0].Commit == head && s[0].Symbols == 1 && !s[0].Syncing
+		})
+		if e := m.Statuses()[0].LastError; e != "" {
+			t.Errorf("replica %d: %s", i, e)
+		}
+	}
+	t.Cleanup(func() {
+		db, err := sql.Open("pgx", url)
+		if err == nil {
+			db.Exec(`DROP SCHEMA ` + store.SchemaName(spec.Name) + ` CASCADE`) //nolint:errcheck
+			db.Close()
+		}
+	})
+}
+
 func TestConfig(t *testing.T) {
 	env := map[string]string{
 		"CODEWEFT_REPOS":            "acme/orders, billing=git@github.com:acme/payments.git#release\n/srv/legacy",
@@ -267,6 +357,7 @@ func TestConfig(t *testing.T) {
 		"no tokens":                {"CODEWEFT_REPOS": "acme/orders"},
 		"org without a token":      {"CODEWEFT_GITHUB_ORG": "acme", "CODEWEFT_API_TOKENS": "a"},
 		"two repositories, a name": {"CODEWEFT_REPOS": "acme/api other/api", "CODEWEFT_API_TOKENS": "a"},
+		"not a postgres URL":       {"CODEWEFT_REPOS": "acme/api", "CODEWEFT_API_TOKENS": "a", "DATABASE_URL": "mysql://db/x"},
 	} {
 		cfg, err := FromEnv(func(k string) string { return env[k] })
 		if err == nil {
@@ -279,6 +370,12 @@ func TestConfig(t *testing.T) {
 	unauth := map[string]string{"CODEWEFT_REPOS": "acme/orders", "CODEWEFT_ALLOW_UNAUTHENTICATED": "true"}
 	if cfg, err := FromEnv(func(k string) string { return unauth[k] }); err != nil || cfg.Validate() != nil {
 		t.Errorf("explicitly unauthenticated: %v", err)
+	}
+	pg := map[string]string{"CODEWEFT_REPOS": "acme/orders", "CODEWEFT_API_TOKENS": "a",
+		"DATABASE_URL": "postgres://codeweft@db/codeweft", "CODEWEFT_DATABASE_URL": " postgresql://cw@db/cw "}
+	if cfg, err := FromEnv(func(k string) string { return pg[k] }); err != nil || cfg.Validate() != nil ||
+		cfg.DatabaseURL != "postgresql://cw@db/cw" {
+		t.Errorf("database URL: %q %v", cfg.DatabaseURL, err)
 	}
 	if _, err := FromEnv(func(k string) string { return map[string]string{"CODEWEFT_REPOS": "just-a-name"}[k] }); err == nil {
 		t.Error("a bare name is not a repository")

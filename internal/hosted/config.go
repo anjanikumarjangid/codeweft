@@ -5,6 +5,8 @@
 package hosted
 
 import (
+	"github.com/anjanikumarjangid/codeweft/internal/store"
+
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,6 +23,11 @@ import (
 type Config struct {
 	Addr    string // listen address, e.g. ":8080"
 	DataDir string // where repositories are cloned and indexes kept
+
+	// DatabaseURL, when set, keeps the indexes in PostgreSQL (one schema per
+	// repository) instead of SQLite files under DataDir, so that several
+	// replicas can share them.
+	DatabaseURL string
 
 	Repos     []RepoSpec // repositories to serve
 	GitHubOrg string     // also serve every repository of this organization or user
@@ -58,6 +65,8 @@ func (r RepoSpec) Local() bool {
 //
 //	CODEWEFT_ADDR                    listen address (default :8080)
 //	CODEWEFT_DATA_DIR                clones and indexes (default ./codeweft-data)
+//	CODEWEFT_DATABASE_URL            postgres://... to keep indexes in PostgreSQL rather than
+//	                                 SQLite files; DATABASE_URL is read too
 //	CODEWEFT_REPOS                   repositories, separated by commas, spaces or new lines:
 //	                                 owner/name, a Git URL, or an absolute local path,
 //	                                 each optionally name=... and ...#branch
@@ -78,6 +87,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	c := Config{
 		Addr:          or(getenv("CODEWEFT_ADDR"), ":8080"),
 		DataDir:       or(getenv("CODEWEFT_DATA_DIR"), "codeweft-data"),
+		DatabaseURL:   strings.TrimSpace(or(getenv("CODEWEFT_DATABASE_URL"), getenv("DATABASE_URL"))),
 		GitHubOrg:     strings.TrimSpace(getenv("CODEWEFT_GITHUB_ORG")),
 		GitHubURL:     strings.TrimSuffix(or(getenv("CODEWEFT_GITHUB_URL"), "https://github.com"), "/"),
 		GitHubAPIURL:  strings.TrimSuffix(or(getenv("CODEWEFT_GITHUB_API_URL"), "https://api.github.com"), "/"),
@@ -133,6 +143,9 @@ func (c Config) Validate() error {
 	}
 	if c.GitHubOrg != "" && c.GitHubToken == "" {
 		return errors.New("CODEWEFT_GITHUB_ORG needs GITHUB_TOKEN to list the organization's repositories")
+	}
+	if c.DatabaseURL != "" && !store.IsPostgres(c.DatabaseURL) {
+		return errors.New("CODEWEFT_DATABASE_URL must be a postgres:// URL; leave it unset to keep indexes in SQLite files")
 	}
 	seen := map[string]bool{}
 	for _, r := range c.Repos {
