@@ -20,6 +20,10 @@ jobs:
         run: |
           ./bin/codeweft index .
           ./bin/codeweft query search code | grep -q "internal/"
+      - name: npm package has its launcher
+        run: |
+          node --check npm/codeweft/bin/codeweft.js
+          cd npm/codeweft && npm pack --dry-run --json | grep -q '"path": "bin/codeweft.js"'
 
   postgres:
     # The whole suite again, with every index in PostgreSQL.

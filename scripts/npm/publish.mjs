@@ -4,7 +4,7 @@
 // codeweft package that depends on them all, optionally, and runs the
 // one npm installs for the platform.
 //
-//   node scripts/npm/publish.mjs --dist DIR --version 0.8.1 [--skip os-cpu,...] [--dry-run]
+//   node scripts/npm/publish.mjs --dist DIR --version 0.8.2 [--skip os-cpu,...] [--dry-run]
 //
 // DIR holds the release archives (codeweft_<version>_<goos>_<goarch>.tar.gz
 // or .zip). With --dry-run the packages are packed, not published.
@@ -135,5 +135,14 @@ writeFileSync(
   join(main, "package.json"),
   JSON.stringify({ ...base, version, files: [...base.files, "LICENSE", "NOTICE"], optionalDependencies: deps }, null, 2) + "\n"
 );
+// Refuse to publish a package that would install without its launcher:
+// 0.8.1 went out that way, its bin/ directory missing from the repository.
+const pkgJSON = JSON.parse(readFileSync(join(main, "package.json"), "utf8"));
+for (const f of [...Object.values(pkgJSON.bin ?? {}), ...pkgJSON.files]) {
+  if (!existsSync(join(main, f))) {
+    console.error(`codeweft package: ${f} is missing from npm/codeweft`);
+    process.exit(1);
+  }
+}
 publish(main);
 console.log(`${dryRun ? "packed" : "published"} codeweft ${version} for ${platforms.length} platforms`);
