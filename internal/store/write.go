@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"slices"
 	"strconv"
@@ -18,7 +19,16 @@ type Tx struct {
 
 // exec runs a statement through a cached prepared statement, which matters
 // when indexing hundreds of thousands of rows.
+//
+// With PostgreSQL, plain inserts are queued and sent many rows at a time
+// (see txConn); their errors surface at the next statement or at Commit.
 func (t *Tx) exec(query string, args ...any) (sql.Result, error) {
+	if t.tx.queue(query, args) {
+		return driver.RowsAffected(1), nil
+	}
+	if t.tx.flush(); t.tx.err != nil {
+		return nil, t.tx.err
+	}
 	st, err := t.prepared(query)
 	if err != nil {
 		return nil, err
@@ -27,7 +37,8 @@ func (t *Tx) exec(query string, args ...any) (sql.Result, error) {
 }
 
 // insertID runs an INSERT ... RETURNING id through a cached prepared
-// statement and returns the new row's id.
+// statement and returns the new row's id. It is used for files and
+// symbols, which reference no queued row, so it does not wait for the queue.
 func (t *Tx) insertID(query string, args ...any) (int64, error) {
 	st, err := t.prepared(query + ` RETURNING id`)
 	if err != nil {
@@ -202,17 +213,13 @@ func (t *Tx) ids(q string, args ...any) ([]int64, error) {
 
 // AddEdges inserts edges, without removing any.
 func (t *Tx) AddEdges(edges []Edge) error {
-	stmt, err := t.tx.Prepare(`INSERT INTO edges(from_id, to_id, to_ref, line, confidence) VALUES(?, ?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	q := `INSERT INTO edges(from_id, to_id, to_ref, line, confidence) VALUES(?, ?, ?, ?, ?)`
 	for _, e := range edges {
 		var to any
 		if e.ToID != 0 {
 			to = e.ToID
 		}
-		if _, err := stmt.Exec(e.FromID, to, e.ToRef, e.Line, e.Confidence); err != nil {
+		if _, err := t.exec(q, e.FromID, to, e.ToRef, e.Line, e.Confidence); err != nil {
 			return fmt.Errorf("edge %d -> %s: %w", e.FromID, e.ToRef, err)
 		}
 	}
@@ -221,11 +228,7 @@ func (t *Tx) AddEdges(edges []Edge) error {
 
 // AddTestEdges inserts test edges, without removing any.
 func (t *Tx) AddTestEdges(edges []TestEdge) error {
-	stmt, err := t.tx.Prepare(`INSERT INTO test_edges(from_test, to_id, to_test, line) VALUES(?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	q := `INSERT INTO test_edges(from_test, to_id, to_test, line) VALUES(?, ?, ?, ?)`
 	nullable := func(id int64) any {
 		if id == 0 {
 			return nil
@@ -233,7 +236,7 @@ func (t *Tx) AddTestEdges(edges []TestEdge) error {
 		return id
 	}
 	for _, e := range edges {
-		if _, err := stmt.Exec(e.FromTest, nullable(e.ToID), nullable(e.ToTest), e.Line); err != nil {
+		if _, err := t.exec(q, e.FromTest, nullable(e.ToID), nullable(e.ToTest), e.Line); err != nil {
 			return fmt.Errorf("test edge %d: %w", e.FromTest, err)
 		}
 	}

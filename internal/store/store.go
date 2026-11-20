@@ -10,6 +10,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -367,18 +369,21 @@ func OpenPostgres(url, schema string) (*Store, error) {
 	}
 	cfg, err := pgx.ParseConfig(url)
 	if err != nil {
-		return nil, fmt.Errorf("DATABASE_URL: %w", err)
+		return nil, fmt.Errorf("database URL: %w", err)
 	}
-	admin := stdlib.OpenDB(*cfg)
-	_, err = admin.Exec(`CREATE SCHEMA IF NOT EXISTS ` + schema)
-	admin.Close()
-	if err != nil {
+	if err := createSchema(cfg, schema); err != nil {
 		return nil, fmt.Errorf("create schema %s: %w", schema, err)
 	}
 	cfg.RuntimeParams["search_path"] = schema
 	db := stdlib.OpenDB(*cfg)
+	// A server opens one store per repository: keep each pool small. The
+	// index lock holds one connection while indexing uses another.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	s := &Store{db: &conn{db: db, d: postgresDialect}}
-	if err := s.migrate(); err != nil {
+	// Replicas starting together must not migrate the same schema at once.
+	if err := s.withLock(context.Background(), s.migrate); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -392,6 +397,25 @@ var validSchema = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 // IsPostgres reports whether a database URL is a PostgreSQL one.
 func IsPostgres(url string) bool {
 	return strings.HasPrefix(url, "postgres://") || strings.HasPrefix(url, "postgresql://")
+}
+
+// createSchema creates a schema unless it exists, serialised so that
+// replicas starting together do not race on the catalogue.
+func createSchema(cfg *pgx.ConnConfig, schema string) error {
+	db := stdlib.OpenDB(*cfg)
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('codeweft schemas'))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE SCHEMA IF NOT EXISTS ` + schema); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SchemaName turns a repository name into the PostgreSQL schema holding its

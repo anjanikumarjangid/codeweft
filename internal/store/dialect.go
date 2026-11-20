@@ -97,24 +97,113 @@ func (c *conn) Begin() (*txConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &txConn{tx: tx, d: c.d}, nil
+	return &txConn{tx: tx, d: c.d, shapes: map[string]*batch{}}, nil
 }
 
 // txConn is a transaction that adapts queries to its dialect.
+//
+// With PostgreSQL, where every statement is a network round trip, plain
+// INSERT ... VALUES statements are queued and sent as multi-row inserts.
+// Any other statement, and Commit, first sends what is queued, so reads in
+// the transaction see every row written before them.
 type txConn struct {
 	tx *sql.Tx
 	d  dialect
+
+	shapes  map[string]*batch // by query; nil for a query that cannot be batched
+	batches []*batch          // in the order first used, which respects foreign keys
+	err     error             // a failed flush, reported at Commit
+}
+
+// batch is the queued rows of one INSERT statement.
+type batch struct {
+	prefix, tuple string // "INSERT INTO t(a, b) VALUES", "(?, ?)"
+	args          []any
+	rows, width   int
+}
+
+// Rows per multi-row insert: enough to amortise the round trip, and within
+// PostgreSQL's limit of 65535 parameters per statement.
+const batchRows, maxParams = 500, 65535
+
+// queue adds a row to its statement's batch, reporting false when the
+// statement is not a batchable insert.
+func (t *txConn) queue(q string, args []any) bool {
+	if t.d != postgresDialect {
+		return false
+	}
+	b, seen := t.shapes[q]
+	if !seen {
+		b = parseInsert(q, len(args))
+		t.shapes[q] = b
+		if b != nil {
+			t.batches = append(t.batches, b)
+		}
+	}
+	if b == nil {
+		return false
+	}
+	b.args = append(b.args, t.d.args(args)...)
+	b.rows++
+	if b.rows >= batchRows || (b.rows+1)*b.width > maxParams {
+		t.flush()
+	}
+	return true
+}
+
+// parseInsert splits "INSERT INTO t(a, b) VALUES (?, ?)" into its prefix
+// and row tuple, or returns nil for any other statement.
+func parseInsert(q string, width int) *batch {
+	i := strings.Index(q, "VALUES")
+	if !strings.HasPrefix(q, "INSERT INTO") || i < 0 || width == 0 {
+		return nil
+	}
+	tuple := strings.TrimSpace(q[i+len("VALUES"):])
+	if !strings.HasPrefix(tuple, "(") || !strings.HasSuffix(tuple, ")") ||
+		strings.Contains(tuple, "RETURNING") || strings.Contains(tuple, "ON CONFLICT") {
+		return nil
+	}
+	return &batch{prefix: q[:i+len("VALUES")], tuple: tuple, width: width}
+}
+
+// flush sends every queued row, oldest batch first.
+func (t *txConn) flush() {
+	for _, b := range t.batches {
+		if b.rows == 0 || t.err != nil {
+			continue
+		}
+		var q strings.Builder
+		q.WriteString(b.prefix)
+		for i := 0; i < b.rows; i++ {
+			if i > 0 {
+				q.WriteByte(',')
+			}
+			q.WriteByte(' ')
+			q.WriteString(b.tuple)
+		}
+		if _, err := t.tx.Exec(t.d.rebind(q.String()), b.args...); err != nil {
+			t.err = err
+		}
+		b.args, b.rows = b.args[:0], 0
+	}
 }
 
 func (t *txConn) Query(q string, args ...any) (*sql.Rows, error) {
+	if t.flush(); t.err != nil {
+		return nil, t.err
+	}
 	return t.tx.Query(t.d.rebind(q), t.d.args(args)...)
 }
 
 func (t *txConn) QueryRow(q string, args ...any) *sql.Row {
+	t.flush() // an error is reported at Commit
 	return t.tx.QueryRow(t.d.rebind(q), t.d.args(args)...)
 }
 
 func (t *txConn) Exec(q string, args ...any) (sql.Result, error) {
+	if t.flush(); t.err != nil {
+		return nil, t.err
+	}
 	return t.tx.Exec(t.d.rebind(q), t.d.args(args)...)
 }
 
@@ -126,7 +215,14 @@ func (t *txConn) Prepare(q string) (*stmt, error) {
 	return &stmt{st: st, d: t.d}, nil
 }
 
-func (t *txConn) Commit() error   { return t.tx.Commit() }
+func (t *txConn) Commit() error {
+	if t.flush(); t.err != nil {
+		t.tx.Rollback() //nolint:errcheck
+		return t.err
+	}
+	return t.tx.Commit()
+}
+
 func (t *txConn) Rollback() error { return t.tx.Rollback() }
 
 // stmt is a prepared statement that adapts its arguments to its dialect.

@@ -181,17 +181,13 @@ func (t *Tx) ReplaceTypeEdges(edges []TypeEdge) error {
 	if _, err := t.tx.Exec(`DELETE FROM type_edges`); err != nil {
 		return err
 	}
-	stmt, err := t.tx.Prepare(`INSERT INTO type_edges(sub_id, super_id, super_ref, how) VALUES(?, ?, ?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	q := `INSERT INTO type_edges(sub_id, super_id, super_ref, how) VALUES(?, ?, ?, ?)`
 	for _, e := range edges {
 		var super any
 		if e.SuperID != 0 {
 			super = e.SuperID
 		}
-		if _, err := stmt.Exec(e.SubID, super, e.SuperRef, e.How); err != nil {
+		if _, err := t.exec(q, e.SubID, super, e.SuperRef, e.How); err != nil {
 			return fmt.Errorf("type edge %d -> %s: %w", e.SubID, e.SuperRef, err)
 		}
 	}
