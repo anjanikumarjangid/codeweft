@@ -37,24 +37,65 @@ type SearchOptions struct {
 // Each word is matched as a stemmed prefix. Results matching all words come
 // first; if nothing matches all of them, it falls back to matching any word.
 func (s *Store) Search(query string, opts SearchOptions) ([]Symbol, error) {
-	match := ftsQuery(query)
-	if match == "" {
+	words := ftsWords(query)
+	if len(words) == 0 {
 		return nil, nil
 	}
-	syms, err := s.search(match, opts)
-	if err != nil || len(syms) > 0 || !strings.Contains(match, " ") {
+	syms, err := s.search(words, true, opts)
+	if err != nil || len(syms) > 0 || len(words) == 1 {
 		return syms, err
 	}
-	return s.search(strings.ReplaceAll(match, `* "`, `* OR "`), opts)
+	return s.search(words, false, opts)
 }
 
-func (s *Store) search(match string, opts SearchOptions) ([]Symbol, error) {
+func (s *Store) search(words []string, all bool, opts SearchOptions) ([]Symbol, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 10
 	}
-	q := selectSymbol + ` JOIN symbols_fts ON symbols_fts.rowid = s.id
+	var q, rank string
+	var args []any
+	if s.db.d == postgresDialect {
+		// Each word matches as a prefix, either verbatim (names) or stemmed
+		// (docs), mirroring the two configurations the vector is built with.
+		join := " && "
+		if !all {
+			join = " || "
+		}
+		prefix := make([]string, len(words))
+		exact := make([]string, len(words))
+		for i, w := range words {
+			prefix[i] = `(to_tsquery('simple', ?) || to_tsquery('english', ?))`
+			args = append(args, w+":*", w+":*")
+		}
+		for i, w := range words {
+			exact[i] = `to_tsquery('simple', ?)`
+			args = append(args, w)
+		}
+		q = selectSymbol + ` JOIN symbols_fts ON symbols_fts.id = s.id
+		JOIN (SELECT ` + strings.Join(prefix, join) + ` AS q, ` + strings.Join(exact, join) + ` AS e) tq ON TRUE
+		WHERE symbols_fts.doc @@ tq.q`
+		// A name equal to a search word first, then names starting with
+		// one, shortest first, then overall relevance. Names carry weight A
+		// in the vector, so a rank over A alone tells name matches apart.
+		rank = `ts_rank('{0,0,0,1}', symbols_fts.doc, tq.e) DESC,
+			ts_rank('{0,0,0,1}', symbols_fts.doc, tq.q) DESC,
+			CASE WHEN ts_rank('{0,0,0,1}', symbols_fts.doc, tq.q) > 0 THEN length(s.name) ELSE 0 END,
+			ts_rank(symbols_fts.doc, tq.q, 1) DESC`
+	} else {
+		terms := make([]string, len(words))
+		for i, w := range words {
+			terms[i] = `"` + w + `"*`
+		}
+		join := " "
+		if !all {
+			join = " OR "
+		}
+		q = selectSymbol + ` JOIN symbols_fts ON symbols_fts.rowid = s.id
 		WHERE symbols_fts MATCH ?`
-	args := []any{match}
+		args = append(args, strings.Join(terms, join))
+		// Weight names above split name words, then signatures, then docs.
+		rank = `bm25(symbols_fts, 10.0, 5.0, 4.0, 2.0, 1.0)`
+	}
 	if opts.Kind != "" {
 		q += ` AND s.kind = ?`
 		args = append(args, opts.Kind)
@@ -67,9 +108,8 @@ func (s *Store) search(match string, opts SearchOptions) ([]Symbol, error) {
 		q += ` AND f.path LIKE ? ESCAPE '\'`
 		args = append(args, escapeLike(strings.TrimPrefix(opts.Path, "./"))+"%")
 	}
-	// Hand-written code first. Then weight names above split name words,
-	// then signatures, then doc text.
-	q += ` ORDER BY f.generated, bm25(symbols_fts, 10.0, 5.0, 4.0, 2.0, 1.0), s.qualified LIMIT ?`
+	// Hand-written code first, then by relevance.
+	q += ` ORDER BY f.generated, ` + rank + `, s.qualified LIMIT ?`
 	args = append(args, opts.Limit)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -158,7 +198,7 @@ func (s *Store) Callees(id int64, includeExternal bool) ([]Ref, error) {
 	if !includeExternal {
 		q += ` AND e.to_id IS NOT NULL`
 	}
-	q += ` ORDER BY e.to_id IS NULL, e.line`
+	q += ` ORDER BY e.to_id IS NULL, e.line, e.id`
 	return s.refs(q, id)
 }
 
@@ -167,7 +207,7 @@ func (s *Store) Callers(id int64) ([]Ref, error) {
 	return s.refs(`SELECT fr.id, fr.qualified, fr.kind, ff.path || ':' || fr.start_line,
 		e.line, ff.path, 0, e.confidence
 		FROM edges e JOIN symbols fr ON fr.id = e.from_id JOIN files ff ON ff.id = fr.file_id
-		WHERE e.to_id = ? ORDER BY ff.path, e.line`, id)
+		WHERE e.to_id = ? ORDER BY ff.path, e.line, e.id`, id)
 }
 
 // ExternalCallers returns internal symbols that call an external reference,
@@ -180,7 +220,7 @@ func (s *Store) ExternalCallers(refPrefix string, limit int) ([]Ref, error) {
 		e.line, ff.path, 1, e.to_ref
 		FROM edges e JOIN symbols fr ON fr.id = e.from_id JOIN files ff ON ff.id = fr.file_id
 		WHERE e.to_id IS NULL AND (e.to_ref = ? OR e.to_ref LIKE ? ESCAPE '\')
-		ORDER BY e.to_ref, ff.path, e.line LIMIT ?`, refPrefix, escapeLike(refPrefix)+"%", limit)
+		ORDER BY e.to_ref, ff.path, e.line, e.id LIMIT ?`, refPrefix, escapeLike(refPrefix)+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -286,17 +326,12 @@ func (s *Store) Graph(root Symbol, direction string, depth int, includeExternal 
 	return top, count, nil
 }
 
-// ftsQuery turns free text into a safe FTS5 query: each word becomes a quoted
-// prefix term, so user input can never inject FTS5 syntax.
-func ftsQuery(text string) string {
-	words := strings.FieldsFunc(text, func(r rune) bool {
+// ftsWords splits free text into the words of a keyword search. Only letters,
+// digits and underscores survive, so user input can never inject query syntax.
+func ftsWords(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 	})
-	terms := make([]string, 0, len(words))
-	for _, w := range words {
-		terms = append(terms, `"`+w+`"*`)
-	}
-	return strings.Join(terms, " ")
 }
 
 // SplitWords breaks identifiers into lower-case words so that a search for

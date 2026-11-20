@@ -12,13 +12,33 @@ import (
 // transaction is much faster than committing per file, and readers never see
 // a half-built index.
 type Tx struct {
-	tx    *sql.Tx
-	stmts map[string]*sql.Stmt
+	tx    *txConn
+	stmts map[string]*stmt
 }
 
 // exec runs a statement through a cached prepared statement, which matters
 // when indexing hundreds of thousands of rows.
 func (t *Tx) exec(query string, args ...any) (sql.Result, error) {
+	st, err := t.prepared(query)
+	if err != nil {
+		return nil, err
+	}
+	return st.Exec(args...)
+}
+
+// insertID runs an INSERT ... RETURNING id through a cached prepared
+// statement and returns the new row's id.
+func (t *Tx) insertID(query string, args ...any) (int64, error) {
+	st, err := t.prepared(query + ` RETURNING id`)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = st.QueryRow(args...).Scan(&id)
+	return id, err
+}
+
+func (t *Tx) prepared(query string) (*stmt, error) {
 	st, ok := t.stmts[query]
 	if !ok {
 		var err error
@@ -27,7 +47,7 @@ func (t *Tx) exec(query string, args ...any) (sql.Result, error) {
 		}
 		t.stmts[query] = st
 	}
-	return st.Exec(args...)
+	return st, nil
 }
 
 // Begin starts a write batch.
@@ -36,7 +56,7 @@ func (s *Store) Begin() (*Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Tx{tx: tx, stmts: map[string]*sql.Stmt{}}, nil
+	return &Tx{tx: tx, stmts: map[string]*stmt{}}, nil
 }
 
 // Commit commits the batch.
@@ -128,10 +148,10 @@ func (t *Tx) UpdateFile(f File, symbols []Symbol, tests []TestFunc) (int64, erro
 			sym.Doc, sym.StartLine, sym.EndLine, sym.Body, ids[i]); err != nil {
 			return 0, err
 		}
-		if _, err := t.exec(`DELETE FROM symbols_fts WHERE rowid = ?`, ids[i]); err != nil {
+		if _, err := t.exec(`DELETE FROM symbols_fts WHERE `+t.tx.d.ftsKey()+` = ?`, ids[i]); err != nil {
 			return 0, err
 		}
-		if _, err := t.exec(`INSERT INTO symbols_fts(rowid, name, qualified, terms, signature, doc) VALUES (?, ?, ?, ?, ?, ?)`,
+		if _, err := t.exec(t.tx.d.ftsInsert(),
 			ids[i], sym.Name, sym.Qualified, SplitWords(sym.Qualified), sym.Signature, sym.Doc); err != nil {
 			return 0, err
 		}
@@ -230,7 +250,7 @@ func (t *Tx) ResolvedEdges() (int, error) {
 // DeleteFile removes a file and everything derived from it. Edges pointing
 // at its symbols are removed by the cascade; edges are rebuilt afterwards.
 func (t *Tx) DeleteFile(path string) error {
-	if _, err := t.tx.Exec(`DELETE FROM symbols_fts WHERE rowid IN
+	if _, err := t.tx.Exec(`DELETE FROM symbols_fts WHERE `+t.tx.d.ftsKey()+` IN
 		(SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?)`, path); err != nil {
 		return err
 	}
@@ -240,17 +260,13 @@ func (t *Tx) DeleteFile(path string) error {
 
 // AddFile inserts a file and returns its id.
 func (t *Tx) AddFile(f File) (int64, error) {
-	res, err := t.exec(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated, shape)
+	return t.insertID(`INSERT INTO files(path, dir, lang, package, qual, doc, hash, test, generated, shape)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.Path, f.Dir, f.Lang, f.Package, f.Qual, f.Doc, f.Hash, f.Test, f.Generated, f.Shape)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
 // AddSymbol inserts a symbol and its full-text search row.
 func (t *Tx) AddSymbol(fileID int64, sym Symbol) error {
-	res, err := t.exec(`INSERT INTO symbols
+	id, err := t.insertID(`INSERT INTO symbols
 		(file_id, package, name, qualified, kind, signature, doc, start_line, end_line, exported, body, result, arity)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fileID, sym.Package, sym.Name, sym.Qualified, sym.Kind, sym.Signature, sym.Doc,
@@ -258,12 +274,7 @@ func (t *Tx) AddSymbol(fileID int64, sym Symbol) error {
 	if err != nil {
 		return err
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	_, err = t.exec(`INSERT INTO symbols_fts(rowid, name, qualified, terms, signature, doc)
-		VALUES (?, ?, ?, ?, ?, ?)`, id, sym.Name, sym.Qualified, SplitWords(sym.Qualified), sym.Signature, sym.Doc)
+	_, err = t.exec(t.tx.d.ftsInsert(), id, sym.Name, sym.Qualified, SplitWords(sym.Qualified), sym.Signature, sym.Doc)
 	return err
 }
 
@@ -491,7 +502,7 @@ func (t *Tx) LoadResolveInput(module string, files ...string) (*ResolveInput, er
 			args = append(args, f)
 		}
 	}
-	rows, err = t.tx.Query(q+` ORDER BY r.rowid`, args...)
+	rows, err = t.tx.Query(q+` ORDER BY r.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +564,7 @@ func (t *Tx) ReplaceTestEdges(edges []TestEdge) error {
 	for _, e := range edges {
 		want[e]++
 	}
-	rows, err := t.tx.Query(`SELECT rowid, from_test, COALESCE(to_id, 0), COALESCE(to_test, 0), line FROM test_edges`)
+	rows, err := t.tx.Query(`SELECT id, from_test, COALESCE(to_id, 0), COALESCE(to_test, 0), line FROM test_edges`)
 	if err != nil {
 		return err
 	}
@@ -603,7 +614,7 @@ func (t *Tx) ReplaceEdges(edges []Edge) error {
 	for _, e := range edges {
 		want[key{e.FromID, e.ToID, e.ToRef, e.Line, e.Confidence}]++
 	}
-	rows, err := t.tx.Query(`SELECT rowid, from_id, COALESCE(to_id, 0), to_ref, line, confidence FROM edges`)
+	rows, err := t.tx.Query(`SELECT id, from_id, COALESCE(to_id, 0), to_ref, line, confidence FROM edges`)
 	if err != nil {
 		return err
 	}
@@ -639,7 +650,7 @@ func (t *Tx) ReplaceEdges(edges []Edge) error {
 	return t.AddEdges(add)
 }
 
-// deleteRows deletes rows of a table by rowid, a few hundred at a time.
+// deleteRows deletes rows of a table by id, a few hundred at a time.
 func (t *Tx) deleteRows(table string, ids []int64) error {
 	for len(ids) > 0 {
 		n := min(len(ids), 500)
@@ -647,7 +658,7 @@ func (t *Tx) deleteRows(table string, ids []int64) error {
 		for i, id := range ids[:n] {
 			args[i] = id
 		}
-		q := `DELETE FROM ` + table + ` WHERE rowid IN (` + strings.TrimSuffix(strings.Repeat("?,", n), ",") + `)`
+		q := `DELETE FROM ` + table + ` WHERE id IN (` + strings.TrimSuffix(strings.Repeat("?,", n), ",") + `)`
 		if _, err := t.tx.Exec(q, args...); err != nil {
 			return err
 		}

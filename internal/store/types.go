@@ -45,7 +45,7 @@ func (t *Tx) LoadTypeInput() (*TypeInput, error) {
 		GoFiles:   map[int64]GoFile{},
 		GoPaths:   map[string]int64{},
 	}
-	rows, err := t.tx.Query(`SELECT owner, kind, type_ref FROM supertypes ORDER BY rowid`)
+	rows, err := t.tx.Query(`SELECT owner, kind, type_ref FROM supertypes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -223,9 +223,10 @@ func (s *Store) Subtypes(id int64, maxDepth int) ([]TypeLink, error) {
 			SELECT e.sub_id, h.depth + 1, e.how FROM type_edges e JOIN h ON e.super_id = h.id
 			WHERE h.depth < ?2 AND e.how != 'embeds'
 		)
-		SELECT s.qualified, s.kind, f.path, s.start_line, h.how, MIN(h.depth)
+		SELECT s.qualified, s.kind, f.path, s.start_line,
+			(SELECT h2.how FROM h h2 WHERE h2.id = s.id ORDER BY h2.depth, h2.how LIMIT 1), MIN(h.depth)
 		FROM h JOIN symbols s ON s.id = h.id JOIN files f ON f.id = s.file_id
-		GROUP BY s.id ORDER BY MIN(h.depth), s.qualified LIMIT ?3`, id, maxDepth)
+		GROUP BY s.id, f.id ORDER BY MIN(h.depth), s.qualified LIMIT ?3`, id, maxDepth)
 }
 
 // Supertypes returns what the type with this id extends, implements or
@@ -238,9 +239,10 @@ func (s *Store) Supertypes(id int64, maxDepth int) ([]TypeLink, error) {
 			SELECT e.super_id, h.depth + 1, e.how FROM type_edges e JOIN h ON e.sub_id = h.id
 			WHERE h.depth < ?2 AND e.super_id IS NOT NULL AND h.how != 'embeds'
 		)
-		SELECT s.qualified, s.kind, f.path, s.start_line, h.how, MIN(h.depth)
+		SELECT s.qualified, s.kind, f.path, s.start_line,
+			(SELECT h2.how FROM h h2 WHERE h2.id = s.id ORDER BY h2.depth, h2.how LIMIT 1), MIN(h.depth)
 		FROM h JOIN symbols s ON s.id = h.id JOIN files f ON f.id = s.file_id
-		GROUP BY s.id ORDER BY MIN(h.depth), s.qualified LIMIT ?3`, id, maxDepth)
+		GROUP BY s.id, f.id ORDER BY MIN(h.depth), s.qualified LIMIT ?3`, id, maxDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -264,10 +266,10 @@ func (s *Store) Supertypes(id int64, maxDepth int) ([]TypeLink, error) {
 // type outside the repository, such as java.lang.Runnable, matched by full
 // name or by a ".Name" suffix.
 func (s *Store) ExternalSubtypes(ref string) ([]TypeLink, error) {
-	return s.typeLinks(`SELECT s.qualified, s.kind, f.path, s.start_line, e.how, 1
+	return s.typeLinks(`SELECT s.qualified, s.kind, f.path, s.start_line, MIN(e.how), 1
 		FROM type_edges e JOIN symbols s ON s.id = e.sub_id JOIN files f ON f.id = s.file_id
 		WHERE e.super_id IS NULL AND (e.super_ref = ?1 OR e.super_ref LIKE ?2 ESCAPE '\')
-		GROUP BY s.id ORDER BY s.qualified LIMIT ?3`, ref, "%."+escapeLike(ref))
+		GROUP BY s.id, f.id ORDER BY s.qualified LIMIT ?3`, ref, "%."+escapeLike(ref))
 }
 
 func (s *Store) typeLinks(query string, a, b any) ([]TypeLink, error) {

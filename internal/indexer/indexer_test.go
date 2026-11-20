@@ -1740,6 +1740,9 @@ public class Sender {
 // by name rather than by id.
 func dumpIndex(t *testing.T, db string) string {
 	t.Helper()
+	if os.Getenv("CODEWEFT_TEST_POSTGRES") != "" {
+		return "" // reads the SQLite file directly; the comparison is SQLite-only
+	}
 	conn, err := sql.Open("sqlite3", "file:"+db+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)

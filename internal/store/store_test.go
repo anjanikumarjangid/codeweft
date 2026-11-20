@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSplitWords(t *testing.T) {
 	cases := map[string]string{
@@ -19,17 +22,36 @@ func TestSplitWords(t *testing.T) {
 	}
 }
 
-func TestFTSQueryQuotesEveryTerm(t *testing.T) {
+func TestFTSWordsDropSyntax(t *testing.T) {
 	cases := map[string]string{
-		"rate limiter":     `"rate"* "limiter"*`,
-		`"payment*)(`:      `"payment"*`,
+		"rate limiter":     "rate limiter",
+		`"payment*)(`:      "payment",
 		"   ":              "",
-		"NEAR(a OR b)":     `"NEAR"* "a"* "OR"* "b"*`,
-		"snake_case_names": `"snake_case_names"*`,
+		"NEAR(a OR b)":     "NEAR a OR b",
+		"snake_case_names": "snake_case_names",
+		"x:* & !y":         "x y",
 	}
 	for in, want := range cases {
-		if got := ftsQuery(in); got != want {
-			t.Errorf("ftsQuery(%q) = %q, want %q", in, got, want)
+		if got := strings.Join(ftsWords(in), " "); got != want {
+			t.Errorf("ftsWords(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRebindPlaceholders(t *testing.T) {
+	cases := map[string]string{
+		`SELECT ? , ?`:                       `SELECT $1 , $2`,
+		`WHERE a = ?1 OR b LIKE ?2 LIMIT ?3`: `WHERE a = $1 OR b LIKE $2 LIMIT $3`,
+		`WHERE x = '?' AND y = ?`:            `WHERE x = '?' AND y = $1`,
+		`ESCAPE '\' AND z = ?`:               `ESCAPE '\' AND z = $1`,
+		`no placeholders`:                    `no placeholders`,
+	}
+	for in, want := range cases {
+		if got := postgresDialect.rebind(in); got != want {
+			t.Errorf("rebind(%q) = %q, want %q", in, got, want)
+		}
+		if got := sqliteDialect.rebind(in); got != in {
+			t.Errorf("sqlite rebind changed %q to %q", in, got)
 		}
 	}
 }

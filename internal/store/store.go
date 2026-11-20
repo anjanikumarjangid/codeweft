@@ -10,18 +10,24 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	_ "github.com/mattn/go-sqlite3" // requires the sqlite_fts5 build tag
 )
 
 // SchemaVersion changes whenever the layout changes. An index built with a
 // different version is discarded and rebuilt: it is a cache, not a source.
-const SchemaVersion = "14"
+const SchemaVersion = "15"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -82,6 +88,7 @@ CREATE TABLE IF NOT EXISTS vars (
 );
 CREATE INDEX IF NOT EXISTS vars_file ON vars(file_id);
 CREATE TABLE IF NOT EXISTS raw_calls (
+	id INTEGER PRIMARY KEY,
 	file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 	caller  TEXT NOT NULL,
 	form    TEXT NOT NULL,
@@ -102,6 +109,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
 );
 CREATE INDEX IF NOT EXISTS endpoints_file ON endpoints(file_id);
 CREATE TABLE IF NOT EXISTS supertypes (
+	id INTEGER PRIMARY KEY,
 	file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 	owner    TEXT NOT NULL,
 	kind     TEXT NOT NULL,
@@ -126,6 +134,7 @@ CREATE TABLE IF NOT EXISTS test_funcs (
 );
 CREATE INDEX IF NOT EXISTS test_funcs_file ON test_funcs(file_id);
 CREATE TABLE IF NOT EXISTS test_edges (
+	id INTEGER PRIMARY KEY,
 	from_test INTEGER NOT NULL REFERENCES test_funcs(id) ON DELETE CASCADE,
 	to_id     INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
 	to_test   INTEGER REFERENCES test_funcs(id) ON DELETE CASCADE,
@@ -156,6 +165,7 @@ CREATE TABLE IF NOT EXISTS contracts (
 CREATE INDEX IF NOT EXISTS contracts_file ON contracts(file_id);
 CREATE INDEX IF NOT EXISTS contracts_name ON contracts(kind, name);
 CREATE TABLE IF NOT EXISTS edges (
+	id INTEGER PRIMARY KEY,
 	from_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
 	to_id      INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
 	to_ref     TEXT NOT NULL,
@@ -309,14 +319,29 @@ type RawCall struct {
 	Args   int // number of arguments (Java), -1 when not recorded
 }
 
-// Store wraps the SQLite connection.
+// Store is an index: a SQLite file, or a schema of a PostgreSQL database.
 type Store struct {
-	db *sql.DB
+	db *conn
 }
 
-// Open opens (or creates) the index at path. An index written by a different
-// schema version is wiped so it can be rebuilt.
+// Open opens (or creates) the SQLite index at path. An index written by a
+// different schema version is wiped so it can be rebuilt.
+//
+// With CODEWEFT_TEST_POSTGRES set to a PostgreSQL URL, Open instead creates
+// a schema named after the path in that database, so reopening the same path
+// finds the same index: the whole test suite runs against PostgreSQL that way.
 func Open(path string) (*Store, error) {
+	if url := os.Getenv("CODEWEFT_TEST_POSTGRES"); url != "" {
+		// Leave a marker file, so code that checks for the index finds it.
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			return nil, err
+		}
+		abs, _ := filepath.Abs(path)
+		return OpenPostgres(url, fmt.Sprintf("test_%x", sha256.Sum256([]byte(abs)))[:30])
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -324,7 +349,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: &conn{db: db, d: sqliteDialect}}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -332,29 +357,87 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// OpenPostgres opens (or creates) an index in a schema of the PostgreSQL
+// database at url: one schema per repository, as SQLite has one file. The
+// schema is created if needed, and rebuilt like a SQLite index when it was
+// written by another schema version.
+func OpenPostgres(url, schema string) (*Store, error) {
+	if !validSchema.MatchString(schema) {
+		return nil, fmt.Errorf("invalid PostgreSQL schema name %q", schema)
+	}
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("DATABASE_URL: %w", err)
+	}
+	admin := stdlib.OpenDB(*cfg)
+	_, err = admin.Exec(`CREATE SCHEMA IF NOT EXISTS ` + schema)
+	admin.Close()
+	if err != nil {
+		return nil, fmt.Errorf("create schema %s: %w", schema, err)
+	}
+	cfg.RuntimeParams["search_path"] = schema
+	db := stdlib.OpenDB(*cfg)
+	s := &Store{db: &conn{db: db, d: postgresDialect}}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// validSchema is the PostgreSQL schema names codeweft creates: lower-case
+// letters, digits and underscores, starting with a letter.
+var validSchema = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// IsPostgres reports whether a database URL is a PostgreSQL one.
+func IsPostgres(url string) bool {
+	return strings.HasPrefix(url, "postgres://") || strings.HasPrefix(url, "postgresql://")
+}
+
+// SchemaName turns a repository name into the PostgreSQL schema holding its
+// index: "orders-service" -> "cw_orders_service".
+func SchemaName(repo string) string {
+	var b strings.Builder
+	b.WriteString("cw_")
+	for _, r := range strings.ToLower(repo) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	name := b.String()
+	if len(name) > 63 {
+		name = name[:54] + fmt.Sprintf("_%x", sha256.Sum256([]byte(repo)))[:9]
+	}
+	return name
+}
+
 func (s *Store) migrate() error {
-	var exists int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'meta'`).Scan(&exists); err != nil {
+	exists, err := s.db.tableExists("meta")
+	if err != nil {
 		return err
 	}
-	if exists == 1 {
+	if exists {
 		v, err := s.Meta("schema_version")
 		if err != nil || v != SchemaVersion {
 			for _, t := range allTables {
-				if _, err := s.db.Exec(`DROP TABLE IF EXISTS ` + t); err != nil {
+				if err := s.db.dropTable(t); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	if _, err := s.db.Exec(schema + ftsSchema); err != nil {
+	if _, err := s.db.Exec(s.db.d.schemaFor(schema) + s.db.d.ftsSchemaFor()); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
 	return s.SetMeta("schema_version", SchemaVersion)
 }
 
 // Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	return s.db.Close()
+}
 
 // SetMeta stores a key/value pair, such as the indexed repository root.
 func (s *Store) SetMeta(key, value string) error {
