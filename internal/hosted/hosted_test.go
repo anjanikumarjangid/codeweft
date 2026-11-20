@@ -198,6 +198,12 @@ func TestServer(t *testing.T) {
 	eventually(t, "the pushed commit to be indexed", func() bool {
 		return strings.Contains(search("Goodbye"), "[app] app.Goodbye (func)")
 	})
+	// The index is searchable as soon as it is committed; the status is
+	// updated a moment later, when the sync records the commit.
+	eventually(t, "the status to show the pushed commit", func() bool {
+		s := m.Statuses()
+		return len(s) == 1 && s[0].Commit == head && !s[0].Syncing
+	})
 
 	// /status and /metrics, with the token.
 	get := func(path string) string {
