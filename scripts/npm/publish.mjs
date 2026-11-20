@@ -22,27 +22,43 @@ const opt = (name) => {
 const dist = resolve(opt("--dist") ?? "dist");
 const version = (opt("--version") ?? "").replace(/^v/, "");
 const dryRun = args.includes("--dry-run");
+// --skip leaves platforms out, e.g. "win32-x64": their package is neither
+// published nor listed in codeweft's optionalDependencies, so codeweft can
+// be released while npm refuses one platform's package.
+const skip = new Set((opt("--skip") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
-  console.error("usage: publish.mjs --dist DIR --version X.Y.Z [--dry-run]");
+  console.error("usage: publish.mjs --dist DIR --version X.Y.Z [--skip os-cpu,...] [--dry-run]");
   process.exit(2);
 }
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // Go's names for platforms, and npm's.
-const platforms = [
+const allPlatforms = [
   { goos: "linux", goarch: "amd64", os: "linux", cpu: "x64" },
   { goos: "linux", goarch: "arm64", os: "linux", cpu: "arm64" },
   { goos: "darwin", goarch: "arm64", os: "darwin", cpu: "arm64" },
   { goos: "darwin", goarch: "amd64", os: "darwin", cpu: "x64" },
   { goos: "windows", goarch: "amd64", os: "win32", cpu: "x64" },
 ];
+for (const name of skip) {
+  if (!allPlatforms.some((p) => `${p.os}-${p.cpu}` === name)) {
+    console.error(`--skip: unknown platform ${name}`);
+    process.exit(2);
+  }
+}
+const platforms = allPlatforms.filter((p) => !skip.has(`${p.os}-${p.cpu}`));
+if (skip.size) console.log(`leaving out: ${[...skip].join(", ")}`);
 const work = mkdtempSync(join(tmpdir(), "codeweft-npm-"));
 const run = (cmd, argv, cwd) => execFileSync(cmd, argv, { cwd, stdio: "inherit" });
 // published reports whether this version of a package is already on the
 // registry, so a re-run after a partial publish carries on from there.
 const published = (name) => {
   try {
-    return execFileSync("npm", ["view", `${name}@${version}`, "version"], { encoding: "utf8" }).trim() === version;
+    const out = execFileSync("npm", ["view", `${name}@${version}`, "version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"], // a 404 is the expected answer
+    });
+    return out.trim() === version;
   } catch {
     return false; // not found
   }
