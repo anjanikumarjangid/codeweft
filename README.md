@@ -1,6 +1,6 @@
 # codeweft
 
-**A local MCP server that gives AI coding agents structured, deterministic context about a codebase.**
+**An MCP server that gives AI coding agents structured, deterministic context about your code: run it locally next to your editor, or self-host it for your whole team.**
 
 *Formerly codewiki.* In weaving, the weft is the thread that runs across all the others and binds them into one cloth; codeweft binds functions, files, repositories and the services calling each other into one map an agent can read.
 
@@ -429,8 +429,7 @@ Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed:
 - [x] **v0.5:** Java and Python via tree-sitter
 - [x] **v0.6:** `get_architecture_overview`, `list_apis`, watch mode
 - [x] **v0.7:** workspaces of several repositories; `get_service_links` for HTTP routes, gRPC methods, Kafka, RabbitMQ, SQS and Pub/Sub, and Temporal workflows and activities, with values from configuration files; `.proto` files; TypeScript and JavaScript; `codeweft server` (self-hosted, kept current by GitHub webhooks) with a container image, Helm chart, npm and Homebrew packages; capped answers and incremental call graph updates
-- [x] **v0.8:** PostgreSQL backend for the server, with several replicas
-- [x] Sign-in with GitHub (MCP authorization), each person seeing the repositories their account can read
+- [x] **v0.8:** PostgreSQL backend for the server, with several replicas; sign-in with GitHub (MCP authorization), each person seeing the repositories their account can read
 - [ ] Later: Kotlin, C# and Rust; gRPC and Temporal in TypeScript; bindings declared in infrastructure code (Terraform); optional semantic search with local embeddings
 
 ## License

@@ -4,7 +4,7 @@
 // codeweft package that depends on them all, optionally, and runs the
 // one npm installs for the platform.
 //
-//   node scripts/npm/publish.mjs --dist DIR --version 0.7.0 [--dry-run]
+//   node scripts/npm/publish.mjs --dist DIR --version 0.8.0 [--dry-run]
 //
 // DIR holds the release archives (codeweft_<version>_<goos>_<goarch>.tar.gz
 // or .zip). With --dry-run the packages are packed, not published.
