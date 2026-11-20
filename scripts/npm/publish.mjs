@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Builds the npm packages of a release from its archives and publishes them:
-// one codeweft-<os>-<cpu> package per platform with its binary, then the
+// one @codeweft/<os>-<cpu> package per platform with its binary, then the
 // codeweft package that depends on them all, optionally, and runs the
 // one npm installs for the platform.
 //
-//   node scripts/npm/publish.mjs --dist DIR --version 0.8.0 [--dry-run]
+//   node scripts/npm/publish.mjs --dist DIR --version 0.8.1 [--skip os-cpu,...] [--dry-run]
 //
 // DIR holds the release archives (codeweft_<version>_<goos>_<goarch>.tar.gz
 // or .zip). With --dry-run the packages are packed, not published.
@@ -98,7 +98,9 @@ for (const p of platforms) {
   if (archive.endsWith(".zip")) run("unzip", ["-q", archive, "-d", unpacked]);
   else run("tar", ["-xzf", archive, "-C", unpacked]);
   const exe = p.goos === "windows" ? "codeweft.exe" : "codeweft";
-  const name = `codeweft-${p.os}-${p.cpu}`;
+  // Scoped: only this project can publish under @codeweft, and npm's
+  // spam check refused the unscoped codeweft-win32-x64.
+  const name = `@codeweft/${p.os}-${p.cpu}`;
   const pkg = join(work, name);
   mkdirSync(join(pkg, "bin"), { recursive: true });
   copyFileSync(join(unpacked, stem, exe), join(pkg, "bin", exe));
