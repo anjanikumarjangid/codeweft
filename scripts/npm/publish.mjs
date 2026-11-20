@@ -38,7 +38,35 @@ const platforms = [
 ];
 const work = mkdtempSync(join(tmpdir(), "codeweft-npm-"));
 const run = (cmd, argv, cwd) => execFileSync(cmd, argv, { cwd, stdio: "inherit" });
-const publish = (dir) => run("npm", dryRun ? ["pack", "--dry-run"] : ["publish", "--access", "public", "--provenance"], dir);
+// published reports whether this version of a package is already on the
+// registry, so a re-run after a partial publish carries on from there.
+const published = (name) => {
+  try {
+    return execFileSync("npm", ["view", `${name}@${version}`, "version"], { encoding: "utf8" }).trim() === version;
+  } catch {
+    return false; // not found
+  }
+};
+// publish publishes a package, trying again on failure: provenance is
+// signed into a public transparency log, and a lost reply there makes npm
+// fail with a 409 for an entry that its own retry duplicated.
+const publish = (dir) => {
+  if (dryRun) return run("npm", ["pack", "--dry-run"], dir);
+  const { name } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  for (let attempt = 1; ; attempt++) {
+    if (published(name)) {
+      console.log(`${name}@${version} is published`);
+      return;
+    }
+    try {
+      return run("npm", ["publish", "--access", "public", "--provenance"], dir);
+    } catch (err) {
+      if (attempt === 3) throw err;
+      console.error(`publishing ${name} failed (attempt ${attempt} of 3); trying again in ${10 * attempt} s`);
+      execFileSync("sleep", [String(10 * attempt)]);
+    }
+  }
+};
 const base = JSON.parse(readFileSync(join(root, "npm/codeweft/package.json"), "utf8"));
 
 const deps = {};
