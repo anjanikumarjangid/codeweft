@@ -10,6 +10,10 @@ on:
       tag:
         description: Release tag, e.g. v0.8.0
         required: true
+      skip:
+        description: Platforms to leave out, e.g. win32-x64 (only while npm refuses one)
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -21,6 +25,7 @@ jobs:
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       TAG: ${{ inputs.tag }}
+      SKIP: ${{ inputs.skip }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,4 +39,4 @@ jobs:
           case "$TAG" in v[0-9]*) ;; *) echo "not a release tag: $TAG"; exit 1 ;; esac
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip' --dir dist
       - name: Publish
-        run: node scripts/npm/publish.mjs --dist dist --version "$TAG"
+        run: node scripts/npm/publish.mjs --dist dist --version "$TAG" --skip "$SKIP"
