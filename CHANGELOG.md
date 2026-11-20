@@ -2,6 +2,12 @@
 
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-11-20
+
+### Fixed
+
+- **npm**: the `codeweft` package of 0.8.1 was built without its launcher (`bin/codeweft.js`), which an ignore rule had kept out of the repository, so `npx codeweft` had nothing to run. The launcher is in the repository now, the publish script refuses a package missing a file it lists, and CI checks the launcher is packed.
+
 ## [0.8.1] - 2026-11-20
 
 ### Fixed
@@ -37,5 +43,6 @@ The first release. codeweft was developed as *codewiki* until this release.
 
 - Licensed under the Apache License 2.0 (commits before the switch were MIT).
 
+[0.8.2]: https://github.com/anjanikumarjangid/codeweft/releases/tag/v0.8.2
 [0.8.1]: https://github.com/anjanikumarjangid/codeweft/releases/tag/v0.8.1
 [0.8.0]: https://github.com/anjanikumarjangid/codeweft/releases/tag/v0.8.0
