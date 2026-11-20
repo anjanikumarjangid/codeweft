@@ -7,10 +7,12 @@
 
 # Built on the build machine's platform and cross-compiled for the
 # target: cgo (SQLite, tree-sitter) under emulation would be very slow.
+# The YAML grammar has a C++ scanner, so a C++ cross compiler is needed
+# too: Go links with it.
 FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ] && [ "$(dpkg --print-architecture)" != "arm64" ]; then \
-      apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross && rm -rf /var/lib/apt/lists/*; \
+      apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross && rm -rf /var/lib/apt/lists/*; \
     fi
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -18,7 +20,7 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN set -e; \
-    if [ "$TARGETARCH" = "arm64" ] && [ "$(dpkg --print-architecture)" != "arm64" ]; then export CC=aarch64-linux-gnu-gcc; fi; \
+    if [ "$TARGETARCH" = "arm64" ] && [ "$(dpkg --print-architecture)" != "arm64" ]; then export CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++; fi; \
     CGO_ENABLED=1 GOOS=linux GOARCH="$TARGETARCH" go build -trimpath \
       -tags "sqlite_fts5 sqlite_omit_load_extension netgo osusergo" \
       -ldflags "-s -w -X github.com/anjanikumarjangid/codeweft/internal/server.Version=${VERSION} -linkmode external -extldflags -static" \

@@ -17,13 +17,15 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # cgo (SQLite, tree-sitter) needs a C compiler for the target.
-          # Linux is linked statically so the binary runs on any distribution.
-          - { runner: ubuntu-latest, goos: linux, goarch: amd64, cc: gcc, static: true, smoke: true }
-          - { runner: ubuntu-latest, goos: linux, goarch: arm64, cc: aarch64-linux-gnu-gcc, apt: gcc-aarch64-linux-gnu, static: true }
-          - { runner: ubuntu-latest, goos: windows, goarch: amd64, cc: x86_64-w64-mingw32-gcc, apt: gcc-mingw-w64-x86-64, ext: .exe }
-          - { runner: macos-latest, goos: darwin, goarch: arm64, cc: clang, smoke: true }
-          - { runner: macos-latest, goos: darwin, goarch: amd64, cc: clang -arch x86_64 }
+          # cgo (SQLite, tree-sitter) needs C and C++ compilers for the
+          # target (the YAML grammar has a C++ scanner, and Go then links
+          # with the C++ compiler). Linux and Windows are linked statically,
+          # so the binary runs on any distribution and needs no MinGW DLLs.
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, cc: gcc, cxx: g++, static: true, smoke: true }
+          - { runner: ubuntu-latest, goos: linux, goarch: arm64, cc: aarch64-linux-gnu-gcc, cxx: aarch64-linux-gnu-g++, apt: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu, static: true }
+          - { runner: ubuntu-latest, goos: windows, goarch: amd64, cc: x86_64-w64-mingw32-gcc, cxx: x86_64-w64-mingw32-g++, apt: gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64, ext: .exe, static: true }
+          - { runner: macos-latest, goos: darwin, goarch: arm64, cc: clang, cxx: clang++, smoke: true }
+          - { runner: macos-latest, goos: darwin, goarch: amd64, cc: clang -arch x86_64, cxx: clang++ -arch x86_64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,6 +40,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           ldflags="-s -w -X github.com/anjanikumarjangid/codeweft/internal/server.Version=${version}"
